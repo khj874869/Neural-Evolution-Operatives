@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#07110f" />
+    <meta name="description" content="Neural Evolution: Operatives — adaptive AI survival shooter prototype" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <title>NEURAL EVOLUTION // OPERATIVES</title>
+  </head>
+  <body>
+    <main id="app">
+      <header class="topbar glass">
+        <div class="brand">
+          <span class="brand-mark">N//E</span>
+          <span><b>NEURAL EVOLUTION</b><small>OPERATIVES // RED ZONE UPLINK</small></span>
+        </div>
+        <div class="mission" id="missionText">링크 초기화 중...</div>
+        <div class="resources" id="resourceHud"></div>
+      </header>
+
+      <section id="game-shell">
+        <div id="game"></div>
+        <div id="scanlines"></div>
+        <aside class="squad glass" id="squadHud"></aside>
+        <div class="status-stack">
+          <div class="bar-label"><span>생체 신호</span><span id="hpText">100%</span></div>
+          <div class="bar"><i id="hpBar"></i></div>
+          <div class="bar-label"><span>방사능 노출</span><span id="radiationText">안정</span></div>
+          <div class="bar radiation"><i id="radiationBar"></i></div>
+        </div>
+        <div class="event-feed glass" id="eventFeed"></div>
+        <div class="crosshair">+</div>
+      </section>
+
+      <nav class="command-dock glass">
+        <button id="shelterButton"><span>⌂</span> 쉘터</button>
+        <button id="rosterButton"><span>◈</span> 오퍼레이터</button>
+        <form id="commandForm">
+          <span class="prompt">TACTICAL://</span>
+          <input id="commandInput" maxlength="100" autocomplete="off" placeholder="예: 방패병 시선 끌어줘, 내가 우회할게" />
+          <button type="submit">전송</button>
+        </form>
+        <button id="muteButton" aria-label="사운드 전환">SFX ON</button>
+      </nav>
+
+      <div class="mobile-controls" aria-label="모바일 조작">
+        <div class="dpad">
+          <button data-move="up">▲</button>
+          <button data-move="left">◀</button>
+          <button data-move="down">▼</button>
+          <button data-move="right">▶</button>
+        </div>
+        <button class="fire" id="fireButton">FIRE</button>
+      </div>
+
+      <div class="modal-backdrop hidden" id="modalBackdrop">
+        <section class="modal glass" role="dialog" aria-modal="true">
+          <button class="close" id="closeModal" aria-label="닫기">×</button>
+          <div id="modalContent"></div>
+        </section>
+      </div>
+
+      <div class="toast" id="toast"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

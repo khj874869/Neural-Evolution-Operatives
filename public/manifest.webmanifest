@@ -1,0 +1,11 @@
+{
+  "name": "Neural Evolution: Operatives",
+  "short_name": "N//E Ops",
+  "description": "Adaptive AI post-apocalyptic survival shooter prototype",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#050a09",
+  "theme_color": "#07110f",
+  "orientation": "landscape",
+  "icons": []
+}
