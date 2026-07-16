@@ -38,4 +38,20 @@ describe('server authoritative economy', () => {
     expect(replay.profile.resources.scrap).toBe(192);
     expect(replay.replayed).toBe(true);
   });
+
+  it('persists exactly three unique owned squad operators', async () => {
+    const profile = await repository.getOrCreateGuest('test:squad-device');
+    const economy = new EconomyService(repository);
+    const result = await economy.setSquad(profile.playerId, ['lumen', 'aegis-07', 'ratchet'], 'squad:test:0001');
+    expect(result.profile.squad).toEqual(['lumen', 'aegis-07', 'ratchet']);
+  });
+
+  it('rejects duplicate or unowned squad operators', async () => {
+    const profile = await repository.getOrCreateGuest('test:invalid-squad-device');
+    const economy = new EconomyService(repository);
+    await expect(economy.setSquad(profile.playerId, ['lumen', 'lumen', 'ratchet'], 'squad:test:0002'))
+      .rejects.toThrow('SQUAD_REQUIRES_THREE_UNIQUE_OPERATORS');
+    await expect(economy.setSquad(profile.playerId, ['lumen', 'morrow', 'ratchet'], 'squad:test:0003'))
+      .rejects.toThrow('OPERATOR_NOT_OWNED');
+  });
 });

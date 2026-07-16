@@ -190,7 +190,19 @@ export class GameState {
     return { operatorId: picked.id, rarity, duplicate: Boolean(existing) };
   }
 
+  setSquad(squad: string[]): boolean {
+    if (squad.length !== 3 || new Set(squad).size !== 3) return false;
+    const owned = new Set(this.data.operators.map((operator) => operator.id));
+    if (squad.some((operatorId) => !owned.has(operatorId))) return false;
+    this.data.squad = [...squad];
+    this.save();
+    return true;
+  }
+
   getSquad() {
-    return this.data.squad.map((id) => ({ definition: getOperator(id), owned: this.data.operators.find((operator) => operator.id === id)! }));
+    return this.data.squad.flatMap((id) => {
+      const owned = this.data.operators.find((operator) => operator.id === id);
+      return owned ? [{ definition: getOperator(id), owned }] : [];
+    });
   }
 }

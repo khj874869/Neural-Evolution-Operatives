@@ -4,6 +4,7 @@ import { calculateOfflineRewards } from '../src/game/state/GameState';
 import { AdaptiveDirector, freshTelemetry } from '../src/game/systems/AdaptiveDirector';
 import { generateMission } from '../src/game/systems/MissionGenerator';
 import { parseTacticalCommand } from '../src/game/systems/TacticalCommand';
+import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/src/squad';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -45,5 +46,14 @@ describe('mission generator', () => {
     const mission = generateMission(3, { scrap: 100, water: 4, data: 30, cores: 0 }, 42);
     expect(mission.targetResource).toBe('water');
     expect(mission.targetKills).toBe(14);
+  });
+});
+
+describe('operator squad links', () => {
+  it('combines unique operator bonuses and ignores duplicate ids', () => {
+    const bonuses = calculateSquadBonuses(['aegis-07', 'ratchet', 'ratchet']);
+    expect(bonuses.radiationGainMultiplier).toBe(0.82);
+    expect(bonuses.pickupRadius).toBe(42);
+    expect(describeSquadBonuses(['aegis-07', 'ratchet'])).toContain('방사선 저항 +18%');
   });
 });

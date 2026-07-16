@@ -55,6 +55,19 @@ export class EconomyService {
     return { ...mutation, result };
   }
 
+  async setSquad(playerId: string, squad: string[], idempotencyKey: string = randomUUID()) {
+    return this.repository.mutate(playerId, idempotencyKey, 'SQUAD_UPDATE', (profile) => {
+      if (squad.length !== 3 || new Set(squad).size !== 3) {
+        throw new EconomyError('SQUAD_REQUIRES_THREE_UNIQUE_OPERATORS', 400);
+      }
+      const owned = new Set(profile.operators.map((operator) => operator.id));
+      if (squad.some((operatorId) => !owned.has(operatorId))) {
+        throw new EconomyError('OPERATOR_NOT_OWNED', 409);
+      }
+      profile.squad = [...squad];
+    });
+  }
+
   async claimOffline(playerId: string, idempotencyKey: string = randomUUID(), now = new Date()) {
     let reward: ResourceWallet & { elapsedMinutes: number } | undefined;
     const mutation = await this.repository.mutate(playerId, idempotencyKey, 'OFFLINE_CLAIM', (profile) => {

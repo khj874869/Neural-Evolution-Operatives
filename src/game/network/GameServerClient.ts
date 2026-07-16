@@ -81,6 +81,15 @@ export class GameServerClient {
     return response;
   }
 
+  async setSquad(squad: string[]): Promise<PlayerProfile> {
+    const response = await this.authorized<{ profile: PlayerProfile }>('/api/profile/squad', {
+      method: 'POST', body: JSON.stringify({ squad }),
+    });
+    gameEvents.emit('network-profile', response.profile);
+    if (this.connected) this.room?.send('sync-squad');
+    return response.profile;
+  }
+
   private async claimOffline(): Promise<void> {
     const response = await this.authorized<{ profile: PlayerProfile; reward?: { elapsedMinutes: number; scrap: number; water: number } }>('/api/economy/offline/claim', {
       method: 'POST', body: '{}',

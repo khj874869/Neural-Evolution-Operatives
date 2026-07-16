@@ -36,4 +36,14 @@ describe('game account API', () => {
     const health = await request(app).get('/health').expect(200);
     expect(health.body).toEqual({ status: 'ok', service: 'neural-evolution-game-server', storage: 'memory' });
   });
+
+  it('validates and saves an authenticated squad formation', async () => {
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:squad-device-0001' }).expect(200);
+    const response = await request(app).post('/api/profile/squad')
+      .set('authorization', `Bearer ${auth.body.token}`)
+      .set('idempotency-key', 'squad:api:0001')
+      .send({ squad: ['lumen', 'aegis-07', 'ratchet'] })
+      .expect(200);
+    expect(response.body.profile.squad).toEqual(['lumen', 'aegis-07', 'ratchet']);
+  });
 });

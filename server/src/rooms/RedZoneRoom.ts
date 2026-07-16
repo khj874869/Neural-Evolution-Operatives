@@ -39,6 +39,21 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
         message: `전술 링크 수신: ${parsed.data.text}`,
       } satisfies ServerEventMessage);
     });
+    this.onMessage('sync-squad', async (client) => {
+      try {
+        const playerId = this.simulation.getPlayerId(client.sessionId);
+        if (!playerId) return;
+        const profile = await roomDependencies().repository.getById(playerId);
+        if (!profile || !this.simulation.updateSquad(client.sessionId, profile.squad)) return;
+        client.send('server-event', {
+          type: 'feed', message: '분대 링크 재동기화 // 전투 보너스 적용 완료',
+        } satisfies ServerEventMessage);
+      } catch {
+        client.send('server-event', {
+          type: 'error', message: '분대 링크 재동기화에 실패했습니다.',
+        } satisfies ServerEventMessage);
+      }
+    });
   }
 
   async onAuth(_client: Client, options: { token?: string }): Promise<PlayerAuth> {
@@ -52,7 +67,7 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
   async onJoin(client: Client, _options: unknown, auth: PlayerAuth): Promise<void> {
     const profile = await roomDependencies().repository.getById(auth.playerId);
     if (!profile) throw new Error('PLAYER_NOT_FOUND');
-    this.simulation.addPlayer(client.sessionId, profile.playerId, profile.displayName);
+    this.simulation.addPlayer(client.sessionId, profile.playerId, profile.displayName, profile.squad);
   }
 
   onLeave(client: Client): void {

@@ -21,6 +21,8 @@ flowchart TD
 
 현재 구현은 단일 Node 프로세스 안에 HTTP API와 Colyseus 게임룸을 모듈 형태로 배치합니다. `DATABASE_URL`이 있으면 PostgreSQL을, 없으면 개발용 메모리 저장소를 사용합니다. `REDIS_URL`이 있으면 매칭 드라이버와 Presence가 Redis로 전환되어 여러 게임서버 인스턴스를 운영할 수 있습니다.
 
+분대 편성은 `POST /api/profile/squad`에서 보유 여부, 3인 정원, 중복을 검증한 뒤 프로필 트랜잭션으로 저장합니다. 게임룸 입장 시 확정된 분대를 읽어 공용 `calculateSquadBonuses` 규칙을 권위형 시뮬레이션에 적용하므로 클라이언트가 전투 보너스를 임의로 조작할 수 없습니다.
+
 ## 권위형 전투 프로토콜
 
 클라이언트는 50ms 간격으로 결과가 아닌 입력을 보냅니다.

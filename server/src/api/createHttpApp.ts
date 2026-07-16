@@ -18,6 +18,10 @@ const deviceSchema = z.object({
   deviceId: z.string().min(8).max(128).regex(/^[a-zA-Z0-9:_-]+$/),
 });
 const upgradeSchema = z.object({ module: z.enum(['command', 'purifier', 'workshop', 'greenhouse']) });
+const squadSchema = z.object({
+  squad: z.array(z.string().min(1).max(32)).length(3)
+    .refine((operators) => new Set(operators).size === operators.length, 'Squad operators must be unique'),
+});
 
 export function configureHttpApp(app: express.Application, deps: ApiDependencies): void {
   app.disable('x-powered-by');
@@ -60,6 +64,16 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
 
   app.post('/api/economy/recruit', requirePlayer(deps.tokens), async (request, response) => {
     const result = await deps.economy.recruit(response.locals.playerId as string, idempotencyKey(request));
+    response.json(result);
+  });
+
+  app.post('/api/profile/squad', requirePlayer(deps.tokens), async (request, response) => {
+    const body = squadSchema.parse(request.body);
+    const result = await deps.economy.setSquad(
+      response.locals.playerId as string,
+      body.squad,
+      idempotencyKey(request),
+    );
     response.json(result);
   });
 

@@ -1,4 +1,5 @@
 import type { EnemyKind, GameInputMessage, ResourceKind, ResourceWallet } from '../../../packages/shared/src/protocol.js';
+import { calculateSquadBonuses, type SquadBonuses } from '../../../packages/shared/src/squad.js';
 
 export const WORLD_SIZE = 2400;
 export const EXTRACTION_POINT = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
@@ -15,6 +16,8 @@ export interface SimPlayer {
   cargo: ResourceWallet;
   kills: number;
   lastSequence: number;
+  squad: string[];
+  bonuses: SquadBonuses;
 }
 
 export interface SimEnemy {
@@ -72,7 +75,7 @@ export class RedZoneSimulation {
     for (let index = 0; index < 18; index += 1) this.spawnResourceCache();
   }
 
-  addPlayer(sessionId: string, playerId: string, displayName: string): SimPlayer {
+  addPlayer(sessionId: string, playerId: string, displayName: string, squad: string[] = []): SimPlayer {
     const angle = this.random() * Math.PI * 2;
     const player: InternalPlayer = {
       id: sessionId,
@@ -86,6 +89,8 @@ export class RedZoneSimulation {
       cargo: emptyWallet(),
       kills: 0,
       lastSequence: 0,
+      squad: [...squad],
+      bonuses: calculateSquadBonuses(squad),
       input: { ...EMPTY_INPUT },
       lastShotAtMs: -1_000,
       stationaryMs: 0,
@@ -100,6 +105,18 @@ export class RedZoneSimulation {
 
   removePlayer(sessionId: string): void {
     this.players.delete(sessionId);
+  }
+
+  getPlayerId(sessionId: string): string | undefined {
+    return this.players.get(sessionId)?.playerId;
+  }
+
+  updateSquad(sessionId: string, squad: string[]): boolean {
+    const player = this.players.get(sessionId);
+    if (!player) return false;
+    player.squad = [...squad];
+    player.bonuses = calculateSquadBonuses(squad);
+    return true;
   }
 
   applyInput(sessionId: string, input: GameInputMessage): boolean {
@@ -138,18 +155,24 @@ export class RedZoneSimulation {
   }
 
   private updatePlayer(player: InternalPlayer, deltaMs: number): void {
-    const speed = 205;
+    const speed = 205 * player.bonuses.moveSpeedMultiplier;
     player.x = clamp(player.x + player.input.moveX * speed * deltaMs / 1000, 18, WORLD_SIZE - 18);
     player.y = clamp(player.y + player.input.moveY * speed * deltaMs / 1000, 18, WORLD_SIZE - 18);
     player.aimAngle = player.input.aimAngle;
     const moving = Math.abs(player.input.moveX) + Math.abs(player.input.moveY) > 0.04;
     player.stationaryMs = moving ? Math.max(0, player.stationaryMs - deltaMs) : player.stationaryMs + deltaMs;
-    player.radiation = clamp(player.radiation + (this.stormActive ? deltaMs * 0.0017 : -deltaMs * 0.0025), 0, 100);
+    const radiationDelta = this.stormActive
+      ? deltaMs * 0.0017 * player.bonuses.radiationGainMultiplier
+      : -deltaMs * 0.0025;
+    player.radiation = clamp(player.radiation + radiationDelta, 0, 100);
     if (player.radiation >= 100) {
       player.hp -= 4;
       player.radiation = 82;
     }
-    if (player.input.fire && this.elapsedMs - player.lastShotAtMs >= 180) this.fire(player);
+    if (player.bonuses.regenPerSecond > 0 && player.hp > 0) {
+      player.hp = Math.min(100, player.hp + player.bonuses.regenPerSecond * deltaMs / 1000);
+    }
+    if (player.input.fire && this.elapsedMs - player.lastShotAtMs >= 180 * player.bonuses.fireCooldownMultiplier) this.fire(player);
     this.collectNearbyResources(player);
     if (player.input.extract) this.tryExtract(player);
     if (player.hp <= 0) this.respawn(player);
@@ -170,7 +193,7 @@ export class RedZoneSimulation {
     }
     if (!target) return;
     player.hits += 1;
-    target.hp -= 19;
+    target.hp -= 19 * player.bonuses.damageMultiplier;
     if (target.hp <= 0) this.defeatEnemy(player, target);
   }
 
@@ -189,7 +212,7 @@ export class RedZoneSimulation {
     } else {
       enemy.attackCooldownMs -= deltaMs;
       if (enemy.attackCooldownMs <= 0) {
-        target.hp -= stats.damage;
+        target.hp -= stats.damage * target.bonuses.damageTakenMultiplier;
         enemy.attackCooldownMs = 820;
       }
     }
@@ -211,7 +234,7 @@ export class RedZoneSimulation {
 
   private collectNearbyResources(player: InternalPlayer): void {
     for (const resource of this.resources.values()) {
-      if (Math.hypot(resource.x - player.x, resource.y - player.y) > 28) continue;
+      if (Math.hypot(resource.x - player.x, resource.y - player.y) > player.bonuses.pickupRadius) continue;
       player.cargo[resource.kind] += resource.value;
       this.resources.delete(resource.id);
     }

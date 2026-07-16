@@ -34,4 +34,17 @@ describe('authoritative red zone simulation', () => {
     simulation.tick(50);
     expect(simulation.drainEvents().some((event) => event.type === 'extraction')).toBe(false);
   });
+
+  it('applies operator squad bonuses inside the authoritative simulation', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-3', 'player-3', 'LINKER', ['morrow', 'ember', 'lumen']);
+    expect(player.bonuses.damageMultiplier).toBe(1.18);
+    expect(player.bonuses.fireCooldownMultiplier).toBe(0.86);
+    expect(player.bonuses.moveSpeedMultiplier).toBe(1.05);
+    expect(player.bonuses.regenPerSecond).toBe(0.8);
+    expect(simulation.updateSquad('session-3', ['aegis-07', 'ratchet', 'rook'])).toBe(true);
+    expect(player.bonuses.radiationGainMultiplier).toBe(0.82);
+    expect(player.bonuses.pickupRadius).toBe(42);
+    expect(player.bonuses.damageTakenMultiplier).toBe(0.88);
+  });
 });

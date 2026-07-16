@@ -1,12 +1,13 @@
 import Phaser from 'phaser';
 import './styles.css';
 import { gameConfig } from './game/config';
-import { getOperator } from './game/data/operators';
+import { getOperator, type OperatorRole } from './game/data/operators';
 import { gameEvents, type MobileInputState } from './game/events';
 import { GameServerClient } from './game/network/GameServerClient';
 import { GameState, type ShelterModules } from './game/state/GameState';
 import type { Mission } from './game/systems/MissionGenerator';
 import type { PlayerProfile } from '../packages/shared/src/protocol';
+import { describeSquadBonuses } from '../packages/shared/src/squad';
 
 const state = new GameState();
 const mobileInput: MobileInputState = { up: false, down: false, left: false, right: false, fire: false };
@@ -37,9 +38,17 @@ const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
 const toast = byId<HTMLDivElement>('toast');
 let currentModal: 'shelter' | 'roster' | 'game-over' | null = null;
+let rosterSelection: string | null = null;
+let squadDraft: string[] = [];
 
 const labels = { scrap: '고철', water: '식수', data: '데이터', cores: '코어' } as const;
 const icons = { scrap: '▰', water: '◒', data: '◇', cores: '◈' } as const;
+const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>> = {
+  Vanguard: [{ label: '돌파', value: 88 }, { label: '방어', value: 92 }, { label: '지원', value: 42 }],
+  Sniper: [{ label: '화력', value: 96 }, { label: '기동', value: 58 }, { label: '지원', value: 45 }],
+  Support: [{ label: '화력', value: 48 }, { label: '생존', value: 76 }, { label: '지원', value: 95 }],
+  Engineer: [{ label: '화력', value: 62 }, { label: '회수', value: 94 }, { label: '지원', value: 78 }],
+};
 
 function renderPersistentHud(): void {
   const save = state.snapshot();
@@ -58,6 +67,12 @@ function showToast(message: string): void {
   toast.textContent = message;
   toast.classList.add('show');
   window.setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>'"]/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  })[character] ?? character);
 }
 
 function addFeed(message: string, danger = false): void {
@@ -121,28 +136,104 @@ function renderShelter(): void {
 }
 
 function renderRoster(): void {
+  const wasOpen = currentModal === 'roster';
   currentModal = 'roster';
   pauseForModal();
   const save = state.snapshot();
+  if (!wasOpen) squadDraft = [...save.squad];
+  if (!rosterSelection || !save.operators.some((operator) => operator.id === rosterSelection)) {
+    rosterSelection = save.operators[0]?.id ?? null;
+  }
+  const selectedOwned = save.operators.find((operator) => operator.id === rosterSelection);
+  if (!selectedOwned) return;
+  const selected = getOperator(selectedOwned.id);
+  const selectedInSquad = squadDraft.includes(selected.id);
+  const squadChanged = squadDraft.join('|') !== save.squad.join('|');
+  const bonusDescriptions = describeSquadBonuses(squadDraft);
   modalContent.innerHTML = `
     <span class="eyebrow">NEURAL CORE ARCHIVE // OWNED ${save.operators.length}</span>
     <h2>오퍼레이터 링크</h2>
-    <p class="subtle">현재 프로토타입은 로컬 페르소나 엔진으로 동작합니다. 장기 기억은 기기에 저장되며 API 키를 요구하지 않습니다.</p>
-    <div class="card-grid">${save.operators.map((owned) => {
-      const operator = getOperator(owned.id);
-      return `<article class="data-card operator-card" data-rarity="${operator.rarity}">
-        <img class="operator-portrait" src="${operator.portrait}" alt="${operator.name} 캐릭터 일러스트" loading="lazy" />
-        <span class="level ${operator.rarity}">${operator.rarity} // ${operator.role}</span>
-        <h3>${operator.name} <small>${operator.callsign}</small></h3>
-        <p>${operator.background}</p>
-        <div class="memory">LINK ${owned.bond}% · CORE LV.${owned.level}</div>
-        <div class="memory">${owned.memories[0] ?? '아직 형성된 장기 기억이 없습니다.'}</div>
-      </article>`;
-    }).join('')}</div>
+    <p class="subtle">보유 오퍼레이터를 확인하고 레드 존에 투입할 3명을 편성합니다. 편성 보너스는 온라인 전투에서도 서버가 직접 판정합니다.</p>
+    <div class="roster-layout">
+      <section class="operator-showcase" data-rarity="${selected.rarity}">
+        <div class="showcase-visual">
+          <img src="${selected.portrait}" alt="${selected.name} 전신 일러스트" loading="eager" />
+          <div class="showcase-caption"><span>${selected.rarity} // ${selected.role}</span><strong>${selected.callsign}</strong><small>${selected.name}</small></div>
+        </div>
+        <div class="operator-dossier">
+          <div class="operator-tags"><span>CORE LV.${selectedOwned.level}</span><span>NEURAL LINK ${selectedOwned.bond}%</span></div>
+          <p>${escapeHtml(selected.background)}</p>
+          <blockquote>“${escapeHtml(selected.combatLine)}”</blockquote>
+          <div class="combat-metrics">${roleMetrics[selected.role].map((metric) => `
+            <div><span>${metric.label}</span><i><b style="width:${metric.value}%"></b></i><em>${metric.value}</em></div>`).join('')}</div>
+          <div class="bond-meter"><span>RELATIONSHIP SYNC</span><i><b style="width:${selectedOwned.bond}%"></b></i></div>
+          <div class="memory-log"><b>최근 장기 기억</b><span>${escapeHtml(selectedOwned.memories[0] ?? '아직 형성된 장기 기억이 없습니다.')}</span></div>
+          <button class="squad-toggle ${selectedInSquad ? 'assigned' : ''}" data-toggle-squad="${selected.id}">${selectedInSquad ? '분대에서 해제' : '분대에 배치'}</button>
+        </div>
+      </section>
+      <aside class="roster-control">
+        <div class="formation-heading"><div><span class="eyebrow">ACTIVE FORMATION</span><b>레드 존 3인 분대</b></div><small>${squadDraft.length} / 3 LINKED</small></div>
+        <div class="formation-slots">${[0, 1, 2].map((slot) => {
+          const operatorId = squadDraft[slot];
+          if (!operatorId) return `<div class="formation-slot empty"><span>0${slot + 1}</span><b>EMPTY LINK</b></div>`;
+          const operator = getOperator(operatorId);
+          return `<button class="formation-slot" data-operator-id="${operator.id}"><span>0${slot + 1}</span><img src="${operator.portrait}" alt="" /><b>${operator.callsign}</b><small>${operator.role}</small></button>`;
+        }).join('')}</div>
+        <div class="bonus-panel"><span>SERVER COMBAT BONUS</span><div>${bonusDescriptions.length
+          ? bonusDescriptions.map((bonus) => `<b>${bonus}</b>`).join('')
+          : '<small>오퍼레이터를 배치하면 전투 보너스가 활성화됩니다.</small>'}</div></div>
+        <button class="primary formation-save" id="saveSquad" ${squadDraft.length !== 3 || !squadChanged ? 'disabled' : ''}>분대 편성 확정</button>
+        <div class="operator-tile-grid">${save.operators.map((owned) => {
+          const operator = getOperator(owned.id);
+          const squadIndex = squadDraft.indexOf(operator.id);
+          return `<button class="operator-tile ${operator.id === selected.id ? 'selected' : ''}" data-operator-id="${operator.id}" data-rarity="${operator.rarity}">
+            <img src="${operator.portrait}" alt="${operator.name}" loading="lazy" />
+            <span><b>${operator.name}</b><small>${operator.callsign}</small></span>
+            ${squadIndex >= 0 ? `<em>0${squadIndex + 1}</em>` : ''}
+          </button>`;
+        }).join('')}</div>
+      </aside>
+    </div>
     <div class="recruit-panel">
       <div><b>신경망 코어 복원</b><div class="subtle">코어 5개 사용 · SSR 천장까지 ${20 - save.pity}회 · 중복은 레벨과 데이터로 전환</div></div>
       <button class="primary" id="recruitButton" ${save.resources.cores < 5 ? 'disabled' : ''}>◈ 5 // LINK</button>
     </div>`;
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-operator-id]').forEach((button) => {
+    button.addEventListener('click', () => {
+      rosterSelection = button.dataset.operatorId ?? rosterSelection;
+      renderRoster();
+    });
+  });
+  modalContent.querySelector<HTMLButtonElement>('[data-toggle-squad]')?.addEventListener('click', (event) => {
+    const operatorId = (event.currentTarget as HTMLButtonElement).dataset.toggleSquad;
+    if (!operatorId) return;
+    if (squadDraft.includes(operatorId)) {
+      squadDraft = squadDraft.filter((id) => id !== operatorId);
+    } else if (squadDraft.length < 3) {
+      squadDraft = [...squadDraft, operatorId];
+    } else {
+      showToast('분대는 최대 3명입니다. 기존 오퍼레이터를 먼저 해제하세요.');
+      return;
+    }
+    renderRoster();
+  });
+  modalContent.querySelector<HTMLButtonElement>('#saveSquad')?.addEventListener('click', async () => {
+    try {
+      if (network.connected) {
+        const profile = await network.setSquad([...squadDraft]);
+        squadDraft = [...profile.squad];
+      } else if (!state.setSquad([...squadDraft])) {
+        throw new Error('INVALID_LOCAL_SQUAD');
+      } else {
+        gameEvents.emit('squad-changed');
+      }
+      renderPersistentHud();
+      renderRoster();
+      showToast('3인 분대 편성이 확정되었습니다.');
+    } catch {
+      showToast('분대 편성을 저장하지 못했습니다. 보유 오퍼레이터와 연결 상태를 확인하세요.');
+    }
+  });
   modalContent.querySelector<HTMLButtonElement>('#recruitButton')?.addEventListener('click', async () => {
     try {
       const result = network.connected ? (await network.recruit()).result : state.recruit();
@@ -215,7 +306,9 @@ gameEvents.on('operator-reply', (operator: ReturnType<typeof getOperator>, reply
 gameEvents.on('state-changed', renderPersistentHud);
 gameEvents.on('game-over', renderGameOver);
 gameEvents.on('network-profile', (profile: PlayerProfile) => {
+  const previousSquad = state.snapshot().squad.join('|');
   state.applyServerProfile(profile);
+  if (previousSquad !== profile.squad.join('|')) gameEvents.emit('squad-changed');
   renderPersistentHud();
   if (currentModal === 'shelter') renderShelter();
   if (currentModal === 'roster') renderRoster();

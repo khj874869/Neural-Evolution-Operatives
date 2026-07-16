@@ -83,10 +83,12 @@ export class WorldScene extends Phaser.Scene {
 
     gameEvents.on('tactical-command', this.handleTacticalCommand, this);
     gameEvents.on('resume-world', this.resumeWorld, this);
+    gameEvents.on('squad-changed', this.spawnCompanions, this);
     gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
+      gameEvents.off('squad-changed', this.spawnCompanions, this);
       gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
       this.scale.off('resize', this.handleResize, this);
     });
@@ -135,6 +137,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private spawnCompanions(): void {
+    for (const companion of this.companions) companion.destroy();
     const squad = this.state.getSquad();
     this.companions = squad.map(({ definition }, index) => {
       const angle = (Math.PI * 2 * index) / Math.max(1, squad.length);
