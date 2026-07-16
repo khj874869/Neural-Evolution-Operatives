@@ -48,7 +48,7 @@ function renderPersistentHud(): void {
   ).join('');
   squadHud.innerHTML = `<div class="squad-title">SQUAD // NEURAL LINK</div>${state.getSquad().map(({ definition, owned }) => `
     <div class="operative-chip">
-      <div class="op-avatar">${definition.name.slice(0, 1)}</div>
+      <img class="op-avatar" src="${definition.portrait}" alt="${definition.name}" loading="eager" />
       <div><b>${definition.callsign}</b><small>${definition.role} · LINK ${owned.bond}%</small></div>
       <span class="rarity ${definition.rarity}">${definition.rarity}</span>
     </div>`).join('')}`;
@@ -131,6 +131,7 @@ function renderRoster(): void {
     <div class="card-grid">${save.operators.map((owned) => {
       const operator = getOperator(owned.id);
       return `<article class="data-card operator-card" data-rarity="${operator.rarity}">
+        <img class="operator-portrait" src="${operator.portrait}" alt="${operator.name} 캐릭터 일러스트" loading="lazy" />
         <span class="level ${operator.rarity}">${operator.rarity} // ${operator.role}</span>
         <h3>${operator.name} <small>${operator.callsign}</small></h3>
         <p>${operator.background}</p>

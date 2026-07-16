@@ -14,6 +14,7 @@
 - 현장 화물을 중앙 추출 지점으로 가져오는 생존형 리스크/리워드
 - 쉘터 4개 모듈 업그레이드와 최대 8시간 오프라인 생산
 - R/SR/SSR 오퍼레이터 수집, 중복 성장, 20회 SSR 천장
+- 세라·모로·래칫·엠버·루멘·룩·패치 7명의 개별 캐릭터 일러스트
 - 로컬 장기 기억·호감도와 성격별 전술 응답
 - 데스크톱 WASD/마우스 및 모바일 터치 조작
 - Colyseus 기반 20Hz 서버 권위형 전투와 최대 4인 게임룸
@@ -89,6 +90,7 @@ npm run smoke:server -- http://localhost:2567
 │   ├── src/economy/            # 모집·쉘터·방치·추출 트랜잭션
 │   └── src/persistence/        # 메모리/PostgreSQL 저장 어댑터
 ├── packages/shared/            # 클라이언트-서버 공용 프로토콜
+├── public/assets/operators/    # 오퍼레이터별 최적화 WebP 일러스트
 └── infra/                       # Dockerfile 및 Compose
 ```
 
@@ -105,7 +107,7 @@ npm run smoke:server -- http://localhost:2567
 
 클라이언트는 입력만 보내고 결과를 임의로 확정할 수 없습니다. 경제 요청은 `Idempotency-Key`로 중복 실행을 방지하고 PostgreSQL에서는 플레이어 행을 잠근 트랜잭션으로 처리합니다.
 
-상세 설계는 [게임 디자인](docs/GAME_DESIGN.md), [AI/서비스 아키텍처](docs/ARCHITECTURE.md), [출시 로드맵](docs/ROADMAP.md)을 참고하세요.
+상세 설계는 [게임 디자인](docs/GAME_DESIGN.md), [AI/서비스 아키텍처](docs/ARCHITECTURE.md), [캐릭터 아트 가이드](docs/CHARACTER_ART.md), [출시 로드맵](docs/ROADMAP.md)을 참고하세요.
 
 ## 크로스플랫폼 전략
 

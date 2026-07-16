@@ -54,7 +54,7 @@ button { color: inherit; cursor: pointer; }
 .squad { position: fixed; z-index: 10; top: 84px; left: 16px; width: 220px; padding: 9px; }
 .squad-title { color: #6f8f83; font: 10px 'Share Tech Mono'; margin: 2px 4px 8px; }
 .operative-chip { display: grid; grid-template-columns: 38px 1fr auto; gap: 8px; align-items: center; padding: 7px; border-top: 1px solid rgba(255,255,255,.06); }
-.op-avatar { width: 36px; aspect-ratio: 1; display: grid; place-items: center; background: #172720; color: var(--lime); border: 1px solid var(--line); font: 15px 'Black Ops One'; }
+.op-avatar { width: 36px; height: 36px; display: block; object-fit: cover; object-position: 50% 14%; background: #172720; border: 1px solid var(--line); }
 .operative-chip b { display: block; font-size: 11px; }
 .operative-chip small { display: block; color: #688177; font: 9px 'Share Tech Mono'; }
 .rarity { font: 9px 'Share Tech Mono'; color: var(--cyan); }
@@ -93,6 +93,9 @@ button { color: inherit; cursor: pointer; }
 .data-card button, .primary { width: 100%; padding: 10px; color: #08100d; border: 0; background: var(--lime); font: 700 11px 'Share Tech Mono'; }
 .data-card button:disabled { background: #25332e; color: #63736d; cursor: not-allowed; }
 .operator-card { position: relative; min-height: 205px; overflow: hidden; }
+.operator-portrait { position: relative; z-index: 1; display: block; width: calc(100% + 32px); margin: -16px -16px 14px; aspect-ratio: 4 / 5; object-fit: cover; object-position: 50% 18%; border-bottom: 1px solid var(--line); background: #0b1512; }
+.operator-card[data-rarity='SSR'] .operator-portrait { border-bottom-color: rgba(255, 215, 106, .48); }
+.operator-card[data-rarity='SR'] .operator-portrait { border-bottom-color: rgba(71, 215, 194, .42); }
 .operator-card::after { content: attr(data-rarity); position: absolute; right: -8px; bottom: -22px; color: rgba(255,255,255,.035); font: 70px 'Black Ops One'; }
 .memory { padding: 8px 0; border-top: 1px solid rgba(255,255,255,.06); color: #9bb0a7; font: 10px 'Share Tech Mono'; }
 .recruit-panel { margin-top: 16px; padding: 14px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); }
@@ -116,7 +119,7 @@ button { color: inherit; cursor: pointer; }
   .brand b { font-size: 12px; } .brand small, .brand-mark, .mission { display: none; }
   .resources { gap: 8px; } .resource { display: block; } .resource span { display: none; } .resource b { font-size: 11px; }
   .squad { top: 68px; left: 8px; width: 154px; padding: 5px; }
-  .operative-chip { grid-template-columns: 28px 1fr; padding: 4px; } .op-avatar { width: 27px; } .rarity { display: none; }
+  .operative-chip { grid-template-columns: 28px 1fr; padding: 4px; } .op-avatar { width: 27px; height: 27px; } .rarity { display: none; }
   .status-stack { left: 10px; bottom: 146px; width: 170px; }
   .event-feed, .crosshair { display: none; }
   .command-dock { height: 64px; padding: 6px; }
