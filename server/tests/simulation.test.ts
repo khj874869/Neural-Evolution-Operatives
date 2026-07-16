@@ -7,10 +7,10 @@ describe('authoritative red zone simulation', () => {
     const player = simulation.addPlayer('session-1', 'player-1', 'TESTER');
     const initialX = player.x;
     expect(simulation.applyInput('session-1', {
-      sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: false, extract: false, weapon: 'carbine',
     })).toBe(true);
     expect(simulation.applyInput('session-1', {
-      sequence: 1, moveX: -1, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      sequence: 1, moveX: -1, moveY: 0, aimAngle: 0, fire: false, extract: false, weapon: 'carbine',
     })).toBe(false);
     simulation.tick(100);
     expect(player.x).toBeGreaterThan(initialX);
@@ -25,7 +25,7 @@ describe('authoritative red zone simulation', () => {
     player.y = EXTRACTION_POINT.y;
     player.cargo.scrap = 15;
     simulation.applyInput('session-2', {
-      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: true,
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: true, weapon: 'carbine',
     });
     simulation.tick(50);
     const extraction = simulation.drainEvents().find((event) => event.type === 'extraction');
@@ -46,5 +46,33 @@ describe('authoritative red zone simulation', () => {
     expect(player.bonuses.radiationGainMultiplier).toBe(0.82);
     expect(player.bonuses.pickupRadius).toBe(42);
     expect(player.bonuses.damageTakenMultiplier).toBe(0.88);
+  });
+
+  it('accepts weapon selection and deploys the operation boss after salvage and kills', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-4', 'player-4', 'WARDEN-HUNTER');
+    player.kills = 10;
+    player.cargo.scrap = 8;
+    expect(simulation.applyInput('session-4', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false, weapon: 'rail',
+    })).toBe(true);
+    simulation.tick(50);
+    expect([...simulation.enemies.values()].some((enemy) => enemy.kind === 'warden')).toBe(true);
+    expect(simulation.drainEvents().some((event) => event.type === 'feed' && event.message.includes('케르베로스'))).toBe(true);
+  });
+
+  it('uses the shared coil-gun damage in authoritative hit resolution', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    simulation.resources.clear();
+    const player = simulation.addPlayer('session-5', 'player-5', 'MARKSMAN');
+    simulation.enemies.clear();
+    simulation.enemies.set('target', {
+      id: 'target', kind: 'warden', x: player.x + 120, y: player.y, hp: 520, attackCooldownMs: 9_999,
+    });
+    simulation.applyInput('session-5', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'rail',
+    });
+    simulation.tick(50);
+    expect(simulation.enemies.get('target')?.hp).toBe(472);
   });
 });

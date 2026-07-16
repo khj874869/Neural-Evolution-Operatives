@@ -25,6 +25,21 @@
         <div id="game"></div>
         <div id="scanlines"></div>
         <aside class="squad glass" id="squadHud"></aside>
+        <section class="operation-hud glass" id="operationHud" aria-live="polite">
+          <div><span id="operationCode">OP-00 // SALVAGE</span><b id="operationTitle">죽은 도시의 신호</b></div>
+          <p id="operationObjective">현장 자원을 회수하십시오.</p>
+          <div class="operation-progress"><i id="operationProgress"></i></div>
+          <small id="operationCount">0 / 8</small>
+        </section>
+        <section class="boss-hud hidden" id="bossHud" aria-live="assertive">
+          <span>MOTHERBRAIN COMMAND UNIT</span><b>감시자 케르베로스</b>
+          <div><i id="bossHpBar"></i></div><small id="bossHpText">520 / 520</small>
+        </section>
+        <div class="weapon-dock glass" id="weaponDock" aria-label="무기 선택">
+          <button data-weapon="carbine" class="selected"><kbd>1</kbd><span><b>CARBINE</b><small>균형형</small></span></button>
+          <button data-weapon="scatter"><kbd>2</kbd><span><b>SCATTER</b><small>근접 돌파</small></span></button>
+          <button data-weapon="rail"><kbd>3</kbd><span><b>COIL</b><small>장거리 정밀</small></span></button>
+        </div>
         <div class="status-stack">
           <div class="bar-label"><span>생체 신호</span><span id="hpText">100%</span></div>
           <div class="bar"><i id="hpBar"></i></div>

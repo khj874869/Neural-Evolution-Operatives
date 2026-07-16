@@ -1,5 +1,5 @@
 import { Client, type Room } from '@colyseus/sdk';
-import type { GameInputMessage, GuestAuthResponse, PlayerProfile, ServerEventMessage } from '../../../packages/shared/src/protocol';
+import type { EnemyKind, GameInputMessage, GuestAuthResponse, PlayerProfile, ServerEventMessage } from '../../../packages/shared/src/protocol';
 import { gameEvents } from '../events';
 
 export interface NetworkSnapshot {
@@ -10,7 +10,7 @@ export interface NetworkSnapshot {
     hp: number; radiation: number; cargoScrap: number; cargoWater: number; cargoData: number;
     cargoCores: number; kills: number; lastSequence: number;
   }>;
-  enemies: Array<{ id: string; kind: 'drone' | 'raider' | 'stalker' | 'breaker'; x: number; y: number; hp: number }>;
+  enemies: Array<{ id: string; kind: EnemyKind; x: number; y: number; hp: number }>;
   resources: Array<{ id: string; kind: 'scrap' | 'water' | 'data' | 'cores'; x: number; y: number; value: number }>;
 }
 
@@ -46,8 +46,10 @@ export class GameServerClient {
         if (event.type === 'extraction') {
           gameEvents.emit('sfx', 'extract');
           gameEvents.emit('haptic', 'success');
+          gameEvents.emit('server-extraction', event.payload ?? {});
           void this.refreshProfile();
         }
+        if (event.type === 'mission' && event.payload?.bossDefeated) gameEvents.emit('boss-defeated');
       });
       this.room.onLeave(() => {
         this.connected = false;

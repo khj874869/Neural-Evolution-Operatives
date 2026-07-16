@@ -70,6 +70,23 @@ export class BootScene extends Phaser.Scene {
     graphics.generateTexture('enemy-breaker', 56, 56);
     graphics.clear();
 
+    // Warden boss: a wide command chassis with four siege limbs and a volatile neural core.
+    graphics.fillStyle(0x000000, 0.42).fillEllipse(48, 63, 82, 36);
+    graphics.lineStyle(9, 0xffffff, 0.88)
+      .lineBetween(26, 33, 7, 14).lineBetween(70, 33, 89, 14)
+      .lineBetween(26, 60, 5, 82).lineBetween(70, 60, 91, 82);
+    graphics.fillStyle(0xffffff)
+      .fillRoundedRect(4, 8, 22, 17, 6).fillRoundedRect(70, 8, 22, 17, 6)
+      .fillRoundedRect(2, 73, 25, 17, 6).fillRoundedRect(69, 73, 25, 17, 6);
+    graphics.fillStyle(0xffffff).fillRoundedRect(19, 22, 58, 52, 13);
+    graphics.fillStyle(0x07100e).fillRoundedRect(28, 31, 40, 34, 9);
+    graphics.lineStyle(4, 0xffffff, 0.72).strokeCircle(48, 48, 29).strokeCircle(48, 48, 20);
+    graphics.fillStyle(0xffffff).fillCircle(48, 48, 12);
+    graphics.fillStyle(0x07100e).fillCircle(48, 48, 5);
+    graphics.fillStyle(0xffffff).fillTriangle(44, 5, 52, 5, 48, 22);
+    graphics.generateTexture('enemy-warden', 96, 96);
+    graphics.clear();
+
     graphics.fillStyle(0xffffff).fillRoundedRect(0, 2, 16, 4, 2);
     graphics.fillTriangle(16, 0, 24, 4, 16, 8);
     graphics.generateTexture('bullet', 24, 8);

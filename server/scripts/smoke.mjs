@@ -19,7 +19,7 @@ const snapshot = await new Promise((resolve, reject) => {
     clearTimeout(timeout);
     resolve({ players: state.players.size, enemies: state.enemies.size, resources: state.resources.size });
   });
-  room.send('input', { sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: true, extract: false });
+  room.send('input', { sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'carbine' });
 });
 
 console.log(JSON.stringify({ status: 'ok', roomId: room.roomId, ...snapshot }));

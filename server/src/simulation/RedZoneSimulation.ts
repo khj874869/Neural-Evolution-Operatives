@@ -1,5 +1,6 @@
 import type { EnemyKind, GameInputMessage, ResourceKind, ResourceWallet } from '../../../packages/shared/src/protocol.js';
 import { calculateSquadBonuses, type SquadBonuses } from '../../../packages/shared/src/squad.js';
+import { isWeaponId, projectileAngles, WEAPON_SPECS } from '../../../packages/shared/src/combat.js';
 
 export const WORLD_SIZE = 2400;
 export const EXTRACTION_POINT = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
@@ -39,6 +40,7 @@ export interface SimResource {
 
 export type SimulationEvent =
   | { type: 'feed'; playerSessionId?: string; message: string }
+  | { type: 'boss-defeated'; playerSessionId: string; message: string }
   | { type: 'extraction'; playerSessionId: string; playerId: string; cargo: ResourceWallet; extractionNumber: number }
   | { type: 'death'; playerSessionId: string; message: string };
 
@@ -49,6 +51,7 @@ interface InternalPlayer extends SimPlayer {
   shots: number;
   hits: number;
   extractionNumber: number;
+  salvageCollected: number;
 }
 
 const ENEMY_STATS: Record<EnemyKind, { hp: number; speed: number; damage: number }> = {
@@ -56,9 +59,12 @@ const ENEMY_STATS: Record<EnemyKind, { hp: number; speed: number; damage: number
   raider: { hp: 38, speed: 76, damage: 10 },
   stalker: { hp: 28, speed: 138, damage: 13 },
   breaker: { hp: 92, speed: 48, damage: 19 },
+  warden: { hp: 520, speed: 46, damage: 24 },
 };
 
-const EMPTY_INPUT: GameInputMessage = { sequence: 0, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false };
+const EMPTY_INPUT: GameInputMessage = {
+  sequence: 0, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false, weapon: 'carbine',
+};
 
 export class RedZoneSimulation {
   readonly players = new Map<string, InternalPlayer>();
@@ -70,6 +76,7 @@ export class RedZoneSimulation {
   private stormElapsedMs = 0;
   private nextEntityId = 1;
   private readonly events: SimulationEvent[] = [];
+  private bossSpawned = false;
 
   constructor(private readonly random: () => number = Math.random) {
     for (let index = 0; index < 18; index += 1) this.spawnResourceCache();
@@ -97,6 +104,7 @@ export class RedZoneSimulation {
       shots: 0,
       hits: 0,
       extractionNumber: 0,
+      salvageCollected: 0,
     };
     this.players.set(sessionId, player);
     if (this.enemies.size === 0) this.spawnWave(4);
@@ -130,6 +138,7 @@ export class RedZoneSimulation {
       aimAngle: normalizeAngle(input.aimAngle),
       fire: Boolean(input.fire),
       extract: Boolean(input.extract),
+      weapon: isWeaponId(input.weapon) ? input.weapon : 'carbine',
     };
     player.lastSequence = input.sequence;
     return true;
@@ -143,6 +152,12 @@ export class RedZoneSimulation {
     this.updateStorm();
     for (const player of this.players.values()) this.updatePlayer(player, safeDelta);
     for (const enemy of this.enemies.values()) this.updateEnemy(enemy, safeDelta);
+    if (!this.bossSpawned && [...this.players.values()].some((player) => (
+      player.kills >= 10 && Math.max(
+        player.salvageCollected,
+        Object.values(player.cargo).reduce((sum, value) => sum + value, 0),
+      ) >= 8
+    ))) this.spawnBoss();
     if (this.players.size && this.waveElapsedMs >= 12_000) {
       this.waveElapsedMs = 0;
       const pressure = Math.min(10, 3 + Math.floor(this.elapsedMs / 45_000));
@@ -172,7 +187,8 @@ export class RedZoneSimulation {
     if (player.bonuses.regenPerSecond > 0 && player.hp > 0) {
       player.hp = Math.min(100, player.hp + player.bonuses.regenPerSecond * deltaMs / 1000);
     }
-    if (player.input.fire && this.elapsedMs - player.lastShotAtMs >= 180 * player.bonuses.fireCooldownMultiplier) this.fire(player);
+    const weapon = WEAPON_SPECS[player.input.weapon];
+    if (player.input.fire && this.elapsedMs - player.lastShotAtMs >= weapon.cooldownMs * player.bonuses.fireCooldownMultiplier) this.fire(player);
     this.collectNearbyResources(player);
     if (player.input.extract) this.tryExtract(player);
     if (player.hp <= 0) this.respawn(player);
@@ -180,21 +196,25 @@ export class RedZoneSimulation {
 
   private fire(player: InternalPlayer): void {
     player.lastShotAtMs = this.elapsedMs;
-    player.shots += 1;
-    let target: SimEnemy | undefined;
-    let targetDistance = 650;
-    for (const enemy of this.enemies.values()) {
-      const distance = Math.hypot(enemy.x - player.x, enemy.y - player.y);
-      if (distance >= targetDistance) continue;
-      const angle = Math.atan2(enemy.y - player.y, enemy.x - player.x);
-      if (Math.abs(normalizeAngle(angle - player.aimAngle)) > 0.19) continue;
-      target = enemy;
-      targetDistance = distance;
+    const weapon = WEAPON_SPECS[player.input.weapon];
+    const angles = projectileAngles(player.aimAngle, player.input.weapon);
+    player.shots += angles.length;
+    for (const shotAngle of angles) {
+      let target: SimEnemy | undefined;
+      let targetDistance = weapon.range;
+      for (const enemy of this.enemies.values()) {
+        const distance = Math.hypot(enemy.x - player.x, enemy.y - player.y);
+        if (distance >= targetDistance) continue;
+        const angle = Math.atan2(enemy.y - player.y, enemy.x - player.x);
+        if (Math.abs(normalizeAngle(angle - shotAngle)) > 0.16) continue;
+        target = enemy;
+        targetDistance = distance;
+      }
+      if (!target) continue;
+      player.hits += 1;
+      target.hp -= weapon.damage * player.bonuses.damageMultiplier;
+      if (target.hp <= 0) this.defeatEnemy(player, target);
     }
-    if (!target) return;
-    player.hits += 1;
-    target.hp -= 19 * player.bonuses.damageMultiplier;
-    if (target.hp <= 0) this.defeatEnemy(player, target);
   }
 
   private updateEnemy(enemy: SimEnemy, deltaMs: number): void {
@@ -204,16 +224,18 @@ export class RedZoneSimulation {
     const dx = target.x - enemy.x;
     const dy = target.y - enemy.y;
     const distance = Math.hypot(dx, dy);
-    if (distance > 30) {
+    const attackRange = enemy.kind === 'warden' ? 125 : 30;
+    if (distance > attackRange) {
       let angle = Math.atan2(dy, dx);
       if (enemy.kind === 'stalker') angle += Math.sin(this.elapsedMs * 0.004 + enemy.x) * 0.9;
-      enemy.x += Math.cos(angle) * stats.speed * deltaMs / 1000;
-      enemy.y += Math.sin(angle) * stats.speed * deltaMs / 1000;
+      const enraged = enemy.kind === 'warden' && enemy.hp < ENEMY_STATS.warden.hp * 0.5 ? 1.35 : 1;
+      enemy.x += Math.cos(angle) * stats.speed * enraged * deltaMs / 1000;
+      enemy.y += Math.sin(angle) * stats.speed * enraged * deltaMs / 1000;
     } else {
       enemy.attackCooldownMs -= deltaMs;
       if (enemy.attackCooldownMs <= 0) {
         target.hp -= stats.damage * target.bonuses.damageTakenMultiplier;
-        enemy.attackCooldownMs = 820;
+        enemy.attackCooldownMs = enemy.kind === 'warden' ? 1_350 : 820;
       }
     }
   }
@@ -221,6 +243,17 @@ export class RedZoneSimulation {
   private defeatEnemy(player: InternalPlayer, enemy: SimEnemy): void {
     this.enemies.delete(enemy.id);
     player.kills += 1;
+    if (enemy.kind === 'warden') {
+      const coreId = `resource-${this.nextEntityId++}`;
+      const dataId = `resource-${this.nextEntityId++}`;
+      this.resources.set(coreId, { id: coreId, kind: 'cores', x: enemy.x - 14, y: enemy.y, value: 2 });
+      this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x + 14, y: enemy.y, value: 18 });
+      this.events.push({
+        type: 'boss-defeated', playerSessionId: player.id,
+        message: '감시자 케르베로스 파괴 // 뉴럴 코어를 확보하고 즉시 추출하십시오.',
+      });
+      return;
+    }
     const kind: ResourceKind = this.random() < 0.22 ? (this.random() < 0.5 ? 'water' : 'data') : 'scrap';
     const resourceId = `resource-${this.nextEntityId++}`;
     this.resources.set(resourceId, {
@@ -236,6 +269,7 @@ export class RedZoneSimulation {
     for (const resource of this.resources.values()) {
       if (Math.hypot(resource.x - player.x, resource.y - player.y) > player.bonuses.pickupRadius) continue;
       player.cargo[resource.kind] += resource.value;
+      player.salvageCollected += resource.value;
       this.resources.delete(resource.id);
     }
   }
@@ -290,6 +324,18 @@ export class RedZoneSimulation {
         attackCooldownMs: 0,
       });
     }
+  }
+
+  private spawnBoss(): void {
+    const player = [...this.players.values()][0];
+    if (!player) return;
+    this.bossSpawned = true;
+    const id = `enemy-${this.nextEntityId++}`;
+    this.enemies.set(id, {
+      id, kind: 'warden', x: clamp(player.x + 560, 80, WORLD_SIZE - 80),
+      y: clamp(player.y - 220, 80, WORLD_SIZE - 80), hp: ENEMY_STATS.warden.hp, attackCooldownMs: 900,
+    });
+    this.events.push({ type: 'feed', message: '경고: 마더브레인 중장 지휘 개체 「케르베로스」가 전장에 진입합니다.' });
   }
 
   private spawnResourceCache(): void {

@@ -6,6 +6,8 @@ import { generateMission } from '../src/game/systems/MissionGenerator';
 import { parseTacticalCommand } from '../src/game/systems/TacticalCommand';
 import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/src/squad';
 import { DEFAULT_SETTINGS, sanitizeSettings } from '../src/game/settings';
+import { projectileAngles, WEAPON_SPECS, weaponFromSlot } from '../packages/shared/src/combat';
+import { evaluateOperationZero } from '../src/game/systems/OperationZero';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -67,5 +69,25 @@ describe('player settings', () => {
       reducedMotion: true,
     });
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
+  });
+});
+
+describe('weapon loadout', () => {
+  it('maps three slots and creates a deterministic scatter pattern', () => {
+    expect(weaponFromSlot(3)).toBe('rail');
+    expect(WEAPON_SPECS.rail.range).toBeGreaterThan(WEAPON_SPECS.carbine.range);
+    const angles = projectileAngles(0, 'scatter');
+    expect(angles).toHaveLength(5);
+    expect(angles[0]).toBeCloseTo(-angles[4]);
+  });
+});
+
+describe('operation zero progression', () => {
+  it('gates the boss and extraction into a complete first-session arc', () => {
+    expect(evaluateOperationZero({ collected: 0, kills: 0, bossDefeated: false, extracted: false }).stage).toBe('SCAVENGE');
+    expect(evaluateOperationZero({ collected: 8, kills: 4, bossDefeated: false, extracted: false }).stage).toBe('ELIMINATE');
+    expect(evaluateOperationZero({ collected: 8, kills: 10, bossDefeated: false, extracted: false }).stage).toBe('WARDEN');
+    expect(evaluateOperationZero({ collected: 8, kills: 11, bossDefeated: true, extracted: false }).stage).toBe('EXTRACT');
+    expect(evaluateOperationZero({ collected: 8, kills: 11, bossDefeated: true, extracted: true }).stage).toBe('COMPLETE');
   });
 });

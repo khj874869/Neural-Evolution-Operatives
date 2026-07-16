@@ -4,21 +4,25 @@ import { gameEvents, type MobileInputState } from '../events';
 import { GameServerClient, type NetworkSnapshot } from '../network/GameServerClient';
 import { GameState, type Resources } from '../state/GameState';
 import type { PlayerSettings } from '../settings';
-import { AdaptiveDirector, freshTelemetry, type CombatTelemetry, type EnemyArchetype } from '../systems/AdaptiveDirector';
+import { AdaptiveDirector, freshTelemetry, type CombatTelemetry } from '../systems/AdaptiveDirector';
 import { generateMission, type Mission } from '../systems/MissionGenerator';
+import { evaluateOperationZero, type OperationStage, type OperationStatus } from '../systems/OperationZero';
 import { createPersonaReply } from '../systems/PersonaEngine';
 import { parseTacticalCommand, type TacticalOrder } from '../systems/TacticalCommand';
+import { isWeaponId, projectileAngles, WEAPON_SPECS, weaponFromSlot, type WeaponId } from '../../../packages/shared/src/combat';
+import type { EnemyKind } from '../../../packages/shared/src/protocol';
 
-type EnemySprite = Phaser.Physics.Arcade.Sprite & { archetype?: EnemyArchetype };
+type EnemySprite = Phaser.Physics.Arcade.Sprite & { archetype?: EnemyKind };
 type ResourceSprite = Phaser.Physics.Arcade.Sprite & { resourceKind?: keyof Resources; value?: number };
 
 const WORLD_SIZE = 2400;
 const EXTRACTION = new Phaser.Math.Vector2(WORLD_SIZE / 2, WORLD_SIZE / 2);
-const ENEMY_STATS: Record<EnemyArchetype, { texture: string; tint: number; hp: number; speed: number; damage: number; scale: number }> = {
+const ENEMY_STATS: Record<EnemyKind, { texture: string; tint: number; hp: number; speed: number; damage: number; scale: number }> = {
   drone: { texture: 'enemy-drone', tint: 0xd8df74, hp: 22, speed: 115, damage: 7, scale: 0.92 },
   raider: { texture: 'enemy-raider', tint: 0xe67d62, hp: 38, speed: 76, damage: 10, scale: 0.95 },
   stalker: { texture: 'enemy-stalker', tint: 0xb47cff, hp: 28, speed: 138, damage: 13, scale: 0.94 },
   breaker: { texture: 'enemy-breaker', tint: 0xff5147, hp: 92, speed: 48, damage: 19, scale: 1.08 },
+  warden: { texture: 'enemy-warden', tint: 0xff426f, hp: 520, speed: 46, damage: 24, scale: 1.08 },
 };
 const RESOURCE_TEXTURES: Record<keyof Resources, string> = {
   scrap: 'resource-scrap', water: 'resource-water', data: 'resource-data', cores: 'resource-cores',
@@ -32,7 +36,7 @@ export class WorldScene extends Phaser.Scene {
   private bullets!: Phaser.Physics.Arcade.Group;
   private resources!: Phaser.Physics.Arcade.Group;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private keys!: Record<'W' | 'A' | 'S' | 'D' | 'E', Phaser.Input.Keyboard.Key>;
+  private keys!: Record<'W' | 'A' | 'S' | 'D' | 'E' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
   private director = new AdaptiveDirector();
   private telemetry: CombatTelemetry = freshTelemetry();
   private mission!: Mission;
@@ -54,6 +58,16 @@ export class WorldScene extends Phaser.Scene {
   private networkSequence = 0;
   private lastNetworkInputAt = 0;
   private reducedMotion = false;
+  private currentWeapon: WeaponId = 'carbine';
+  private operationCollected = 0;
+  private operationBossSpawned = false;
+  private operationBossDefeated = false;
+  private operationExtracted = false;
+  private operationComplete = false;
+  private operationStage?: OperationStage;
+  private operationStatus: OperationStatus = evaluateOperationZero({ collected: 0, kills: 0, bossDefeated: false, extracted: false });
+  private lastNetworkCargo = 0;
+  private bossAbilityAt = 0;
   private readonly serverEnemies = new Map<string, EnemySprite>();
   private readonly serverResources = new Map<string, ResourceSprite>();
 
@@ -91,12 +105,18 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('resume-world', this.resumeWorld, this);
     gameEvents.on('squad-changed', this.spawnCompanions, this);
     gameEvents.on('settings-changed', this.handleSettingsChanged, this);
+    gameEvents.on('weapon-select', this.selectWeapon, this);
+    gameEvents.on('boss-defeated', this.handleBossDefeated, this);
+    gameEvents.on('server-extraction', this.handleServerExtraction, this);
     gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
       gameEvents.off('squad-changed', this.spawnCompanions, this);
       gameEvents.off('settings-changed', this.handleSettingsChanged, this);
+      gameEvents.off('weapon-select', this.selectWeapon, this);
+      gameEvents.off('boss-defeated', this.handleBossDefeated, this);
+      gameEvents.off('server-extraction', this.handleServerExtraction, this);
       gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
       this.scale.off('resize', this.handleResize, this);
     });
@@ -104,6 +124,8 @@ export class WorldScene extends Phaser.Scene {
     this.emitFeed(`작전 ${this.mission.codename}: ${this.mission.description}`);
     this.emitFeed('WASD/방향키 이동 · 마우스 조준/사격 · 중앙 추출 지점에서 E');
     this.startWave(0);
+    this.selectWeapon('carbine');
+    this.updateOperation();
     this.updateHud();
   }
 
@@ -115,6 +137,7 @@ export class WorldScene extends Phaser.Scene {
     this.updateDirector(time);
     this.updateStorm(time, delta);
     this.checkExtraction();
+    this.updateOperation();
     this.updateHud();
   }
 
@@ -196,7 +219,7 @@ export class WorldScene extends Phaser.Scene {
       this.impactBurst(enemy.x, enemy.y, ENEMY_STATS[enemy.archetype ?? 'raider'].tint, 4);
       gameEvents.emit('sfx', 'hit');
       if (this.networkConnected) return;
-      const damage = bullet.getData('companion') ? 14 : 19;
+      const damage = (bullet.getData('damage') as number | undefined) ?? (bullet.getData('companion') ? 14 : 19);
       enemy.setData('hp', (enemy.getData('hp') as number) - damage);
       this.telemetry.hits += 1;
       enemy.setTintFill(0xffffff);
@@ -210,6 +233,7 @@ export class WorldScene extends Phaser.Scene {
       const kind = resource.resourceKind ?? 'scrap';
       const value = resource.value ?? 1;
       this.fieldCargo[kind] += value;
+      this.operationCollected += value;
       resource.disableBody(true, true);
       this.impactBurst(resource.x, resource.y, 0xffffff, 6);
       gameEvents.emit('sfx', 'pickup');
@@ -221,7 +245,16 @@ export class WorldScene extends Phaser.Scene {
   private setupInput(): void {
     if (!this.input.keyboard) throw new Error('Keyboard input unavailable');
     this.cursors = this.input.keyboard.createCursorKeys();
-    this.keys = this.input.keyboard.addKeys('W,A,S,D,E') as Record<'W' | 'A' | 'S' | 'D' | 'E', Phaser.Input.Keyboard.Key>;
+    this.keys = this.input.keyboard.addKeys({
+      W: Phaser.Input.Keyboard.KeyCodes.W,
+      A: Phaser.Input.Keyboard.KeyCodes.A,
+      S: Phaser.Input.Keyboard.KeyCodes.S,
+      D: Phaser.Input.Keyboard.KeyCodes.D,
+      E: Phaser.Input.Keyboard.KeyCodes.E,
+      ONE: Phaser.Input.Keyboard.KeyCodes.ONE,
+      TWO: Phaser.Input.Keyboard.KeyCodes.TWO,
+      THREE: Phaser.Input.Keyboard.KeyCodes.THREE,
+    }) as Record<'W' | 'A' | 'S' | 'D' | 'E' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
   }
 
   private updatePlayer(time: number, delta: number): void {
@@ -244,9 +277,13 @@ export class WorldScene extends Phaser.Scene {
     const pointer = this.input.activePointer;
     const worldPoint = pointer.positionToCamera(this.cameras.main) as Phaser.Math.Vector2;
     if (worldPoint) this.player.setRotation(Phaser.Math.Angle.Between(this.player.x, this.player.y, worldPoint.x, worldPoint.y) + Math.PI / 2);
-    if ((pointer.isDown || mobile.fire) && time - this.lastShotAt > 180) {
-      const target = mobile.fire ? this.findNearestEnemy(this.player.x, this.player.y) : undefined;
-      this.fireBullet(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y, false);
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectWeapon(weaponFromSlot(1) ?? 'carbine');
+    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) this.selectWeapon(weaponFromSlot(2) ?? 'scatter');
+    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) this.selectWeapon(weaponFromSlot(3) ?? 'rail');
+    const weapon = WEAPON_SPECS[this.currentWeapon];
+    if ((pointer.isDown || mobile.fire) && time - this.lastShotAt > weapon.cooldownMs) {
+      const target = mobile.fire ? this.findNearestEnemy(this.player.x, this.player.y, weapon.range) : undefined;
+      this.firePlayerWeapon(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y);
       this.lastShotAt = time;
     }
     if (this.networkConnected && time - this.lastNetworkInputAt >= 50) {
@@ -259,6 +296,7 @@ export class WorldScene extends Phaser.Scene {
         aimAngle: this.player.rotation - Math.PI / 2,
         fire: pointer.isDown || mobile.fire,
         extract: Phaser.Input.Keyboard.JustDown(this.keys.E) || touchExtract,
+        weapon: this.currentWeapon,
       });
       this.lastNetworkInputAt = time;
     }
@@ -304,17 +342,23 @@ export class WorldScene extends Phaser.Scene {
       let target: Phaser.Physics.Arcade.Sprite = this.player;
       if (this.order === 'DRAW_AGGRO' && this.companions[0]) target = this.companions[0];
       const distance = Phaser.Math.Distance.Between(enemy.x, enemy.y, target.x, target.y);
-      if (distance > 30) {
+      if (archetype === 'warden' && time > this.bossAbilityAt) {
+        this.bossAbilityAt = time + (enemy.getData('hp') < stats.hp * 0.5 ? 3_100 : 4_300);
+        this.triggerBossShockwave(enemy);
+      }
+      const attackRange = archetype === 'warden' ? 125 : 30;
+      if (distance > attackRange) {
         let offset = 0;
         if (archetype === 'stalker') offset = Math.sin(time * 0.004 + enemy.x) * 0.9;
         const angle = Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y) + offset;
-        enemy.setVelocity(Math.cos(angle) * stats.speed, Math.sin(angle) * stats.speed);
+        const enraged = archetype === 'warden' && enemy.getData('hp') < stats.hp * 0.5 ? 1.35 : 1;
+        enemy.setVelocity(Math.cos(angle) * stats.speed * enraged, Math.sin(angle) * stats.speed * enraged);
       } else if (time > (enemy.getData('attackAt') as number)) {
-        enemy.setData('attackAt', time + 820);
+        enemy.setData('attackAt', time + (archetype === 'warden' ? 1_350 : 820));
         if (target === this.player) this.damagePlayer(stats.damage);
       }
       enemy.setRotation(Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y));
-      if (distance > 1250) enemy.disableBody(true, true);
+      if (distance > 1250 && archetype !== 'warden') enemy.disableBody(true, true);
       return true;
     });
     if (this.player.body?.velocity.lengthSq() === 0) this.telemetry.stationarySeconds += delta / 1000;
@@ -351,14 +395,67 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
+  private triggerBossShockwave(enemy: EnemySprite): void {
+    const targetX = this.player.x;
+    const targetY = this.player.y;
+    const warning = this.add.circle(targetX, targetY, 92, 0xff315d, 0.055)
+      .setStrokeStyle(3, 0xff526f, 0.95).setDepth(7);
+    this.tweens.add({
+      targets: warning,
+      scaleX: 0.78,
+      scaleY: 0.78,
+      alpha: 0.9,
+      yoyo: true,
+      repeat: this.reducedMotion ? 0 : 2,
+      duration: 170,
+    });
+    gameEvents.emit('sfx', 'boss-ability');
+    this.time.delayedCall(this.reducedMotion ? 520 : 760, () => {
+      if (!warning.active) return;
+      const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, targetX, targetY);
+      warning.setFillStyle(0xff315d, 0.22).setScale(1.15);
+      this.impactBurst(targetX, targetY, 0xff426f, 22);
+      if (distance < 92 && enemy.active && this.player.active) this.damagePlayer(22);
+      this.tweens.add({ targets: warning, alpha: 0, scaleX: 1.5, scaleY: 1.5, duration: 180, onComplete: () => warning.destroy() });
+    });
+  }
+
   private startWave(delay: number): void {
     this.waveAt = delay;
     this.stormAt = 31_000;
   }
 
-  private spawnEnemy(archetype: EnemyArchetype): void {
+  private updateOperation(): void {
+    this.operationStatus = evaluateOperationZero({
+      collected: this.operationCollected,
+      kills: this.missionKills,
+      bossDefeated: this.operationBossDefeated,
+      extracted: this.operationExtracted,
+    });
+    if (this.operationStage === this.operationStatus.stage) return;
+    this.operationStage = this.operationStatus.stage;
+    gameEvents.emit('operation-update', this.operationStatus);
+    this.emitFeed(`${this.operationStatus.code}: ${this.operationStatus.objective}`, this.operationStatus.stage === 'WARDEN');
+    if (this.operationStatus.stage === 'WARDEN' && !this.operationBossSpawned && !this.networkConnected) {
+      this.operationBossSpawned = true;
+      this.spawnEnemy('warden');
+    }
+  }
+
+  private selectWeapon(value: unknown): void {
+    if (!isWeaponId(value) || this.currentWeapon === value && this.operationStage !== undefined) return;
+    this.currentWeapon = value;
+    gameEvents.emit('weapon-selected', value, WEAPON_SPECS[value]);
+    if (this.operationStage !== undefined) {
+      this.emitFeed(`무장 전환 // ${WEAPON_SPECS[value].name} · ${WEAPON_SPECS[value].description}`);
+      gameEvents.emit('sfx', 'weapon');
+      gameEvents.emit('haptic', 'light');
+    }
+  }
+
+  private spawnEnemy(archetype: EnemyKind): void {
     const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-    const distance = Phaser.Math.Between(430, 680);
+    const distance = archetype === 'warden' ? 560 : Phaser.Math.Between(430, 680);
     const x = Phaser.Math.Clamp(this.player.x + Math.cos(angle) * distance, 24, WORLD_SIZE - 24);
     const y = Phaser.Math.Clamp(this.player.y + Math.sin(angle) * distance, 24, WORLD_SIZE - 24);
     const stats = ENEMY_STATS[archetype];
@@ -368,26 +465,64 @@ export class WorldScene extends Phaser.Scene {
       .setTint(stats.tint).setScale(stats.scale).setDepth(3).setAlpha(0);
     enemy.archetype = archetype;
     enemy.setData('hp', stats.hp).setData('attackAt', 0)
-      .setCircle(archetype === 'breaker' ? 20 : 12, archetype === 'breaker' ? 8 : 4, archetype === 'breaker' ? 8 : 4);
+      .setCircle(archetype === 'warden' ? 34 : archetype === 'breaker' ? 20 : 12,
+        archetype === 'warden' ? 14 : archetype === 'breaker' ? 8 : 4,
+        archetype === 'warden' ? 14 : archetype === 'breaker' ? 8 : 4);
     this.tweens.add({ targets: enemy, alpha: 1, duration: this.reducedMotion ? 60 : 260 });
-    this.impactBurst(x, y, stats.tint, archetype === 'breaker' ? 10 : 4);
+    this.impactBurst(x, y, stats.tint, archetype === 'warden' ? 24 : archetype === 'breaker' ? 10 : 4);
+    if (archetype === 'warden') {
+      this.cameras.main.flash(300, 255, 34, 74, false);
+      gameEvents.emit('sfx', 'boss');
+      gameEvents.emit('haptic', 'warning');
+    }
   }
 
-  private fireBullet(fromX: number, fromY: number, toX: number, toY: number, companion: boolean): void {
+  private firePlayerWeapon(fromX: number, fromY: number, toX: number, toY: number): void {
+    const spec = WEAPON_SPECS[this.currentWeapon];
+    const aimAngle = Phaser.Math.Angle.Between(fromX, fromY, toX, toY);
+    projectileAngles(aimAngle, this.currentWeapon).forEach((angle, index) => {
+      this.fireBullet(
+        fromX, fromY,
+        fromX + Math.cos(angle) * spec.range,
+        fromY + Math.sin(angle) * spec.range,
+        false,
+        spec.damage,
+        spec.projectileSpeed,
+        spec.tint,
+        index === 0,
+        Math.ceil(spec.range / spec.projectileSpeed * 1_000) + 120,
+      );
+    });
+  }
+
+  private fireBullet(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    companion: boolean,
+    damage = 14,
+    speed = 620,
+    tint = 0x6ee7d1,
+    feedback = true,
+    lifetime = 900,
+  ): void {
     const bullet = this.bullets.get(fromX, fromY, 'bullet') as Phaser.Physics.Arcade.Sprite | null;
     if (!bullet) return;
     const angle = Phaser.Math.Angle.Between(fromX, fromY, toX, toY);
     bullet.enableBody(true, fromX, fromY, true, true)
-      .setTint(companion ? 0x6ee7d1 : 0xc9f456).setDepth(4).setData('companion', companion)
-      .setRotation(angle).setScale(companion ? 0.72 : 0.92);
+      .setTint(tint).setDepth(4).setData('companion', companion).setData('damage', damage)
+      .setRotation(angle).setScale(companion ? 0.72 : this.currentWeapon === 'rail' ? 1.18 : 0.92);
     const muzzle = this.add.image(fromX + Math.cos(angle) * 18, fromY + Math.sin(angle) * 18, 'muzzle')
-      .setTint(companion ? 0x6ee7d1 : 0xc9f456).setRotation(angle).setDepth(5).setBlendMode(Phaser.BlendModes.ADD);
+      .setTint(tint).setRotation(angle).setDepth(5).setBlendMode(Phaser.BlendModes.ADD);
     this.tweens.add({ targets: muzzle, alpha: 0, scaleX: 1.8, duration: 65, onComplete: () => muzzle.destroy() });
-    this.physics.moveTo(bullet, toX, toY, companion ? 620 : 760);
-    gameEvents.emit('sfx', companion ? 'companion-fire' : 'fire');
-    if (!companion) gameEvents.emit('haptic', 'shot');
+    this.physics.moveTo(bullet, toX, toY, speed);
+    if (feedback) {
+      gameEvents.emit('sfx', companion ? 'companion-fire' : 'fire');
+      if (!companion) gameEvents.emit('haptic', 'shot');
+    }
     if (!companion) this.telemetry.shots += 1;
-    this.time.delayedCall(900, () => bullet.active && bullet.disableBody(true, true));
+    this.time.delayedCall(lifetime, () => bullet.active && bullet.disableBody(true, true));
   }
 
   private defeatEnemy(enemy: EnemySprite): void {
@@ -396,12 +531,21 @@ export class WorldScene extends Phaser.Scene {
     const y = enemy.y;
     const tint = ENEMY_STATS[archetype].tint;
     enemy.disableBody(true, true);
-    this.impactBurst(x, y, tint, archetype === 'breaker' ? 18 : 10);
+    this.impactBurst(x, y, tint, archetype === 'warden' ? 34 : archetype === 'breaker' ? 18 : 10);
     gameEvents.emit('sfx', 'kill');
     gameEvents.emit('haptic', archetype === 'breaker' ? 'heavy' : 'light');
     this.missionKills += 1;
     this.telemetry.kills += 1;
     this.state.recordKill();
+    if (archetype === 'warden') {
+      this.operationBossDefeated = true;
+      this.spawnResource(x - 14, y, 'cores', 2);
+      this.spawnResource(x + 14, y, 'data', 18);
+      this.emitFeed('감시자 케르베로스 파괴 // 뉴럴 코어를 확보하고 추출하십시오.');
+      gameEvents.emit('sfx', 'boss-down');
+      gameEvents.emit('haptic', 'success');
+      return;
+    }
     const kind: keyof Resources = Math.random() < 0.28 ? this.mission.targetResource : 'scrap';
     this.spawnResource(x, y, kind, archetype === 'breaker' ? 8 : Phaser.Math.Between(1, 4));
     if (Math.random() < 0.035) this.spawnResource(x + 12, y, 'cores', 1);
@@ -457,8 +601,26 @@ export class WorldScene extends Phaser.Scene {
       } else {
         this.emitFeed(`화물 추출 완료 // 고철 ${cargo.scrap} · 식수 ${cargo.water} · 데이터 ${cargo.data}`);
       }
+      if (this.operationBossDefeated && !this.operationComplete) this.completeOperation(false);
       gameEvents.emit('state-changed');
     }
+  }
+
+  private completeOperation(online: boolean): void {
+    if (this.operationComplete) return;
+    this.operationComplete = true;
+    this.operationExtracted = true;
+    if (!online) this.state.addResources({ cores: 3, data: 12 });
+    this.updateOperation();
+    gameEvents.emit('operation-complete', {
+      kills: this.missionKills,
+      collected: this.operationCollected,
+      weapon: WEAPON_SPECS[this.currentWeapon].name,
+      online,
+      bonusCores: online ? 0 : 3,
+      bonusData: online ? 0 : 12,
+    });
+    gameEvents.emit('state-changed');
   }
 
   private handleTacticalCommand(input: string): void {
@@ -493,12 +655,18 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private updateHud(): void {
+    const boss = [...this.enemies.getChildren()].find((child) => (
+      (child as EnemySprite).active && (child as EnemySprite).archetype === 'warden'
+    )) as EnemySprite | undefined;
     gameEvents.emit('hud-update', {
       hp: this.hp,
       radiation: this.radiation,
       cargo: { ...this.fieldCargo },
       kills: this.missionKills,
       mission: this.mission,
+      operation: this.operationStatus,
+      weapon: this.currentWeapon,
+      boss: boss ? { hp: Number(boss.getData('hp') ?? 0), maxHp: ENEMY_STATS.warden.hp } : null,
     });
   }
 
@@ -542,11 +710,16 @@ export class WorldScene extends Phaser.Scene {
       this.hp = own.hp;
       this.radiation = own.radiation;
       this.missionKills = own.kills;
-      this.fieldCargo = {
+      const nextCargo = {
         scrap: own.cargoScrap, water: own.cargoWater, data: own.cargoData, cores: own.cargoCores,
       };
+      const nextCargoTotal = Object.values(nextCargo).reduce((sum, value) => sum + value, 0);
+      if (nextCargoTotal > this.lastNetworkCargo) this.operationCollected += nextCargoTotal - this.lastNetworkCargo;
+      this.lastNetworkCargo = nextCargoTotal;
+      this.fieldCargo = nextCargo;
       this.networkSequence = Math.max(this.networkSequence, own.lastSequence);
     }
+    if (snapshot.enemies.some((enemy) => enemy.kind === 'warden')) this.operationBossSpawned = true;
     this.syncNetworkEnemies(snapshot.enemies);
     this.syncNetworkResources(snapshot.resources);
     if (snapshot.stormActive && !this.stormActive) {
@@ -564,6 +737,7 @@ export class WorldScene extends Phaser.Scene {
       if (incoming.has(id)) continue;
       this.impactBurst(sprite.x, sprite.y, ENEMY_STATS[sprite.archetype ?? 'raider'].tint, 8);
       gameEvents.emit('sfx', 'kill');
+      if (sprite.archetype === 'warden') this.handleBossDefeated();
       sprite.disableBody(true, true);
       this.serverEnemies.delete(id);
     }
@@ -637,5 +811,18 @@ export class WorldScene extends Phaser.Scene {
 
   private handleSettingsChanged(settings: PlayerSettings): void {
     this.reducedMotion = settings.reducedMotion;
+  }
+
+  private handleBossDefeated(): void {
+    if (this.operationBossDefeated) return;
+    this.operationBossDefeated = true;
+    gameEvents.emit('sfx', 'boss-down');
+    gameEvents.emit('haptic', 'success');
+    this.updateOperation();
+  }
+
+  private handleServerExtraction(): void {
+    this.lastNetworkCargo = 0;
+    if (this.operationBossDefeated && !this.operationComplete) this.completeOperation(true);
   }
 }

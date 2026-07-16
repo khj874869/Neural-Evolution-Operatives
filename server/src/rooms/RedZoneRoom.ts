@@ -12,6 +12,7 @@ const inputSchema = z.object({
   aimAngle: z.number().finite().min(-Math.PI * 4).max(Math.PI * 4),
   fire: z.boolean(),
   extract: z.boolean(),
+  weapon: z.enum(['carbine', 'scatter', 'rail']),
 });
 const tacticalSchema = z.object({ text: z.string().trim().min(1).max(100) });
 
@@ -91,6 +92,10 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
       } else if (event.type === 'death') {
         this.clients.find((client) => client.sessionId === event.playerSessionId)?.send('server-event', {
           type: 'feed', message: event.message,
+        } satisfies ServerEventMessage);
+      } else if (event.type === 'boss-defeated') {
+        this.broadcast('server-event', {
+          type: 'mission', message: event.message, payload: { bossDefeated: true },
         } satisfies ServerEventMessage);
       } else {
         this.broadcast('server-event', { type: 'feed', message: event.message } satisfies ServerEventMessage);

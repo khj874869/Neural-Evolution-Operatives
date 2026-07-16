@@ -1,5 +1,7 @@
 export type ResourceKind = 'scrap' | 'water' | 'data' | 'cores';
-export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker';
+import type { WeaponId } from './combat.js';
+
+export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker' | 'warden';
 
 export interface ResourceWallet {
   scrap: number;
@@ -15,6 +17,7 @@ export interface GameInputMessage {
   aimAngle: number;
   fire: boolean;
   extract: boolean;
+  weapon: WeaponId;
 }
 
 export interface TacticalMessage {

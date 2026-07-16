@@ -10,6 +10,8 @@ import type { Mission } from './game/systems/MissionGenerator';
 import type { PlayerProfile } from '../packages/shared/src/protocol';
 import { describeSquadBonuses } from '../packages/shared/src/squad';
 import { SoundEngine, type GameSfx } from './game/systems/SoundEngine';
+import type { OperationStatus } from './game/systems/OperationZero';
+import { WEAPON_SPECS, type WeaponId } from '../packages/shared/src/combat';
 
 const state = new GameState();
 const mobileInput: MobileInputState = { up: false, down: false, left: false, right: false, fire: false };
@@ -37,13 +39,21 @@ const hpText = byId<HTMLSpanElement>('hpText');
 const hpBar = byId<HTMLElement>('hpBar');
 const radiationText = byId<HTMLSpanElement>('radiationText');
 const radiationBar = byId<HTMLElement>('radiationBar');
+const operationCode = byId<HTMLElement>('operationCode');
+const operationTitle = byId<HTMLElement>('operationTitle');
+const operationObjective = byId<HTMLElement>('operationObjective');
+const operationProgress = byId<HTMLElement>('operationProgress');
+const operationCount = byId<HTMLElement>('operationCount');
+const bossHud = byId<HTMLElement>('bossHud');
+const bossHpBar = byId<HTMLElement>('bossHpBar');
+const bossHpText = byId<HTMLElement>('bossHpText');
 const eventFeed = byId<HTMLDivElement>('eventFeed');
 const modalBackdrop = byId<HTMLDivElement>('modalBackdrop');
 const modalContent = byId<HTMLDivElement>('modalContent');
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
 const toast = byId<HTMLDivElement>('toast');
-let currentModal: 'shelter' | 'roster' | 'settings' | 'tutorial' | 'game-over' | null = null;
+let currentModal: 'shelter' | 'roster' | 'settings' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
 
@@ -58,8 +68,9 @@ const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>>
 const tutorialSteps = [
   { code: '01 // MOVE', icon: '⌖', title: '레드 존 이동', body: 'PC는 WASD 또는 방향키, 모바일은 왼쪽 방향 패드로 이동합니다. 멈춰 있으면 적응형 AI가 우회 병력을 투입합니다.' },
   { code: '02 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 쓰러뜨린 적에게서 자원이 떨어집니다.' },
-  { code: '03 // COMMAND', icon: '⌁', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.' },
-  { code: '04 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E를 누르세요. 모바일은 리프트 진입 시 자동 추출합니다. 사망하면 현장 화물을 모두 잃습니다.' },
+  { code: '03 // LOADOUT', icon: '⌁', title: '실시간 무장 전환', body: '카빈은 균형형, 파쇄포는 근거리 산탄, 코일건은 장거리 고화력 무장입니다. PC는 숫자 1·2·3, 모바일은 하단 무장 버튼으로 바꿉니다.' },
+  { code: '04 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.' },
+  { code: '05 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E를 누르세요. 모바일은 리프트 진입 시 자동 추출합니다. 사망하면 현장 화물을 모두 잃습니다.' },
 ] as const;
 
 function renderPersistentHud(): void {
@@ -169,7 +180,8 @@ function renderTutorial(step: number): void {
       <p>${tutorial.body}</p>
       <div class="tutorial-keys">${safeStep === 0 ? '<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>'
         : safeStep === 1 ? '<kbd>CLICK</kbd><kbd>FIRE</kbd>'
-          : safeStep === 2 ? '<kbd>TACTICAL://</kbd>' : '<kbd>E</kbd><kbd>AUTO</kbd>'}</div>
+          : safeStep === 2 ? '<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>'
+            : safeStep === 3 ? '<kbd>TACTICAL://</kbd>' : '<kbd>E</kbd><kbd>AUTO</kbd>'}</div>
       <div class="tutorial-actions">
         <button id="skipTutorial">건너뛰기</button>
         <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? '작전 투입' : '다음 단계'}</button>
@@ -354,6 +366,32 @@ function renderGameOver(cargo: Record<string, number>): void {
   modalContent.querySelector<HTMLButtonElement>('#retryButton')?.addEventListener('click', closeModal);
 }
 
+function renderOperationDebrief(result: {
+  kills: number; collected: number; weapon: string; online: boolean; bonusCores: number; bonusData: number;
+}): void {
+  currentModal = 'operation-complete';
+  pauseForModal();
+  modalContent.innerHTML = `
+    <section class="debrief">
+      <span class="eyebrow">OPERATION ZERO // MISSION COMPLETE</span>
+      <div class="debrief-mark">S</div>
+      <h2>첫 번째 생존자</h2>
+      <p>감시자 케르베로스가 파괴되고 쉘터로 향하는 안전 회랑이 열렸습니다.</p>
+      <div class="debrief-stats">
+        <div><span>제거</span><b>${result.kills}</b></div>
+        <div><span>회수</span><b>${result.collected}</b></div>
+        <div><span>주력 무장</span><b>${escapeHtml(result.weapon)}</b></div>
+        <div><span>판정</span><b>${result.online ? 'SERVER' : 'LOCAL'}</b></div>
+      </div>
+      <div class="debrief-reward"><span>작전 보너스</span><b>${result.online ? '보스 전리품 서버 확정' : `뉴럴 코어 +${result.bonusCores} · 데이터 +${result.bonusData}`}</b></div>
+      <button class="primary" id="finishOperation">쉘터로 귀환</button>
+    </section>`;
+  modalContent.querySelector<HTMLButtonElement>('#finishOperation')?.addEventListener('click', () => {
+    closeModal();
+    renderShelter();
+  });
+}
+
 commandForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const command = commandInput.value.trim();
@@ -394,6 +432,10 @@ const fireButton = byId<HTMLButtonElement>('fireButton');
 fireButton.addEventListener('pointerdown', () => { mobileInput.fire = true; });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach((name) => fireButton.addEventListener(name, () => { mobileInput.fire = false; }));
 
+document.querySelectorAll<HTMLButtonElement>('[data-weapon]').forEach((button) => {
+  button.addEventListener('click', () => gameEvents.emit('weapon-select', button.dataset.weapon));
+});
+
 gameEvents.on('feed', addFeed);
 gameEvents.on('sfx', (name: GameSfx) => sound.play(name));
 gameEvents.on('haptic', (kind: 'shot' | 'light' | 'heavy' | 'warning' | 'success') => {
@@ -414,6 +456,16 @@ gameEvents.on('operator-reply', (operator: ReturnType<typeof getOperator>, reply
 });
 gameEvents.on('state-changed', renderPersistentHud);
 gameEvents.on('game-over', renderGameOver);
+gameEvents.on('operation-complete', renderOperationDebrief);
+gameEvents.on('weapon-selected', (weapon: WeaponId) => {
+  document.querySelectorAll<HTMLButtonElement>('[data-weapon]').forEach((button) => {
+    const selected = button.dataset.weapon === weapon;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  });
+  const spec = WEAPON_SPECS[weapon];
+  showToast(`${spec.name} // ${spec.description}`);
+});
 gameEvents.on('network-profile', (profile: PlayerProfile) => {
   const previousSquad = state.snapshot().squad.join('|');
   state.applyServerProfile(profile);
@@ -434,12 +486,33 @@ document.addEventListener('visibilitychange', () => {
     game.loop.wake();
   }
 });
-gameEvents.on('hud-update', (hud: { hp: number; radiation: number; cargo: Record<string, number>; kills: number; mission: Mission }) => {
+gameEvents.on('hud-update', (hud: {
+  hp: number;
+  radiation: number;
+  cargo: Record<string, number>;
+  kills: number;
+  mission: Mission;
+  operation: OperationStatus;
+  weapon: WeaponId;
+  boss: { hp: number; maxHp: number } | null;
+}) => {
   hpText.textContent = `${Math.ceil(hud.hp)}%`;
   hpBar.style.width = `${hud.hp}%`;
   radiationText.textContent = hud.radiation > 75 ? '위험' : hud.radiation > 30 ? '상승' : '안정';
   radiationBar.style.width = `${hud.radiation}%`;
-  missionText.innerHTML = `<strong>${hud.mission.codename}</strong> · 제거 ${hud.kills}/${hud.mission.targetKills} · 현장 고철 ${hud.cargo.scrap ?? 0}`;
+  missionText.innerHTML = `<strong>${hud.operation.code}</strong> · ${hud.operation.title}`;
+  operationCode.textContent = hud.operation.code;
+  operationTitle.textContent = hud.operation.title;
+  operationObjective.textContent = hud.operation.objective;
+  operationProgress.style.width = `${Math.min(100, hud.operation.target <= 0 ? 0 : hud.operation.current / hud.operation.target * 100)}%`;
+  operationCount.textContent = hud.operation.stage === 'WARDEN' ? 'BOSS SIGNAL LOCKED'
+    : hud.operation.stage === 'EXTRACT' ? 'RETURN TO SHELTER LIFT'
+      : `${Math.min(hud.operation.current, hud.operation.target)} / ${hud.operation.target}`;
+  bossHud.classList.toggle('hidden', !hud.boss);
+  if (hud.boss) {
+    bossHpBar.style.width = `${Math.max(0, hud.boss.hp / hud.boss.maxHp * 100)}%`;
+    bossHpText.textContent = `${Math.ceil(hud.boss.hp)} / ${hud.boss.maxHp}`;
+  }
 });
 
 applySettings();

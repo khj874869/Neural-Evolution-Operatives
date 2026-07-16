@@ -38,7 +38,7 @@ describe('real game room transport', () => {
         clearTimeout(timeout);
         resolve({ players: state.players.size, enemies: state.enemies.size });
       });
-      room.send('input', { sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: true, extract: false });
+      room.send('input', { sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'carbine' });
     });
     expect(snapshot.players).toBe(1);
     expect(snapshot.enemies).toBeGreaterThan(0);

@@ -72,6 +72,30 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .event-feed div:first-child { color: #e1f9ec; }
 .event-feed .danger { color: #ff8078; }
 
+.operation-hud { position: fixed; z-index: 12; top: 82px; left: 50%; width: min(440px, 38vw); padding: 11px 14px; transform: translateX(-50%); pointer-events: none; }
+.operation-hud > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.operation-hud span { color: var(--lime); font: 9px 'Share Tech Mono'; letter-spacing: .12em; }
+.operation-hud b { color: #effbf5; font-size: 11px; }
+.operation-hud p { overflow: hidden; margin: 7px 0 8px; color: #82988f; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.operation-progress { height: 3px; overflow: hidden; background: #17251f; }
+.operation-progress i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 10px rgba(201,244,86,.4); transition: width .25s; }
+.operation-hud small { display: block; margin-top: 5px; color: #5f766d; font: 8px 'Share Tech Mono'; text-align: right; }
+
+.boss-hud { position: fixed; z-index: 13; top: 168px; left: 50%; width: min(520px, 56vw); padding: 12px 16px; transform: translateX(-50%); border: 1px solid rgba(255,66,111,.52); background: rgba(24,4,10,.86); text-align: center; box-shadow: 0 0 28px rgba(255,49,93,.12); pointer-events: none; }
+.boss-hud > span { display: block; color: #ff7a98; font: 8px 'Share Tech Mono'; letter-spacing: .2em; }
+.boss-hud > b { display: block; margin: 3px 0 8px; color: #fff; font: 16px 'Black Ops One'; letter-spacing: .08em; }
+.boss-hud > div { height: 7px; overflow: hidden; border: 1px solid rgba(255,255,255,.14); background: #16060a; transform: skew(-12deg); }
+.boss-hud i { display: block; width: 100%; height: 100%; background: linear-gradient(90deg, #ad183b, #ff426f); transition: width .15s; }
+.boss-hud small { display: block; margin-top: 5px; color: #ff94ac; font: 8px 'Share Tech Mono'; }
+
+.weapon-dock { position: fixed; z-index: 22; bottom: 82px; left: 50%; display: grid; grid-template-columns: repeat(3, minmax(108px, 1fr)); gap: 5px; width: min(410px, 44vw); padding: 6px; transform: translateX(-50%); }
+.weapon-dock button { display: grid; grid-template-columns: 24px 1fr; align-items: center; gap: 6px; min-width: 0; padding: 7px; border: 1px solid rgba(139,255,186,.12); color: #7f958c; background: #091310; text-align: left; }
+.weapon-dock button:hover, .weapon-dock button.selected { border-color: var(--lime); color: #e8fff1; background: rgba(201,244,86,.065); box-shadow: inset 0 -2px var(--lime); }
+.weapon-dock kbd { display: grid; place-items: center; width: 22px; height: 24px; border: 1px solid rgba(255,255,255,.14); color: var(--lime); background: #111e19; font: 9px 'Share Tech Mono'; }
+.weapon-dock span, .weapon-dock b, .weapon-dock small { display: block; min-width: 0; }
+.weapon-dock b { overflow: hidden; font: 9px 'Share Tech Mono'; text-overflow: ellipsis; }
+.weapon-dock small { margin-top: 2px; color: #52675f; font-size: 7px; }
+
 .command-dock { position: fixed; z-index: 20; inset: auto 0 0 0; height: 68px; display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-width: 1px 0 0; }
 .command-dock > button, #commandForm button { border: 1px solid var(--line); background: #0c1714; height: 40px; padding: 0 15px; color: #a8bcb4; font: 11px 'Share Tech Mono'; }
 .command-dock > button:hover, #commandForm button:hover { color: var(--lime); border-color: var(--lime); }
@@ -177,7 +201,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .settings-actions .primary { width: auto; border: 0; color: #07100d; background: var(--lime); }
 
 .tutorial-card { max-width: 680px; margin: 0 auto; padding: 16px 10px 4px; text-align: center; }
-.tutorial-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0 0 28px; }
+.tutorial-progress { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 0 0 28px; }
 .tutorial-progress i { height: 3px; background: #1d2e28; }
 .tutorial-progress i.active { background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 9px rgba(201,244,86,.25); }
 .tutorial-icon { display: grid; place-items: center; width: 110px; height: 110px; margin: 28px auto 18px; border: 1px solid rgba(201,244,86,.34); border-radius: 50%; color: var(--lime); background: radial-gradient(circle, rgba(201,244,86,.12), transparent 68%); box-shadow: 0 0 40px rgba(71,215,194,.08); font: 46px 'Black Ops One'; }
@@ -188,6 +212,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .tutorial-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; margin-top: 26px; }
 .tutorial-actions button { padding: 12px; border: 1px solid var(--line); color: #8ca198; background: #0b1713; font: 10px 'Share Tech Mono'; }
 .tutorial-actions .primary { border: 0; color: #07100d; background: var(--lime); }
+
+.debrief { max-width: 720px; margin: 0 auto; padding: 14px 8px 4px; text-align: center; }
+.debrief-mark { display: grid; place-items: center; width: 112px; height: 112px; margin: 26px auto 12px; border: 2px solid var(--lime); border-radius: 50%; color: var(--lime); background: radial-gradient(circle, rgba(201,244,86,.15), transparent 68%); box-shadow: 0 0 45px rgba(201,244,86,.12); font: 56px 'Black Ops One'; }
+.debrief h2 { font-size: 32px; }
+.debrief > p { color: #859c92; font-size: 12px; }
+.debrief-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin: 24px 0 12px; }
+.debrief-stats div { padding: 13px 8px; border: 1px solid var(--line); background: rgba(8,20,17,.72); }
+.debrief-stats span, .debrief-stats b { display: block; }
+.debrief-stats span { color: #60776e; font: 8px 'Share Tech Mono'; }
+.debrief-stats b { overflow: hidden; margin-top: 6px; color: #effbf5; font: 12px 'Share Tech Mono'; text-overflow: ellipsis; white-space: nowrap; }
+.debrief-reward { display: flex; justify-content: space-between; gap: 12px; margin: 10px 0 20px; padding: 12px; border: 1px solid rgba(255,215,106,.26); color: #ffd76a; background: rgba(255,215,106,.035); font: 10px 'Share Tech Mono'; }
 
 .toast { pointer-events: none; position: fixed; z-index: 200; left: 50%; top: 84px; transform: translate(-50%, -20px); opacity: 0; padding: 10px 16px; border: 1px solid var(--lime); background: #08110f; color: var(--lime); font: 11px 'Share Tech Mono'; transition: .25s; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
@@ -226,6 +261,12 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   .operator-showcase { grid-template-columns: minmax(180px, .8fr) 1.2fr; }
   .operator-tile-grid { max-height: none; }
   .tutorial-card { padding-inline: 0; }
+  .operation-hud { top: 65px; width: min(390px, 54vw); }
+  .operation-hud p { display: none; }
+  .boss-hud { top: 125px; width: min(450px, 64vw); }
+  .weapon-dock { bottom: 76px; width: min(390px, 48vw); grid-template-columns: repeat(3, 1fr); }
+  .weapon-dock button { grid-template-columns: 1fr; place-items: center; padding: 6px 3px; text-align: center; }
+  .weapon-dock kbd, .weapon-dock small { display: none; }
 }
 
 @media (max-width: 560px) {
@@ -238,4 +279,5 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   .recruit-panel button { width: 100%; }
   .settings-actions { flex-direction: column; }
   .settings-actions button { width: 100%; }
+  .debrief-stats { grid-template-columns: repeat(2, 1fr); }
 }
