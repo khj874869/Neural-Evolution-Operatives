@@ -4,13 +4,13 @@
 
 LLM이 게임 월드를 직접 조작하지 않습니다. 모델 출력은 구조화된 의도 후보이며, 서버의 정책·권한·쿨다운 검증을 통과한 명령만 게임 시뮬레이션에 전달됩니다. 실시간 전투는 로컬/서버 결정론 로직으로 계속 동작하므로 AI 제공자 장애가 전투를 중단시키지 않습니다.
 
-## 목표 구성
+## 현재 구현 구성
 
 ```mermaid
 flowchart TD
-  C["PC · Mobile Client"] --> G["API Gateway"]
-  G --> A["Authoritative Game Service"]
-  G --> O["Operator AI Orchestrator"]
+  C["Phaser PC · Mobile Client"] --> G["HTTP API · Colyseus Matchmaking"]
+  G --> A["20Hz Authoritative Red Zone Room"]
+  G -.-> O["Operator AI Orchestrator (next)"]
   O --> P["Policy & Intent Validator"]
   O --> M["Memory Service"]
   O --> L["LLM · STT · TTS Providers"]
@@ -18,6 +18,36 @@ flowchart TD
   A --> T["Telemetry Stream"]
   T --> R["Adaptive Director Models"]
 ```
+
+현재 구현은 단일 Node 프로세스 안에 HTTP API와 Colyseus 게임룸을 모듈 형태로 배치합니다. `DATABASE_URL`이 있으면 PostgreSQL을, 없으면 개발용 메모리 저장소를 사용합니다. `REDIS_URL`이 있으면 매칭 드라이버와 Presence가 Redis로 전환되어 여러 게임서버 인스턴스를 운영할 수 있습니다.
+
+## 권위형 전투 프로토콜
+
+클라이언트는 50ms 간격으로 결과가 아닌 입력을 보냅니다.
+
+```json
+{
+  "sequence": 1821,
+  "moveX": 0.7,
+  "moveY": -0.3,
+  "aimAngle": 1.82,
+  "fire": true,
+  "extract": false
+}
+```
+
+서버는 순서가 과거인 입력을 폐기하고 이동량, 발사 간격, 조준각, 사거리, 자원 습득, 추출 거리를 검증합니다. 확정 상태만 Colyseus Schema의 변경분 동기화로 클라이언트에 전달됩니다. 클라이언트는 자기 캐릭터를 예측 이동한 후 서버 위치로 점진적으로 보정합니다.
+
+## 경제 저장
+
+- `players`: 현재 프로필 JSONB와 마지막 접속 시간
+- `economy_events`: 요청 키, 이벤트 유형, 처리 결과
+- 모집·쉘터·방치·추출은 `SELECT ... FOR UPDATE` 트랜잭션
+- 동일 플레이어/요청 키는 유일 제약으로 한 번만 처리
+- 전투 좌표는 DB에 매 틱 기록하지 않고 게임룸 메모리에 유지
+- 추출·사망·구매 같은 확정 지점에서만 영구 저장
+
+게스트 인증은 현재 기기 식별자와 30일 JWT를 사용합니다. 이는 개발/알파용이며 출시 전 Steam, Google, Apple 계정 연결과 토큰 회전·폐기 기능을 추가해야 합니다.
 
 ## 대화 처리 순서
 

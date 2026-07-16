@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: neural_evolution
+      POSTGRES_USER: neo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neo_local_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - neo_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U neo -d neural_evolution"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:8-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - neo_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  game-server:
+    build:
+      context: ..
+      dockerfile: infra/server.Dockerfile
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 2567
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET to a random value of at least 32 characters}
+      DATABASE_URL: postgresql://neo:${POSTGRES_PASSWORD:-neo_local_password}@postgres:5432/neural_evolution
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "2567:2567"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  neo_postgres:
+  neo_redis:

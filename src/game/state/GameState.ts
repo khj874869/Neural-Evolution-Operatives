@@ -1,4 +1,5 @@
 import { getOperator, OPERATORS, type Rarity } from '../data/operators';
+import type { PlayerProfile } from '../../../packages/shared/src/protocol';
 
 export interface Resources {
   scrap: number;
@@ -101,6 +102,17 @@ export class GameState {
 
   snapshot(): SaveData {
     return structuredClone(this.data);
+  }
+
+  applyServerProfile(profile: PlayerProfile): void {
+    this.data.resources = { ...profile.resources };
+    this.data.shelter = { ...profile.shelter };
+    this.data.operators = structuredClone(profile.operators);
+    this.data.squad = [...profile.squad];
+    this.data.pity = profile.pity;
+    this.data.accountLevel = profile.accountLevel;
+    this.data.xp = profile.xp;
+    this.save();
   }
 
   save(): void {

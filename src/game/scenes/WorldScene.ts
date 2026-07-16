@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { getOperator } from '../data/operators';
 import { gameEvents, type MobileInputState } from '../events';
+import { GameServerClient, type NetworkSnapshot } from '../network/GameServerClient';
 import { GameState, type Resources } from '../state/GameState';
 import { AdaptiveDirector, freshTelemetry, type CombatTelemetry, type EnemyArchetype } from '../systems/AdaptiveDirector';
 import { generateMission, type Mission } from '../systems/MissionGenerator';
@@ -44,6 +45,12 @@ export class WorldScene extends Phaser.Scene {
   private order: TacticalOrder = 'REGROUP';
   private orderUntil = 0;
   private extractionRing!: Phaser.GameObjects.Arc;
+  private network?: GameServerClient;
+  private networkConnected = false;
+  private networkSequence = 0;
+  private lastNetworkInputAt = 0;
+  private readonly serverEnemies = new Map<string, EnemySprite>();
+  private readonly serverResources = new Map<string, ResourceSprite>();
 
   constructor() {
     super('WorldScene');
@@ -51,6 +58,7 @@ export class WorldScene extends Phaser.Scene {
 
   create(): void {
     this.state = this.registry.get('state') as GameState;
+    this.network = this.registry.get('network') as GameServerClient | undefined;
     this.mission = generateMission(this.state.snapshot().accountLevel, this.state.snapshot().resources);
     this.physics.world.setBounds(0, 0, WORLD_SIZE, WORLD_SIZE);
     this.drawWorld();
@@ -75,9 +83,11 @@ export class WorldScene extends Phaser.Scene {
 
     gameEvents.on('tactical-command', this.handleTacticalCommand, this);
     gameEvents.on('resume-world', this.resumeWorld, this);
+    gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
+      gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
       this.scale.off('resize', this.handleResize, this);
     });
 
@@ -155,6 +165,7 @@ export class WorldScene extends Phaser.Scene {
       const enemy = enemyObject as EnemySprite;
       if (!bullet.active || !enemy.active) return;
       bullet.disableBody(true, true);
+      if (this.networkConnected) return;
       const damage = bullet.getData('companion') ? 14 : 19;
       enemy.setData('hp', (enemy.getData('hp') as number) - damage);
       this.telemetry.hits += 1;
@@ -165,6 +176,7 @@ export class WorldScene extends Phaser.Scene {
 
     this.physics.add.overlap(this.player, this.resources, (_playerObject, resourceObject) => {
       const resource = resourceObject as ResourceSprite;
+      if (this.networkConnected) return;
       const kind = resource.resourceKind ?? 'scrap';
       const value = resource.value ?? 1;
       this.fieldCargo[kind] += value;
@@ -204,6 +216,19 @@ export class WorldScene extends Phaser.Scene {
       this.fireBullet(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y, false);
       this.lastShotAt = time;
     }
+    if (this.networkConnected && time - this.lastNetworkInputAt >= 50) {
+      const distanceToExtraction = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION.x, EXTRACTION.y);
+      const touchExtract = this.sys.game.device.input.touch && distanceToExtraction < 72;
+      this.network?.sendInput({
+        sequence: ++this.networkSequence,
+        moveX: movement.lengthSq() > 0 ? movement.x / 205 : 0,
+        moveY: movement.lengthSq() > 0 ? movement.y / 205 : 0,
+        aimAngle: this.player.rotation - Math.PI / 2,
+        fire: pointer.isDown || mobile.fire,
+        extract: Phaser.Input.Keyboard.JustDown(this.keys.E) || touchExtract,
+      });
+      this.lastNetworkInputAt = time;
+    }
   }
 
   private updateCompanions(time: number): void {
@@ -237,6 +262,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private updateEnemies(time: number, delta: number): void {
+    if (this.networkConnected) return;
     this.enemies.children.each((child) => {
       const enemy = child as EnemySprite;
       if (!enemy.active) return true;
@@ -262,6 +288,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private updateDirector(time: number): void {
+    if (this.networkConnected) return;
     if (time < this.waveAt) return;
     const profile = this.director.evaluate(this.telemetry, this.state.snapshot().accountLevel);
     this.emitFeed(profile.counterMessage, profile.pressure > 0.65);
@@ -273,6 +300,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private updateStorm(time: number, delta: number): void {
+    if (this.networkConnected) return;
     if (time > this.stormAt) {
       this.stormActive = !this.stormActive;
       this.stormAt = time + (this.stormActive ? 11_000 : 29_000);
@@ -353,6 +381,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private checkExtraction(): void {
+    if (this.networkConnected) return;
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION.x, EXTRACTION.y);
     const hasCargo = Object.values(this.fieldCargo).some((value) => value > 0);
     this.extractionRing.setStrokeStyle(2, hasCargo && distance < 120 ? 0xc9f456 : 0x8bffba, 0.7);
@@ -426,5 +455,78 @@ export class WorldScene extends Phaser.Scene {
 
   private handleResize(gameSize: Phaser.Structs.Size): void {
     this.stormOverlay.setSize(gameSize.width, gameSize.height);
+  }
+
+  private handleNetworkSnapshot(snapshot: NetworkSnapshot): void {
+    if (!this.networkConnected) {
+      this.networkConnected = true;
+      this.enemies.clear(true, true);
+      this.resources.clear(true, true);
+      this.serverEnemies.clear();
+      this.serverResources.clear();
+      this.fieldCargo = { scrap: 0, water: 0, data: 0, cores: 0 };
+      this.emitFeed('서버 권위형 전투 판정으로 전환되었습니다.');
+    }
+    const own = snapshot.players.find((player) => player.id === snapshot.localSessionId);
+    if (own) {
+      this.player.x = Phaser.Math.Linear(this.player.x, own.x, 0.32);
+      this.player.y = Phaser.Math.Linear(this.player.y, own.y, 0.32);
+      this.hp = own.hp;
+      this.radiation = own.radiation;
+      this.missionKills = own.kills;
+      this.fieldCargo = {
+        scrap: own.cargoScrap, water: own.cargoWater, data: own.cargoData, cores: own.cargoCores,
+      };
+      this.networkSequence = Math.max(this.networkSequence, own.lastSequence);
+    }
+    this.syncNetworkEnemies(snapshot.enemies);
+    this.syncNetworkResources(snapshot.resources);
+    this.stormActive = snapshot.stormActive;
+    this.stormOverlay.setAlpha(snapshot.stormActive ? 0.11 : 0);
+    this.updateHud();
+  }
+
+  private syncNetworkEnemies(enemies: NetworkSnapshot['enemies']): void {
+    const incoming = new Set(enemies.map((enemy) => enemy.id));
+    for (const [id, sprite] of this.serverEnemies) {
+      if (incoming.has(id)) continue;
+      sprite.disableBody(true, true);
+      this.serverEnemies.delete(id);
+    }
+    for (const source of enemies) {
+      let sprite = this.serverEnemies.get(source.id);
+      if (!sprite) {
+        sprite = this.enemies.get(source.x, source.y, 'enemy') as EnemySprite | null ?? undefined;
+        if (!sprite) continue;
+        this.serverEnemies.set(source.id, sprite);
+      }
+      const stats = ENEMY_STATS[source.kind];
+      sprite.enableBody(true, source.x, source.y, true, true)
+        .setPosition(source.x, source.y).setTint(stats.tint).setScale(stats.scale).setDepth(3);
+      sprite.archetype = source.kind;
+      sprite.setData('hp', source.hp);
+    }
+  }
+
+  private syncNetworkResources(resources: NetworkSnapshot['resources']): void {
+    const tints: Record<keyof Resources, number> = { scrap: 0xa7b1aa, water: 0x61b9ff, data: 0xb47cff, cores: 0xffd76a };
+    const incoming = new Set(resources.map((resource) => resource.id));
+    for (const [id, sprite] of this.serverResources) {
+      if (incoming.has(id)) continue;
+      sprite.disableBody(true, true);
+      this.serverResources.delete(id);
+    }
+    for (const source of resources) {
+      let sprite = this.serverResources.get(source.id);
+      if (!sprite) {
+        sprite = this.resources.get(source.x, source.y, 'resource') as ResourceSprite | null ?? undefined;
+        if (!sprite) continue;
+        this.serverResources.set(source.id, sprite);
+      }
+      sprite.enableBody(true, source.x, source.y, true, true)
+        .setPosition(source.x, source.y).setTint(tints[source.kind]).setDepth(2);
+      sprite.resourceKind = source.kind;
+      sprite.value = source.value;
+    }
   }
 }

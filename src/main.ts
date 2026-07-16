@@ -3,14 +3,18 @@ import './styles.css';
 import { gameConfig } from './game/config';
 import { getOperator } from './game/data/operators';
 import { gameEvents, type MobileInputState } from './game/events';
+import { GameServerClient } from './game/network/GameServerClient';
 import { GameState, type ShelterModules } from './game/state/GameState';
 import type { Mission } from './game/systems/MissionGenerator';
+import type { PlayerProfile } from '../packages/shared/src/protocol';
 
 const state = new GameState();
 const mobileInput: MobileInputState = { up: false, down: false, left: false, right: false, fire: false };
+const network = new GameServerClient();
 const game = new Phaser.Game(gameConfig);
 game.registry.set('state', state);
 game.registry.set('mobileInput', mobileInput);
+game.registry.set('network', network);
 
 const byId = <T extends HTMLElement>(id: string): T => {
   const element = document.getElementById(id);
@@ -21,6 +25,7 @@ const byId = <T extends HTMLElement>(id: string): T => {
 const resourceHud = byId<HTMLDivElement>('resourceHud');
 const squadHud = byId<HTMLElement>('squadHud');
 const missionText = byId<HTMLDivElement>('missionText');
+const serverStatus = byId<HTMLSpanElement>('serverStatus');
 const hpText = byId<HTMLSpanElement>('hpText');
 const hpBar = byId<HTMLElement>('hpBar');
 const radiationText = byId<HTMLSpanElement>('radiationText');
@@ -100,12 +105,16 @@ function renderShelter(): void {
     }).join('')}</div>
     <div class="recruit-panel"><div><b>방치 생산 예상치</b><div class="subtle">시간당 고철 ${Math.round(13.2 * (1 + (save.shelter.workshop - 1) * .35))} · 식수 ${Math.round(8.4 * (1 + (save.shelter.purifier - 1) * .3))}</div></div></div>`;
   modalContent.querySelectorAll<HTMLButtonElement>('[data-upgrade]').forEach((button) => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', async () => {
       const module = button.dataset.upgrade as keyof ShelterModules;
-      if (state.upgrade(module)) {
+      try {
+        const upgraded = network.connected ? Boolean(await network.upgradeShelter(module)) : state.upgrade(module);
+        if (!upgraded) return;
         renderPersistentHud();
         renderShelter();
         showToast('쉘터 모듈 업그레이드 완료');
+      } catch {
+        showToast('서버가 업그레이드를 거부했습니다. 재화와 연결 상태를 확인하세요.');
       }
     });
   });
@@ -133,13 +142,17 @@ function renderRoster(): void {
       <div><b>신경망 코어 복원</b><div class="subtle">코어 5개 사용 · SSR 천장까지 ${20 - save.pity}회 · 중복은 레벨과 데이터로 전환</div></div>
       <button class="primary" id="recruitButton" ${save.resources.cores < 5 ? 'disabled' : ''}>◈ 5 // LINK</button>
     </div>`;
-  modalContent.querySelector<HTMLButtonElement>('#recruitButton')?.addEventListener('click', () => {
-    const result = state.recruit();
-    if (!result) return;
-    const operator = getOperator(result.operatorId);
-    renderPersistentHud();
-    renderRoster();
-    showToast(`${result.rarity} ${operator.name} ${result.duplicate ? '동기화 강화' : '신규 링크 완료'}`);
+  modalContent.querySelector<HTMLButtonElement>('#recruitButton')?.addEventListener('click', async () => {
+    try {
+      const result = network.connected ? (await network.recruit()).result : state.recruit();
+      if (!result) return;
+      const operator = getOperator(result.operatorId);
+      renderPersistentHud();
+      renderRoster();
+      showToast(`${result.rarity} ${operator.name} ${result.duplicate ? '동기화 강화' : '신규 링크 완료'}`);
+    } catch {
+      showToast('서버가 모집 요청을 거부했습니다. 코어와 연결 상태를 확인하세요.');
+    }
   });
 }
 
@@ -160,6 +173,7 @@ commandForm.addEventListener('submit', (event) => {
   const command = commandInput.value.trim();
   if (!command) return;
   gameEvents.emit('tactical-command', command);
+  network.sendTactical(command);
   commandInput.value = '';
   commandInput.blur();
 });
@@ -199,6 +213,16 @@ gameEvents.on('operator-reply', (operator: ReturnType<typeof getOperator>, reply
 });
 gameEvents.on('state-changed', renderPersistentHud);
 gameEvents.on('game-over', renderGameOver);
+gameEvents.on('network-profile', (profile: PlayerProfile) => {
+  state.applyServerProfile(profile);
+  renderPersistentHud();
+  if (currentModal === 'shelter') renderShelter();
+  if (currentModal === 'roster') renderRoster();
+});
+gameEvents.on('network-status', (status: 'online' | 'offline' | 'connecting', label: string) => {
+  serverStatus.className = `server-status ${status}`;
+  serverStatus.textContent = `● ${label}`;
+});
 gameEvents.on('hud-update', (hud: { hp: number; radiation: number; cargo: Record<string, number>; kills: number; mission: Mission }) => {
   hpText.textContent = `${Math.ceil(hud.hp)}%`;
   hpBar.style.width = `${hud.hp}%`;
@@ -211,3 +235,4 @@ renderPersistentHud();
 if (state.offlineReward.elapsedMinutes >= 2) {
   showToast(`오프라인 ${state.offlineReward.elapsedMinutes}분 회수 // 고철 ${state.offlineReward.scrap} · 식수 ${state.offlineReward.water}`);
 }
+void network.connect();

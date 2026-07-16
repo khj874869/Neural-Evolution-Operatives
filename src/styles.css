@@ -37,6 +37,11 @@ button { color: inherit; cursor: pointer; }
 .brand small { display: block; margin-top: 2px; color: #6f8f83; font: 10px 'Share Tech Mono'; }
 .mission { justify-self: center; color: #9eb8ae; font: 12px 'Share Tech Mono'; text-align: center; }
 .mission strong { color: var(--lime); }
+.server-status { margin-right: 12px; color: #82958d; }
+.server-status.online { color: var(--green); }
+.server-status.offline { color: #e5b65b; }
+.server-status.connecting { animation: pulse 1.1s infinite alternate; }
+@keyframes pulse { to { opacity: .35; } }
 .resources { display: flex; gap: 18px; font: 12px 'Share Tech Mono'; }
 .resource { display: grid; grid-template-columns: auto auto; gap: 0 6px; color: #7b958a; }
 .resource b { color: #e9fff3; font-size: 15px; }

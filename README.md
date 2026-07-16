@@ -16,24 +16,46 @@
 - R/SR/SSR 오퍼레이터 수집, 중복 성장, 20회 SSR 천장
 - 로컬 장기 기억·호감도와 성격별 전술 응답
 - 데스크톱 WASD/마우스 및 모바일 터치 조작
-- 브라우저 로컬 저장과 반응형 HUD
+- Colyseus 기반 20Hz 서버 권위형 전투와 최대 4인 게임룸
+- PostgreSQL 영구 저장, Redis 매칭/수평 확장, JWT 게스트 인증
+- 서버 트랜잭션 기반 모집·쉘터·방치 보상·추출 확정
+- 네트워크 장애 시 로컬 훈련 모드 자동 폴백과 반응형 HUD
 
 > 현재 대화는 비용 없이 검증할 수 있는 규칙 기반 로컬 페르소나 엔진입니다. 실제 LLM, STT/TTS, 계정 동기화는 신뢰 서버를 경유하는 다음 단계로 분리했습니다. 클라이언트 코드에는 AI 제공자 API 키를 넣지 않습니다.
 
-## 실행
+## 빠른 실행
 
 Node.js 20 이상이 필요합니다.
 
 ```bash
 npm install
+npm run dev:all
+```
+
+`dev:all`은 클라이언트와 메모리 저장 방식의 게임서버를 함께 실행합니다. 브라우저 HUD의 서버 표시가 초록색으로 바뀌면 권위형 게임룸에 연결된 상태입니다.
+
+PostgreSQL·Redis까지 포함한 전체 백엔드는 Docker로 실행합니다.
+
+```bash
+cp .env.example .env
+docker compose -f infra/docker-compose.yml up --build -d
 npm run dev
 ```
+
+공개 환경에 배포하기 전에 반드시 `JWT_SECRET`, `POSTGRES_PASSWORD`, `CORS_ORIGIN`을 변경하세요. 설정 예시는 `.env.example`에 있습니다.
 
 프로덕션 빌드와 핵심 시스템 테스트:
 
 ```bash
 npm run check
 npm run build
+npm run build:server
+```
+
+실행 중인 서버의 HTTP·WebSocket 통합 확인:
+
+```bash
+npm run smoke:server -- http://localhost:2567
 ```
 
 ## 조작
@@ -58,15 +80,30 @@ npm run build
 ## 구조
 
 ```text
-src/
-├── game/
-│   ├── data/           # 오퍼레이터 정의
-│   ├── scenes/         # Phaser 부트/레드 존 씬
-│   ├── state/          # 저장, 방치 보상, 성장 경제
-│   └── systems/        # AI 디렉터, 명령 파서, 페르소나, 임무 생성
-├── main.ts             # 게임과 반응형 DOM HUD 연결
-└── styles.css          # 포스트 아포칼립스 전술 UI
+├── src/                        # Phaser PC/모바일 클라이언트
+│   └── game/network/           # Colyseus SDK 및 서버 동기화
+├── server/
+│   ├── src/rooms/              # 최대 4인 권위형 게임룸
+│   ├── src/simulation/         # 이동·사격·적·자원·추출 판정
+│   ├── src/api/                # 인증·프로필·경제 HTTP API
+│   ├── src/economy/            # 모집·쉘터·방치·추출 트랜잭션
+│   └── src/persistence/        # 메모리/PostgreSQL 저장 어댑터
+├── packages/shared/            # 클라이언트-서버 공용 프로토콜
+└── infra/                       # Dockerfile 및 Compose
 ```
+
+## 서버가 직접 판정하는 항목
+
+- 입력 순서와 이동 벡터 검증, 월드 경계 제한
+- 발사 쿨다운, 조준각, 사거리, 명중 및 피해
+- 적 스폰·추적·스토커 우회·공격
+- 방사능 폭풍, 사망, 현장 화물 소실
+- 자원 습득과 추출 지점 검증
+- 추출 재화의 1회성 DB 확정
+- 모집 확률·SSR 천장·중복 보상
+- 쉘터 비용과 최대 8시간 방치 보상
+
+클라이언트는 입력만 보내고 결과를 임의로 확정할 수 없습니다. 경제 요청은 `Idempotency-Key`로 중복 실행을 방지하고 PostgreSQL에서는 플레이어 행을 잠근 트랜잭션으로 처리합니다.
 
 상세 설계는 [게임 디자인](docs/GAME_DESIGN.md), [AI/서비스 아키텍처](docs/ARCHITECTURE.md), [출시 로드맵](docs/ROADMAP.md)을 참고하세요.
 
@@ -81,7 +118,7 @@ src/
 
 - 전투 결과를 LLM 지연이나 환각에 의존시키지 않습니다. LLM은 의도 해석과 캐릭터 표현을 담당하고, 실제 행동은 검증된 전술 명령으로 제한합니다.
 - 감정적 유대를 과금 압박에 사용하지 않습니다. 기억 보존·안전 설정·기본 대화는 무료 핵심 기능으로 유지합니다.
-- 서버 권위형 경제, 입력 검증, 연령/지역별 확률형 아이템 규정 준수를 출시 전 필수 조건으로 둡니다.
+- 서버 권위형 경제와 입력 검증을 기본값으로 유지하고, 연령/지역별 확률형 아이템 규정 준수를 출시 전 필수 조건으로 둡니다.
 
 ## License
 
