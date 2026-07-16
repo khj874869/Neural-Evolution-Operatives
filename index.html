@@ -4,8 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
     <meta name="theme-color" content="#07110f" />
-    <meta name="description" content="Neural Evolution: Operatives — adaptive AI survival shooter prototype" />
+    <meta name="description" content="Neural Evolution: Operatives — AI 분대와 함께 생존하는 포스트 아포칼립스 전술 슈터" />
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
     <title>NEURAL EVOLUTION // OPERATIVES</title>
   </head>
   <body>
@@ -42,6 +44,7 @@
           <button type="submit">전송</button>
         </form>
         <button id="muteButton" aria-label="사운드 전환">SFX ON</button>
+        <button id="settingsButton" aria-label="게임 설정"><span>⚙</span> 설정</button>
       </nav>
 
       <div class="mobile-controls" aria-label="모바일 조작">
@@ -61,7 +64,7 @@
         </section>
       </div>
 
-      <div class="toast" id="toast"></div>
+      <div class="toast" id="toast" aria-live="polite"></div>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

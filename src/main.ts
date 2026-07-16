@@ -4,18 +4,24 @@ import { gameConfig } from './game/config';
 import { getOperator, type OperatorRole } from './game/data/operators';
 import { gameEvents, type MobileInputState } from './game/events';
 import { GameServerClient } from './game/network/GameServerClient';
+import { loadSettings, saveSettings } from './game/settings';
 import { GameState, type ShelterModules } from './game/state/GameState';
 import type { Mission } from './game/systems/MissionGenerator';
 import type { PlayerProfile } from '../packages/shared/src/protocol';
 import { describeSquadBonuses } from '../packages/shared/src/squad';
+import { SoundEngine, type GameSfx } from './game/systems/SoundEngine';
 
 const state = new GameState();
 const mobileInput: MobileInputState = { up: false, down: false, left: false, right: false, fire: false };
 const network = new GameServerClient();
+let settings = loadSettings();
+const sound = new SoundEngine();
+sound.setEnabled(settings.sound);
 const game = new Phaser.Game(gameConfig);
 game.registry.set('state', state);
 game.registry.set('mobileInput', mobileInput);
 game.registry.set('network', network);
+game.registry.set('settings', settings);
 
 const byId = <T extends HTMLElement>(id: string): T => {
   const element = document.getElementById(id);
@@ -37,7 +43,7 @@ const modalContent = byId<HTMLDivElement>('modalContent');
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
 const toast = byId<HTMLDivElement>('toast');
-let currentModal: 'shelter' | 'roster' | 'game-over' | null = null;
+let currentModal: 'shelter' | 'roster' | 'settings' | 'tutorial' | 'game-over' | null = null;
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
 
@@ -49,6 +55,12 @@ const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>>
   Support: [{ label: '화력', value: 48 }, { label: '생존', value: 76 }, { label: '지원', value: 95 }],
   Engineer: [{ label: '화력', value: 62 }, { label: '회수', value: 94 }, { label: '지원', value: 78 }],
 };
+const tutorialSteps = [
+  { code: '01 // MOVE', icon: '⌖', title: '레드 존 이동', body: 'PC는 WASD 또는 방향키, 모바일은 왼쪽 방향 패드로 이동합니다. 멈춰 있으면 적응형 AI가 우회 병력을 투입합니다.' },
+  { code: '02 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 쓰러뜨린 적에게서 자원이 떨어집니다.' },
+  { code: '03 // COMMAND', icon: '⌁', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.' },
+  { code: '04 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E를 누르세요. 모바일은 리프트 진입 시 자동 추출합니다. 사망하면 현장 화물을 모두 잃습니다.' },
+] as const;
 
 function renderPersistentHud(): void {
   const save = state.snapshot();
@@ -89,9 +101,91 @@ function pauseForModal(): void {
 }
 
 function closeModal(): void {
+  if (currentModal === 'tutorial' && !settings.tutorialComplete) {
+    settings = { ...settings, tutorialComplete: true };
+    applySettings();
+  }
   modalBackdrop.classList.add('hidden');
   currentModal = null;
+  sound.play('ui');
   gameEvents.emit('resume-world');
+}
+
+function applySettings(): void {
+  saveSettings(settings);
+  sound.setEnabled(settings.sound);
+  game.sound.mute = !settings.sound;
+  game.registry.set('settings', settings);
+  document.body.classList.toggle('reduced-motion', settings.reducedMotion);
+  byId<HTMLButtonElement>('muteButton').textContent = settings.sound ? 'SFX ON' : 'SFX OFF';
+  gameEvents.emit('settings-changed', settings);
+}
+
+function renderSettings(): void {
+  currentModal = 'settings';
+  pauseForModal();
+  const toggles: Array<{ key: 'sound' | 'haptics' | 'reducedMotion'; label: string; description: string }> = [
+    { key: 'sound', label: '전투 사운드', description: '사격, 타격, 환경 경보와 UI 합성음을 재생합니다.' },
+    { key: 'haptics', label: '모바일 진동', description: '사격, 피격, 획득과 추출 순간에 촉각 피드백을 제공합니다.' },
+    { key: 'reducedMotion', label: '모션 감소', description: '화면 흔들림과 전투 파티클 수를 줄여 멀미와 발열을 완화합니다.' },
+  ];
+  modalContent.innerHTML = `
+    <span class="eyebrow">SYSTEM CONFIG // DEVICE PROFILE</span>
+    <h2>작전 환경 설정</h2>
+    <p class="subtle">설정은 현재 기기에 즉시 저장됩니다.</p>
+    <div class="settings-list">${toggles.map((toggle) => `
+      <button class="setting-row" data-setting="${toggle.key}" role="switch" aria-checked="${settings[toggle.key]}">
+        <span><b>${toggle.label}</b><small>${toggle.description}</small></span>
+        <em>${settings[toggle.key] ? 'ON' : 'OFF'}</em>
+      </button>`).join('')}</div>
+    <div class="settings-actions">
+      <button id="replayTutorial">튜토리얼 다시 보기</button>
+      <button class="primary" id="closeSettings">설정 완료</button>
+    </div>`;
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-setting]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const key = button.dataset.setting as 'sound' | 'haptics' | 'reducedMotion';
+      settings = { ...settings, [key]: !settings[key] };
+      applySettings();
+      if (settings.sound) sound.play('ui');
+      renderSettings();
+    });
+  });
+  modalContent.querySelector<HTMLButtonElement>('#replayTutorial')?.addEventListener('click', () => renderTutorial(0));
+  modalContent.querySelector<HTMLButtonElement>('#closeSettings')?.addEventListener('click', closeModal);
+}
+
+function renderTutorial(step: number): void {
+  const safeStep = Math.max(0, Math.min(tutorialSteps.length - 1, step));
+  const tutorial = tutorialSteps[safeStep];
+  currentModal = 'tutorial';
+  pauseForModal();
+  modalContent.innerHTML = `
+    <div class="tutorial-card">
+      <div class="tutorial-progress">${tutorialSteps.map((_item, index) => `<i class="${index <= safeStep ? 'active' : ''}"></i>`).join('')}</div>
+      <span class="eyebrow">FIELD OPERATIONS TUTORIAL // ${tutorial.code}</span>
+      <div class="tutorial-icon">${tutorial.icon}</div>
+      <h2>${tutorial.title}</h2>
+      <p>${tutorial.body}</p>
+      <div class="tutorial-keys">${safeStep === 0 ? '<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>'
+        : safeStep === 1 ? '<kbd>CLICK</kbd><kbd>FIRE</kbd>'
+          : safeStep === 2 ? '<kbd>TACTICAL://</kbd>' : '<kbd>E</kbd><kbd>AUTO</kbd>'}</div>
+      <div class="tutorial-actions">
+        <button id="skipTutorial">건너뛰기</button>
+        <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? '작전 투입' : '다음 단계'}</button>
+      </div>
+    </div>`;
+  modalContent.querySelector<HTMLButtonElement>('#skipTutorial')?.addEventListener('click', closeModal);
+  modalContent.querySelector<HTMLButtonElement>('#nextTutorial')?.addEventListener('click', () => {
+    sound.play('ui');
+    if (safeStep < tutorialSteps.length - 1) {
+      renderTutorial(safeStep + 1);
+      return;
+    }
+    settings = { ...settings, tutorialComplete: true };
+    applySettings();
+    closeModal();
+  });
 }
 
 function renderShelter(): void {
@@ -272,18 +366,21 @@ commandForm.addEventListener('submit', (event) => {
 
 byId('shelterButton').addEventListener('click', renderShelter);
 byId('rosterButton').addEventListener('click', renderRoster);
+byId('settingsButton').addEventListener('click', renderSettings);
 byId('closeModal').addEventListener('click', closeModal);
 modalBackdrop.addEventListener('click', (event) => {
   if (event.target === modalBackdrop && currentModal !== 'game-over') closeModal();
 });
 
-let soundEnabled = true;
 const muteButton = byId<HTMLButtonElement>('muteButton');
 muteButton.addEventListener('click', () => {
-  soundEnabled = !soundEnabled;
-  muteButton.textContent = soundEnabled ? 'SFX ON' : 'SFX OFF';
-  game.sound.mute = !soundEnabled;
+  settings = { ...settings, sound: !settings.sound };
+  applySettings();
+  if (settings.sound) sound.play('ui');
 });
+
+window.addEventListener('pointerdown', () => { void sound.unlock(); }, { once: true });
+window.addEventListener('keydown', () => { void sound.unlock(); }, { once: true });
 
 document.querySelectorAll<HTMLButtonElement>('[data-move]').forEach((button) => {
   const direction = button.dataset.move as 'up' | 'down' | 'left' | 'right';
@@ -298,6 +395,18 @@ fireButton.addEventListener('pointerdown', () => { mobileInput.fire = true; });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach((name) => fireButton.addEventListener(name, () => { mobileInput.fire = false; }));
 
 gameEvents.on('feed', addFeed);
+gameEvents.on('sfx', (name: GameSfx) => sound.play(name));
+gameEvents.on('haptic', (kind: 'shot' | 'light' | 'heavy' | 'warning' | 'success') => {
+  if (!settings.haptics || !('vibrate' in navigator)) return;
+  const patterns: Record<typeof kind, number | number[]> = {
+    shot: 8,
+    light: 14,
+    heavy: [22, 22, 34],
+    warning: [35, 45, 35],
+    success: [18, 30, 18, 30, 45],
+  };
+  navigator.vibrate(patterns[kind]);
+});
 gameEvents.on('operator-reply', (operator: ReturnType<typeof getOperator>, reply: string) => {
   addFeed(`${operator.callsign}: ${reply}`);
   showToast(`${operator.name} // ${reply}`);
@@ -317,6 +426,14 @@ gameEvents.on('network-status', (status: 'online' | 'offline' | 'connecting', la
   serverStatus.className = `server-status ${status}`;
   serverStatus.textContent = `● ${label}`;
 });
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    game.loop.sleep();
+  } else {
+    game.loop.wake();
+  }
+});
 gameEvents.on('hud-update', (hud: { hp: number; radiation: number; cargo: Record<string, number>; kills: number; mission: Mission }) => {
   hpText.textContent = `${Math.ceil(hud.hp)}%`;
   hpBar.style.width = `${hud.hp}%`;
@@ -325,8 +442,18 @@ gameEvents.on('hud-update', (hud: { hp: number; radiation: number; cargo: Record
   missionText.innerHTML = `<strong>${hud.mission.codename}</strong> · 제거 ${hud.kills}/${hud.mission.targetKills} · 현장 고철 ${hud.cargo.scrap ?? 0}`;
 });
 
+applySettings();
 renderPersistentHud();
 if (state.offlineReward.elapsedMinutes >= 2) {
   showToast(`오프라인 ${state.offlineReward.elapsedMinutes}분 회수 // 고철 ${state.offlineReward.scrap} · 식수 ${state.offlineReward.water}`);
 }
+if (!settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 450);
 void network.connect();
+
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('./sw.js').catch(() => {
+      // Installation remains optional when the host blocks service workers.
+    });
+  });
+}

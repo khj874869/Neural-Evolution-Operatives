@@ -1,6 +1,6 @@
 {
   "name": "neural-evolution-operatives",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,12 +11,17 @@
     "build:server": "tsc -p server/tsconfig.json",
     "start:server": "node dist-server/server/src/index.js",
     "smoke:server": "node server/scripts/smoke.mjs",
+    "mobile:add:android": "npm run build && cap add android",
+    "mobile:sync": "npm run build && cap sync android",
+    "mobile:open": "cap open android",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run --config vitest.config.ts",
     "test:server": "vitest run --config vitest.server.config.ts",
     "check": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit && npm run test && npm run test:server"
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
     "@colyseus/core": "^0.17.44",
     "@colyseus/redis-driver": "^0.17.7",
     "@colyseus/redis-presence": "^0.17.7",
@@ -33,6 +38,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.4.2",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
@@ -46,6 +52,6 @@
     "vitest": "^3.2.4"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   }
 }

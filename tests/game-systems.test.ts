@@ -5,6 +5,7 @@ import { AdaptiveDirector, freshTelemetry } from '../src/game/systems/AdaptiveDi
 import { generateMission } from '../src/game/systems/MissionGenerator';
 import { parseTacticalCommand } from '../src/game/systems/TacticalCommand';
 import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/src/squad';
+import { DEFAULT_SETTINGS, sanitizeSettings } from '../src/game/settings';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -55,5 +56,16 @@ describe('operator squad links', () => {
     expect(bonuses.radiationGainMultiplier).toBe(0.82);
     expect(bonuses.pickupRadius).toBe(42);
     expect(describeSquadBonuses(['aegis-07', 'ratchet'])).toContain('방사선 저항 +18%');
+  });
+});
+
+describe('player settings', () => {
+  it('repairs incomplete or invalid persisted settings', () => {
+    expect(sanitizeSettings({ sound: false, haptics: 'invalid', reducedMotion: true })).toEqual({
+      ...DEFAULT_SETTINGS,
+      sound: false,
+      reducedMotion: true,
+    });
+    expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
   });
 });

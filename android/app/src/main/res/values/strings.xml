@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Neural Evolution: Operatives</string>
+    <string name="title_activity_main">Neural Evolution: Operatives</string>
+    <string name="package_name">com.neuralevolution.operatives</string>
+    <string name="custom_url_scheme">com.neuralevolution.operatives</string>
+</resources>

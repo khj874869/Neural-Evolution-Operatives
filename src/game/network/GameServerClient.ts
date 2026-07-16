@@ -43,7 +43,11 @@ export class GameServerClient {
       this.room.onStateChange((state: unknown) => this.emitSnapshot(state));
       this.room.onMessage<ServerEventMessage>('server-event', (event) => {
         gameEvents.emit('feed', event.message, event.type === 'error');
-        if (event.type === 'extraction') void this.refreshProfile();
+        if (event.type === 'extraction') {
+          gameEvents.emit('sfx', 'extract');
+          gameEvents.emit('haptic', 'success');
+          void this.refreshProfile();
+        }
       });
       this.room.onLeave(() => {
         this.connected = false;

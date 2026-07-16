@@ -1,6 +1,6 @@
 # NEURAL EVOLUTION: OPERATIVES
 
-> 포스트 아포칼립스 오픈월드 생존 슈팅과 AI 오퍼레이터 수집·쉘터 성장을 결합한 PC/모바일 크로스플랫폼 프로토타입
+> 포스트 아포칼립스 오픈월드 생존 슈팅과 AI 오퍼레이터 수집·쉘터 성장을 결합한 PC/모바일 크로스플랫폼 vertical slice
 
 마더브레인에 의해 문명의 90%가 붕괴된 이후, 플레이어는 자아를 되찾은 전술 오퍼레이터와 함께 레드 존을 탐사하고 지하 쉘터를 재건합니다. 현재 저장소에는 **설치 후 바로 플레이 가능한 vertical slice**가 들어 있습니다.
 
@@ -24,12 +24,16 @@
 - 서버 트랜잭션 기반 모집·쉘터·방치 보상·추출 확정
 - 보유 여부와 중복을 검증하는 서버 권위형 분대 편성 API
 - 네트워크 장애 시 로컬 훈련 모드 자동 폴백과 반응형 HUD
+- 적·자원별 전술 실루엣, 총구 화염·피격·처치·폭풍·추출 VFX
+- 외부 음원 없이 동작하는 합성 전투 SFX, 진동, 모션 감소 설정
+- 첫 실행 4단계 온보딩과 언제든 다시 볼 수 있는 튜토리얼
+- PWA 설치 아이콘 및 Capacitor 기반 Android 내부 테스트 프로젝트
 
 > 현재 대화는 비용 없이 검증할 수 있는 규칙 기반 로컬 페르소나 엔진입니다. 실제 LLM, STT/TTS, 계정 동기화는 신뢰 서버를 경유하는 다음 단계로 분리했습니다. 클라이언트 코드에는 AI 제공자 API 키를 넣지 않습니다.
 
 ## 빠른 실행
 
-Node.js 20 이상이 필요합니다.
+Node.js 22 이상이 필요합니다.
 
 ```bash
 npm install
@@ -55,6 +59,16 @@ npm run check
 npm run build
 npm run build:server
 ```
+
+Android 내부 테스트 프로젝트를 동기화하고 디버그 APK를 만들려면 Android SDK/JDK 17 환경에서 실행합니다.
+
+```bash
+npm run mobile:sync
+cd android
+./gradlew assembleDebug
+```
+
+APK는 `android/app/build/outputs/apk/debug/app-debug.apk`에 생성됩니다. 실서버를 연결하는 배포 빌드는 `VITE_GAME_SERVER_URL=https://...`를 지정한 뒤 동기화해야 하며, Play Console 업로드용 AAB에는 별도의 릴리스 키 서명과 개인정보·결제·데이터 안전성 설정이 필요합니다.
 
 실행 중인 서버의 HTTP·WebSocket 통합 확인:
 
@@ -94,6 +108,7 @@ npm run smoke:server -- http://localhost:2567
 │   └── src/persistence/        # 메모리/PostgreSQL 저장 어댑터
 ├── packages/shared/            # 클라이언트-서버 공용 프로토콜
 ├── public/assets/operators/    # 오퍼레이터별 최적화 WebP 일러스트
+├── android/                    # Capacitor Android 네이티브 프로젝트
 └── infra/                       # Dockerfile 및 Compose
 ```
 
@@ -115,7 +130,8 @@ npm run smoke:server -- http://localhost:2567
 ## 크로스플랫폼 전략
 
 - Web/PWA: 현재 Vite 빌드를 그대로 배포
-- Android/iOS: Capacitor 셸, 네이티브 결제·푸시·마이크 권한 어댑터 추가
+- Android: Capacitor 셸과 전용 아이콘·스플래시 적용, 결제·푸시·마이크 권한 어댑터는 출시 전 추가
+- iOS: Capacitor 프로젝트, Apple 로그인·결제·마이크 권한 어댑터 추가 필요
 - Steam/PC: Electron 또는 Tauri 셸, Steamworks 어댑터와 키보드/게임패드 옵션 추가
 - 장기 3D 제품화: 게임 규칙·AI 서비스 계약을 유지한 채 Godot/Unity 클라이언트로 전환 가능
 

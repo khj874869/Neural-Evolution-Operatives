@@ -18,6 +18,8 @@ html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 body { background: radial-gradient(circle at 30% 20%, #13231e 0, #050a09 52%, #020303 100%); }
 button, input { font: inherit; }
 button { color: inherit; cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.reduced-motion *, .reduced-motion *::before, .reduced-motion *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 
 .glass {
   border: 1px solid var(--line);
@@ -162,6 +164,31 @@ button { color: inherit; cursor: pointer; }
 .recruit-panel { margin-top: 16px; padding: 14px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); }
 .recruit-panel button { width: auto; padding: 11px 22px; }
 
+.settings-list { display: grid; gap: 8px; margin-top: 22px; }
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px; border: 1px solid rgba(139,255,186,.14); color: #dce8e2; background: rgba(7,18,16,.72); text-align: left; }
+.setting-row:hover { border-color: var(--lime); background: rgba(201,244,86,.035); }
+.setting-row span { display: grid; gap: 4px; }
+.setting-row b { font-size: 12px; }
+.setting-row small { color: #71877e; font-size: 10px; line-height: 1.5; }
+.setting-row em { flex: 0 0 48px; padding: 7px 0; color: #07100d; background: var(--lime); font: 10px 'Share Tech Mono'; font-style: normal; text-align: center; }
+.setting-row[aria-checked='false'] em { color: #6d8179; background: #1b2a25; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.settings-actions button { padding: 11px 18px; border: 1px solid var(--line); color: #a8bcb4; background: #0b1713; font: 10px 'Share Tech Mono'; }
+.settings-actions .primary { width: auto; border: 0; color: #07100d; background: var(--lime); }
+
+.tutorial-card { max-width: 680px; margin: 0 auto; padding: 16px 10px 4px; text-align: center; }
+.tutorial-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0 0 28px; }
+.tutorial-progress i { height: 3px; background: #1d2e28; }
+.tutorial-progress i.active { background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 9px rgba(201,244,86,.25); }
+.tutorial-icon { display: grid; place-items: center; width: 110px; height: 110px; margin: 28px auto 18px; border: 1px solid rgba(201,244,86,.34); border-radius: 50%; color: var(--lime); background: radial-gradient(circle, rgba(201,244,86,.12), transparent 68%); box-shadow: 0 0 40px rgba(71,215,194,.08); font: 46px 'Black Ops One'; }
+.tutorial-card h2 { font-size: 30px; }
+.tutorial-card > p { max-width: 540px; min-height: 54px; margin: 14px auto; color: #8fa69d; font-size: 13px; line-height: 1.8; }
+.tutorial-keys { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; min-height: 42px; margin: 18px 0; }
+.tutorial-keys kbd { min-width: 38px; padding: 9px 11px; border: 1px solid rgba(139,255,186,.24); border-bottom-width: 3px; color: #d9f4e5; background: #0a1612; font: 10px 'Share Tech Mono'; }
+.tutorial-actions { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; margin-top: 26px; }
+.tutorial-actions button { padding: 12px; border: 1px solid var(--line); color: #8ca198; background: #0b1713; font: 10px 'Share Tech Mono'; }
+.tutorial-actions .primary { border: 0; color: #07100d; background: var(--lime); }
+
 .toast { pointer-events: none; position: fixed; z-index: 200; left: 50%; top: 84px; transform: translate(-50%, -20px); opacity: 0; padding: 10px 16px; border: 1px solid var(--lime); background: #08110f; color: var(--lime); font: 11px 'Share Tech Mono'; transition: .25s; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
@@ -174,6 +201,12 @@ button { color: inherit; cursor: pointer; }
 .dpad button[data-move='right'] { grid-column: 3; }
 .fire { align-self: end; width: 76px; height: 76px; border-radius: 50%; font: 13px 'Black Ops One'; }
 
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .topbar { padding-top: env(safe-area-inset-top); height: calc(68px + env(safe-area-inset-top)); }
+  .command-dock { padding-bottom: max(9px, env(safe-area-inset-bottom)); height: calc(68px + env(safe-area-inset-bottom)); }
+  .mobile-controls { bottom: calc(82px + env(safe-area-inset-bottom)); }
+}
+
 @media (pointer: coarse), (max-width: 820px) {
   .mobile-controls { display: flex; }
   .topbar { height: 58px; grid-template-columns: 1fr auto; padding: 0 10px; }
@@ -185,12 +218,14 @@ button { color: inherit; cursor: pointer; }
   .event-feed, .crosshair { display: none; }
   .command-dock { height: 64px; padding: 6px; }
   .command-dock > button { padding: 0 9px; } #muteButton, .prompt { display: none; }
+  #settingsButton span { display: none; }
   #commandInput { font-size: 10px; }
   .card-grid { grid-template-columns: 1fr; }
   .modal { padding: 20px; }
   .roster-layout { grid-template-columns: 1fr; }
   .operator-showcase { grid-template-columns: minmax(180px, .8fr) 1.2fr; }
   .operator-tile-grid { max-height: none; }
+  .tutorial-card { padding-inline: 0; }
 }
 
 @media (max-width: 560px) {
@@ -201,4 +236,6 @@ button { color: inherit; cursor: pointer; }
   .operator-tile-grid { grid-template-columns: 1fr; }
   .recruit-panel { align-items: stretch; gap: 10px; flex-direction: column; }
   .recruit-panel button { width: 100%; }
+  .settings-actions { flex-direction: column; }
+  .settings-actions button { width: 100%; }
 }
