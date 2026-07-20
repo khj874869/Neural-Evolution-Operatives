@@ -64,6 +64,10 @@ export class PostgresPlayerRepository implements PlayerRepository {
     await this.pool.end();
   }
 
+  async healthCheck(): Promise<void> {
+    await this.pool.query('SELECT 1');
+  }
+
   async getOrCreateGuest(deviceId: string): Promise<PlayerProfile> {
     const existing = await this.pool.query<{ profile: PlayerProfile }>('SELECT profile FROM players WHERE device_id = $1', [deviceId]);
     if (existing.rowCount) return normalizePlayerProfile(existing.rows[0].profile);

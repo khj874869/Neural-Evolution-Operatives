@@ -13,6 +13,7 @@ describe('real game room transport', () => {
     const config: ServerConfig = {
       host: '127.0.0.1', port, corsOrigin: 'http://localhost:5173',
       jwtSecret: 'integration-secret-that-is-long-enough', nodeEnv: 'test',
+      releaseChannel: 'alpha', commitSha: 'abcdef0',
     };
     server = createGameServer(config).gameServer;
     await server.listen(port, '127.0.0.1');

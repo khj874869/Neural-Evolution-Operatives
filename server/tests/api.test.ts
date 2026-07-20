@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createStandaloneHttpApp } from '../src/api/createHttpApp.js';
 import { TokenService } from '../src/auth/TokenService.js';
 import type { ServerConfig } from '../src/config/env.js';
@@ -9,6 +9,7 @@ import { InMemoryPlayerRepository } from '../src/persistence/InMemoryPlayerRepos
 const config: ServerConfig = {
   host: '127.0.0.1', port: 2567, corsOrigin: 'http://localhost:5173',
   jwtSecret: 'test-secret-that-is-long-enough-for-tests', nodeEnv: 'test',
+  releaseChannel: 'alpha', commitSha: 'abcdef0',
 };
 
 describe('game account API', () => {
@@ -35,7 +36,19 @@ describe('game account API', () => {
 
   it('exposes health without leaking secrets', async () => {
     const health = await request(app).get('/health').expect(200);
-    expect(health.body).toEqual({ status: 'ok', service: 'neural-evolution-game-server', storage: 'memory' });
+    expect(health.body).toEqual({
+      status: 'ok', service: 'neural-evolution-game-server', version: '1.1.0', channel: 'alpha', storage: 'memory',
+    });
+    expect(health.headers['x-request-id']).toBeTypeOf('string');
+    await request(app).get('/ready').expect(200, { status: 'ready', version: '1.1.0', channel: 'alpha' });
+    const release = await request(app).get('/api/release').expect(200);
+    expect(release.body).toMatchObject({
+      version: '1.1.0', channel: 'alpha', commit: 'abcdef0', commerceAvailable: false,
+    });
+    expect(new Date(release.body.serverTime).getTime()).not.toBeNaN();
+    vi.spyOn(repository, 'healthCheck').mockRejectedValueOnce(new Error('storage unavailable'));
+    const unavailable = await request(app).get('/ready').expect(503);
+    expect(unavailable.body).toMatchObject({ status: 'unavailable', requestId: expect.any(String) });
   });
 
   it('validates and saves an authenticated squad formation', async () => {

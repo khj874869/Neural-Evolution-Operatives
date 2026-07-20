@@ -44,6 +44,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .brand-mark { font: 22px 'Black Ops One'; color: var(--lime); border: 1px solid var(--lime); padding: 5px 8px; transform: skew(-7deg); }
 .brand b { display: block; font: 16px 'Black Ops One'; color: #fff; }
 .brand small { display: block; margin-top: 2px; color: #6f8f83; font: 10px 'Share Tech Mono'; }
+.release-badge { padding: 4px 6px; border: 1px solid rgba(71,215,194,.5); color: var(--cyan); background: rgba(71,215,194,.06); font: 8px 'Share Tech Mono'; font-style: normal; letter-spacing: .1em; white-space: nowrap; }
 .founder-badge { padding: 4px 6px; border: 1px solid rgba(255,215,106,.56); color: #ffd76a; background: rgba(255,215,106,.06); font: 8px 'Share Tech Mono'; font-style: normal; letter-spacing: .12em; }
 .mission { justify-self: center; color: #9eb8ae; font: 12px 'Share Tech Mono'; text-align: center; }
 .mission strong { color: var(--lime); }
@@ -309,6 +310,20 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .settings-actions button { padding: 11px 18px; border: 1px solid var(--line); color: #a8bcb4; background: #0b1713; font: 10px 'Share Tech Mono'; }
 .settings-actions .primary { width: auto; border: 0; color: #07100d; background: var(--lime); }
 
+.alpha-status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 20px 0 12px; }
+.alpha-status-grid article { padding: 15px; border: 1px solid var(--line); background: rgba(7,18,16,.72); }
+.alpha-status-grid span, .alpha-status-grid b, .alpha-status-grid small { display: block; }
+.alpha-status-grid span { color: #6d857b; font: 8px 'Share Tech Mono'; letter-spacing: .08em; }
+.alpha-status-grid b { margin: 7px 0 4px; color: #effbf5; font: 14px 'Share Tech Mono'; }
+.alpha-status-grid b.ok { color: var(--green); }
+.alpha-status-grid b.warn { color: #e5b65b; }
+.alpha-status-grid small { overflow: hidden; color: #60776e; font: 8px 'Share Tech Mono'; text-overflow: ellipsis; white-space: nowrap; }
+.alpha-notice { padding: 14px 16px; border-left: 3px solid var(--cyan); background: rgba(71,215,194,.04); }
+.alpha-notice b { color: #ecfff5; font-size: 11px; }
+.alpha-notice p { margin: 5px 0 0; color: #82998f; font-size: 10px; line-height: 1.7; }
+.diagnostic-preview { max-height: 190px; overflow: auto; margin: 12px 0 0; padding: 13px; border: 1px solid rgba(139,255,186,.12); color: #78968a; background: #050c0a; font: 9px/1.55 'Share Tech Mono'; white-space: pre-wrap; word-break: break-word; }
+.alpha-actions { flex-wrap: wrap; }
+
 .tutorial-card { max-width: 680px; margin: 0 auto; padding: 16px 10px 4px; text-align: center; }
 .tutorial-progress { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 0 0 28px; }
 .tutorial-progress i { height: 3px; background: #1d2e28; }
@@ -360,6 +375,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   .mobile-controls { display: flex; }
   .topbar { height: 58px; grid-template-columns: 1fr auto; padding: 0 10px; }
   .brand b { font-size: 12px; } .brand small, .brand-mark, .mission { display: none; }
+  .release-badge { font-size: 7px; }
   .resources { gap: 8px; } .resource { display: block; } .resource span { display: none; } .resource b { font-size: 11px; }
   .squad { top: 68px; left: 8px; width: 154px; padding: 5px; }
   .operative-chip { grid-template-columns: 28px 1fr; padding: 4px; } .op-avatar { width: 27px; height: 27px; } .rarity { display: none; }
@@ -418,6 +434,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   .setting-choice { align-items: stretch; flex-direction: column; }
   .setting-choice > div { display: grid; grid-template-columns: repeat(3, 1fr); }
   .privacy-grid { grid-template-columns: 1fr; }
+  .alpha-status-grid { grid-template-columns: repeat(2, 1fr); }
   .privacy-actions { grid-template-columns: 1fr; }
   .account-delete { grid-template-columns: 1fr; }
   .mobile-actions { grid-template-columns: 43px 43px 68px; }

@@ -14,6 +14,7 @@ export class InMemoryPlayerRepository implements PlayerRepository {
   readonly analytics: Array<{ playerId: string; event: FunnelEventName; properties: FunnelProperties }> = [];
 
   async initialize(): Promise<void> {}
+  async healthCheck(): Promise<void> {}
   async shutdown(): Promise<void> {}
 
   async getOrCreateGuest(deviceId: string): Promise<PlayerProfile> {

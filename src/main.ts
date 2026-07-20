@@ -19,6 +19,8 @@ import {
   type StoreProductId,
 } from '../packages/shared/src/commerce';
 import { neuralLinkSkill } from '../packages/shared/src/neuralLink';
+import { CLIENT_RELEASE } from './release';
+import { installGlobalErrorReporting } from './game/telemetry/ClientTelemetry';
 
 declare global {
   interface Window {
@@ -72,6 +74,8 @@ const modalContent = byId<HTMLDivElement>('modalContent');
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
 const toast = byId<HTMLDivElement>('toast');
+const storeButton = byId<HTMLButtonElement>('storeButton');
+const releaseBadge = byId<HTMLElement>('releaseBadge');
 const neuralLinkButton = byId<HTMLButtonElement>('neuralLinkButton');
 const neuralLinkPortrait = byId<HTMLImageElement>('neuralLinkPortrait');
 const neuralLinkSkillText = byId<HTMLElement>('neuralLinkSkill');
@@ -84,13 +88,18 @@ const neuralCutinName = byId<HTMLElement>('neuralCutinName');
 const neuralCutinLine = byId<HTMLElement>('neuralCutinLine');
 const bossIntro = byId<HTMLElement>('bossIntro');
 const dodgeButton = byId<HTMLButtonElement>('dodgeButton');
-let currentModal: 'shelter' | 'roster' | 'store' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
+let currentModal: 'shelter' | 'roster' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
 let latestProfile: PlayerProfile | null = null;
 let currentLinkLeader = '';
 let cutinTimer = 0;
 let bossIntroTimer = 0;
+
+releaseBadge.textContent = `${CLIENT_RELEASE.channel.toUpperCase()} ${CLIENT_RELEASE.version}`;
+releaseBadge.title = '비공개 테스트 빌드';
+document.body.dataset.releaseChannel = CLIENT_RELEASE.channel;
+storeButton.classList.toggle('hidden', !CLIENT_RELEASE.commerceEnabled);
 
 const labels = { scrap: '고철', water: '식수', data: '데이터', cores: '코어' } as const;
 const icons = { scrap: '▰', water: '◒', data: '◇', cores: '◈' } as const;
@@ -273,7 +282,7 @@ function renderPrivacyCenter(): void {
   currentModal = 'privacy';
   pauseForModal();
   modalContent.innerHTML = `
-    <span class="eyebrow">TRUST CENTER // RELEASE 1.0</span>
+    <span class="eyebrow">TRUST CENTER // RELEASE ${CLIENT_RELEASE.version}</span>
     <h2>개인정보·AI 투명성</h2>
     <p class="subtle">플레이에 필요한 데이터와 선택 분석 데이터를 분리하며, 대화 원문은 분석 이벤트에 포함하지 않습니다.</p>
     <div class="privacy-grid">
@@ -337,6 +346,51 @@ function renderPrivacyCenter(): void {
     }
   });
   modalContent.querySelector<HTMLButtonElement>('#privacyDone')?.addEventListener('click', renderSettings);
+}
+
+function renderAlphaInfo(): void {
+  currentModal = 'alpha';
+  pauseForModal();
+  const diagnostics = {
+    ...network.getDiagnostics(),
+    analyticsConsent: settings.analyticsConsent,
+    commerceEnabled: CLIENT_RELEASE.commerceEnabled,
+    generatedAt: new Date().toISOString(),
+  };
+  const serverVersion = diagnostics.server?.version ?? '연결되지 않음';
+  const versionMatch = diagnostics.server ? diagnostics.server.version === CLIENT_RELEASE.version : false;
+  modalContent.innerHTML = `
+    <span class="eyebrow">PRIVATE ALPHA // BUILD DIAGNOSTICS</span>
+    <h2>테스터 작전실</h2>
+    <p class="subtle">이 빌드는 정식 결제 없이 전투 안정성·조작성·첫 작전 완료율을 검증합니다.</p>
+    <div class="alpha-status-grid">
+      <article><span>CLIENT BUILD</span><b>${escapeHtml(CLIENT_RELEASE.version)}</b><small>${escapeHtml(CLIENT_RELEASE.channel.toUpperCase())} CHANNEL</small></article>
+      <article><span>GAME SERVER</span><b class="${diagnostics.connected ? 'ok' : 'warn'}">${diagnostics.connected ? 'ONLINE' : 'OFFLINE'}</b><small>SERVER ${escapeHtml(serverVersion)}</small></article>
+      <article><span>VERSION SYNC</span><b class="${versionMatch ? 'ok' : 'warn'}">${versionMatch ? 'MATCHED' : 'CHECK'}</b><small>${diagnostics.server?.commit ? escapeHtml(diagnostics.server.commit.slice(0, 12)) : 'NO COMMIT DATA'}</small></article>
+      <article><span>ERROR REPORTING</span><b>${settings.analyticsConsent ? 'ENABLED' : 'OPTED OUT'}</b><small>대화 원문·스택 미전송</small></article>
+    </div>
+    <div class="alpha-notice"><b>알파 테스트 범위</b><p>Operation Zero 완료, 서버 재접속, 모바일 터치·게임패드, 발열과 프레임 저하를 중점 확인합니다. 보급소는 플랫폼 샌드박스가 연결될 때까지 숨겨집니다.</p></div>
+    <pre class="diagnostic-preview">${escapeHtml(JSON.stringify(diagnostics, null, 2))}</pre>
+    <div class="settings-actions alpha-actions">
+      <button id="copyDiagnostics">진단 정보 복사</button>
+      <button id="alphaPrivacy">오류 수집 설정</button>
+      ${CLIENT_RELEASE.feedbackUrl ? '<button class="primary" id="openFeedback">피드백 보내기</button>' : ''}
+    </div>`;
+  modalContent.querySelector<HTMLButtonElement>('#copyDiagnostics')?.addEventListener('click', async () => {
+    const text = JSON.stringify(diagnostics, null, 2);
+    try {
+      if (!navigator.clipboard) throw new Error('CLIPBOARD_UNAVAILABLE');
+      await navigator.clipboard.writeText(text);
+      showToast('진단 정보가 복사되었습니다.');
+    } catch {
+      downloadJson(`neo-alpha-diagnostics-${Date.now()}.json`, diagnostics);
+      showToast('진단 정보 파일을 저장했습니다.');
+    }
+  });
+  modalContent.querySelector<HTMLButtonElement>('#alphaPrivacy')?.addEventListener('click', renderPrivacyCenter);
+  modalContent.querySelector<HTMLButtonElement>('#openFeedback')?.addEventListener('click', () => {
+    if (CLIENT_RELEASE.feedbackUrl) window.open(CLIENT_RELEASE.feedbackUrl, '_blank', 'noopener,noreferrer');
+  });
 }
 
 function downloadJson(filename: string, value: unknown): void {
@@ -544,6 +598,11 @@ function renderRoster(): void {
 }
 
 async function renderStore(): Promise<void> {
+  if (!CLIENT_RELEASE.commerceEnabled) {
+    renderAlphaInfo();
+    showToast('비공개 알파에서는 결제가 비활성화되어 있습니다.');
+    return;
+  }
   const wasOpen = currentModal === 'store';
   currentModal = 'store';
   pauseForModal();
@@ -682,7 +741,8 @@ commandForm.addEventListener('submit', (event) => {
 
 byId('shelterButton').addEventListener('click', renderShelter);
 byId('rosterButton').addEventListener('click', renderRoster);
-byId('storeButton').addEventListener('click', () => { void renderStore(); });
+storeButton.addEventListener('click', () => { void renderStore(); });
+byId('alphaButton').addEventListener('click', renderAlphaInfo);
 byId('settingsButton').addEventListener('click', renderSettings);
 byId('closeModal').addEventListener('click', closeModal);
 modalBackdrop.addEventListener('click', (event) => {
@@ -783,13 +843,7 @@ document.addEventListener('visibilitychange', () => {
     game.loop.wake();
   }
 });
-window.addEventListener('error', (event) => {
-  void network.track('client_error', { type: 'runtime', message: String(event.message || 'unknown').slice(0, 100) });
-});
-window.addEventListener('unhandledrejection', (event) => {
-  const message = event.reason instanceof Error ? event.reason.message : String(event.reason ?? 'unknown');
-  void network.track('client_error', { type: 'promise', message: message.slice(0, 100) });
-});
+installGlobalErrorReporting((error) => network.reportClientError(error));
 gameEvents.on('hud-update', (hud: {
   hp: number;
   radiation: number;

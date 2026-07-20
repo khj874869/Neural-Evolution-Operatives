@@ -6,6 +6,7 @@ export type ProfileMutation = (profile: PlayerProfile) => void | Promise<void>;
 
 export interface PlayerRepository {
   initialize(): Promise<void>;
+  healthCheck(): Promise<void>;
   shutdown(): Promise<void>;
   getOrCreateGuest(deviceId: string): Promise<PlayerProfile>;
   getById(playerId: string): Promise<PlayerProfile | null>;

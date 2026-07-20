@@ -9,6 +9,7 @@ import { TokenService } from '../auth/TokenService.js';
 import { CommerceError, CommerceService } from '../commerce/CommerceService.js';
 import { FUNNEL_EVENTS } from '../../../packages/shared/src/analytics.js';
 import { RECRUIT_ODDS, STORE_PRODUCT_IDS, STORE_PRODUCTS } from '../../../packages/shared/src/commerce.js';
+import { APP_VERSION } from '../../../packages/shared/src/release.js';
 
 export interface ApiDependencies {
   config: ServerConfig;
@@ -45,6 +46,9 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
   app.disable('x-powered-by');
   app.use(cors({ origin: deps.config.corsOrigin.split(',').map((origin) => origin.trim()), credentials: false }));
   app.use((_request, response, next) => {
+    const requestId = randomUUID();
+    response.locals.requestId = requestId;
+    response.setHeader('X-Request-Id', requestId);
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
@@ -54,7 +58,29 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
   app.use(express.json({ limit: '32kb' }));
 
   app.get('/health', async (_request, response) => {
-    response.json({ status: 'ok', service: 'neural-evolution-game-server', storage: deps.config.databaseUrl ? 'postgres' : 'memory' });
+    response.json({
+      status: 'ok', service: 'neural-evolution-game-server', version: APP_VERSION,
+      channel: deps.config.releaseChannel, storage: deps.config.databaseUrl ? 'postgres' : 'memory',
+    });
+  });
+
+  app.get('/ready', async (_request, response) => {
+    try {
+      await deps.repository.healthCheck();
+      response.json({ status: 'ready', version: APP_VERSION, channel: deps.config.releaseChannel });
+    } catch {
+      response.status(503).json({ status: 'unavailable', requestId: response.locals.requestId });
+    }
+  });
+
+  app.get('/api/release', (_request, response) => {
+    response.json({
+      version: APP_VERSION,
+      channel: deps.config.releaseChannel,
+      commit: deps.config.commitSha,
+      commerceAvailable: commerce.checkoutAvailable,
+      serverTime: new Date().toISOString(),
+    });
   });
 
   app.post('/api/auth/guest', async (request, response) => {
@@ -160,8 +186,8 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     if (error instanceof EconomyError) return response.status(error.status).json({ error: error.message });
     if (error instanceof CommerceError) return response.status(error.status).json({ error: error.message });
     if (error instanceof Error && error.message === 'PLAYER_NOT_FOUND') return response.status(404).json({ error: error.message });
-    console.error(error);
-    return response.status(500).json({ error: 'INTERNAL_SERVER_ERROR' });
+    console.error({ requestId: response.locals.requestId, error });
+    return response.status(500).json({ error: 'INTERNAL_SERVER_ERROR', requestId: response.locals.requestId });
   });
 }
 

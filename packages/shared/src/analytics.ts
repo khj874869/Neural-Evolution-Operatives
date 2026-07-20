@@ -10,3 +10,7 @@ export const FUNNEL_EVENTS = [
 
 export type FunnelEventName = typeof FUNNEL_EVENTS[number];
 export type FunnelProperties = Record<string, string | number | boolean>;
+
+export function limitFunnelProperties(properties: FunnelProperties, maximum = 12): FunnelProperties {
+  return Object.fromEntries(Object.entries(properties).slice(0, Math.max(0, maximum)));
+}

@@ -1,6 +1,6 @@
 {
   "name": "neural-evolution-operatives",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "build:server": "tsc -p server/tsconfig.json",
     "start:server": "node dist-server/server/src/index.js",
     "smoke:server": "node server/scripts/smoke.mjs",
+    "smoke:alpha": "node server/scripts/alpha-load.mjs",
     "mobile:add:android": "npm run build && cap add android",
     "mobile:sync": "npm run build && cap sync android",
     "mobile:open": "cap open android",

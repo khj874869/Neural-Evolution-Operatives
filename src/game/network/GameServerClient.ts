@@ -1,8 +1,11 @@
 import { Client, type Room } from '@colyseus/sdk';
 import type { EnemyKind, GameInputMessage, GuestAuthResponse, PlayerProfile, ServerEventMessage } from '../../../packages/shared/src/protocol';
-import type { FunnelEventName, FunnelProperties } from '../../../packages/shared/src/analytics';
+import { limitFunnelProperties, type FunnelEventName, type FunnelProperties } from '../../../packages/shared/src/analytics';
 import type { CommercePlatform, StoreProduct, StoreProductId } from '../../../packages/shared/src/commerce';
+import type { ReleaseChannel } from '../../../packages/shared/src/release';
+import { CLIENT_RELEASE, clientPlatform } from '../../release';
 import { gameEvents } from '../events';
+import type { ClientErrorReport } from '../telemetry/ClientTelemetry';
 
 export interface NetworkSnapshot {
   localSessionId: string;
@@ -23,11 +26,31 @@ export interface StoreCatalogResponse {
   priceNotice: string;
 }
 
+export interface ServerReleaseInfo {
+  version: string;
+  channel: ReleaseChannel;
+  commit: string;
+  commerceAvailable: boolean;
+  serverTime: string;
+}
+
+export interface AlphaDiagnostics {
+  appVersion: string;
+  releaseChannel: ReleaseChannel;
+  platform: 'android' | 'ios' | 'web';
+  endpointConfigured: boolean;
+  connected: boolean;
+  server: ServerReleaseInfo | null;
+}
+
 export class GameServerClient {
   private room?: Room;
   private token?: string;
   private readonly endpoint: string;
   private analyticsConsent = false;
+  private readonly analyticsQueue: Array<{ event: FunnelEventName; properties: FunnelProperties }> = [];
+  private readonly recentErrorFingerprints = new Map<string, number>();
+  private releaseInfo: ServerReleaseInfo | null = null;
   connected = false;
 
   constructor(endpoint = import.meta.env.VITE_GAME_SERVER_URL || (import.meta.env.DEV ? 'http://localhost:2567' : '')) {
@@ -36,6 +59,8 @@ export class GameServerClient {
 
   setAnalyticsConsent(consented: boolean): void {
     this.analyticsConsent = consented;
+    if (!consented) this.analyticsQueue.length = 0;
+    else void this.flushAnalytics();
   }
 
   async connect(): Promise<void> {
@@ -45,6 +70,7 @@ export class GameServerClient {
     }
     gameEvents.emit('network-status', 'connecting', '서버 연결 중');
     try {
+      this.releaseInfo = await this.request<ServerReleaseInfo>('/api/release', { method: 'GET' }).catch(() => null);
       const auth = await this.request<GuestAuthResponse>('/api/auth/guest', {
         method: 'POST', body: JSON.stringify({ deviceId: deviceId() }),
       });
@@ -75,7 +101,10 @@ export class GameServerClient {
         gameEvents.emit('network-status', 'offline', '연결 종료 · 로컬 모드');
       });
       this.room.onError((_code, message) => gameEvents.emit('feed', message ?? '게임룸 통신 오류', true));
-      void this.track('session_start', { mode: 'online' });
+      await this.flushAnalytics();
+      void this.track('session_start', {
+        mode: 'online', serverVersion: this.releaseInfo?.version ?? 'unknown',
+      });
       void this.claimOffline();
     } catch {
       this.connected = false;
@@ -84,7 +113,7 @@ export class GameServerClient {
   }
 
   sendInput(input: GameInputMessage): void {
-    if (this.connected) this.room?.sendUnreliable('input', input);
+    if (this.connected) this.room?.send('input', input);
   }
 
   sendTactical(text: string): void {
@@ -147,14 +176,42 @@ export class GameServerClient {
   }
 
   async track(event: FunnelEventName, properties: FunnelProperties = {}): Promise<void> {
-    if (!this.analyticsConsent || !this.endpoint || !this.token) return;
+    if (!this.analyticsConsent || !this.endpoint) return;
+    const payload = { event, properties: this.enrichAnalytics(properties) };
+    if (!this.token) {
+      this.enqueueAnalytics(payload);
+      return;
+    }
     try {
       await this.authorized('/api/analytics/events', {
-        method: 'POST', body: JSON.stringify({ event, properties }),
+        method: 'POST', body: JSON.stringify(payload),
       });
     } catch {
       // Funnel tracking must never interrupt play.
     }
+  }
+
+  reportClientError(error: ClientErrorReport): void {
+    const now = Date.now();
+    const previous = this.recentErrorFingerprints.get(error.fingerprint) ?? 0;
+    if (now - previous < 30_000) return;
+    this.recentErrorFingerprints.set(error.fingerprint, now);
+    if (this.recentErrorFingerprints.size > 24) {
+      const oldest = this.recentErrorFingerprints.keys().next().value as string | undefined;
+      if (oldest) this.recentErrorFingerprints.delete(oldest);
+    }
+    void this.track('client_error', { ...error });
+  }
+
+  getDiagnostics(): AlphaDiagnostics {
+    return {
+      appVersion: CLIENT_RELEASE.version,
+      releaseChannel: CLIENT_RELEASE.channel,
+      platform: clientPlatform(),
+      endpointConfigured: Boolean(this.endpoint),
+      connected: this.connected,
+      server: this.releaseInfo ? { ...this.releaseInfo } : null,
+    };
   }
 
   private async claimOffline(): Promise<void> {
@@ -170,6 +227,37 @@ export class GameServerClient {
   private async refreshProfile(): Promise<void> {
     const response = await this.authorized<{ profile: PlayerProfile }>('/api/profile');
     gameEvents.emit('network-profile', response.profile);
+  }
+
+  private enrichAnalytics(properties: FunnelProperties): FunnelProperties {
+    const custom = Object.fromEntries(
+      Object.entries(properties).filter(([key]) => !['version', 'channel', 'platform'].includes(key)),
+    );
+    return limitFunnelProperties({
+      version: CLIENT_RELEASE.version,
+      channel: CLIENT_RELEASE.channel,
+      platform: clientPlatform(),
+      ...custom,
+    });
+  }
+
+  private enqueueAnalytics(payload: { event: FunnelEventName; properties: FunnelProperties }): void {
+    this.analyticsQueue.push(payload);
+    if (this.analyticsQueue.length > 20) this.analyticsQueue.shift();
+  }
+
+  private async flushAnalytics(): Promise<void> {
+    if (!this.analyticsConsent || !this.endpoint || !this.token || !this.analyticsQueue.length) return;
+    const pending = this.analyticsQueue.splice(0);
+    for (const payload of pending) {
+      try {
+        await this.authorized('/api/analytics/events', {
+          method: 'POST', body: JSON.stringify(payload),
+        });
+      } catch {
+        // Best-effort alpha telemetry must never block startup.
+      }
+    }
   }
 
   private async authorized<T>(path: string, init: RequestInit = {}): Promise<T> {

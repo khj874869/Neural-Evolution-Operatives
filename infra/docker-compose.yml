@@ -40,6 +40,8 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET to a random value of at least 32 characters}
       DATABASE_URL: postgresql://neo:${POSTGRES_PASSWORD:-neo_local_password}@postgres:5432/neural_evolution
       REDIS_URL: redis://redis:6379
+      RELEASE_CHANNEL: ${RELEASE_CHANNEL:-alpha}
+      COMMIT_SHA: ${COMMIT_SHA:-unknown}
     ports:
       - "2567:2567"
     depends_on:

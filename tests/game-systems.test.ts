@@ -9,6 +9,9 @@ import { DEFAULT_SETTINGS, sanitizeSettings } from '../src/game/settings';
 import { projectileAngles, WEAPON_SPECS, weaponFromSlot } from '../packages/shared/src/combat';
 import { evaluateOperationZero } from '../src/game/systems/OperationZero';
 import { addNeuralCharge, neuralLinkLeader, neuralLinkSkill } from '../packages/shared/src/neuralLink';
+import { normalizeReleaseChannel } from '../packages/shared/src/release';
+import { clientPlatform } from '../src/release';
+import { createClientErrorReport, sanitizeErrorMessage } from '../src/game/telemetry/ClientTelemetry';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -103,5 +106,24 @@ describe('neural link rules', () => {
     expect(neuralLinkSkill('lumen').role).toBe('Support');
     expect(neuralLinkSkill('morrow').name).toBe('LAST LIGHT');
     expect(addNeuralCharge(94, 12)).toBe(100);
+  });
+});
+
+describe('private alpha release diagnostics', () => {
+  it('normalizes release channels and coarse client platforms', () => {
+    expect(normalizeReleaseChannel('beta')).toBe('beta');
+    expect(normalizeReleaseChannel('nightly')).toBe('alpha');
+    expect(clientPlatform('Mozilla/5.0 (Linux; Android 16)')).toBe('android');
+    expect(clientPlatform('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0)')).toBe('ios');
+  });
+
+  it('removes URLs and identifiers from consented error reports', () => {
+    const message = sanitizeErrorMessage(
+      'Failed https://example.com/player/123 123e4567-e89b-12d3-a456-426614174000',
+    );
+    expect(message).toBe('Failed [url] [id]');
+    expect(createClientErrorReport('promise', new Error(message))).toMatchObject({
+      type: 'promise', message, fingerprint: expect.stringMatching(/^[a-f0-9]{8}$/),
+    });
   });
 });

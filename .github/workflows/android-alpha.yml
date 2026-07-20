@@ -1,0 +1,69 @@
+name: Android Private Alpha
+
+on:
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: HTTPS game server URL embedded in the alpha client
+        required: true
+        type: string
+      feedback_url:
+        description: Optional HTTPS feedback form URL
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-alpha:
+    runs-on: ubuntu-latest
+    env:
+      VITE_GAME_SERVER_URL: ${{ inputs.server_url }}
+      VITE_FEEDBACK_URL: ${{ inputs.feedback_url }}
+      VITE_RELEASE_CHANNEL: alpha
+      VITE_ENABLE_COMMERCE: 'false'
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/neo-alpha-release.jks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - run: npm ci
+      - run: npm run check
+      - run: npm run mobile:sync
+      - name: Prepare optional release signing
+        shell: bash
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          fi
+      - name: Build alpha artifact
+        working-directory: android
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew printAlphaSigningStatus
+          if [ -s "$ANDROID_KEYSTORE_PATH" ]; then
+            ./gradlew bundleRelease
+          else
+            ./gradlew assembleDebug
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neural-operatives-alpha-${{ github.run_number }}
+          if-no-files-found: error
+          path: |
+            android/app/build/outputs/bundle/release/*.aab
+            android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14

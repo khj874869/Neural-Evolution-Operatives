@@ -1,3 +1,5 @@
+import { normalizeReleaseChannel, type ReleaseChannel } from '../../../packages/shared/src/release.js';
+
 export interface ServerConfig {
   host: string;
   port: number;
@@ -6,6 +8,8 @@ export interface ServerConfig {
   databaseUrl?: string;
   redisUrl?: string;
   nodeEnv: string;
+  releaseChannel: ReleaseChannel;
+  commitSha: string;
 }
 
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -30,5 +34,11 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     databaseUrl: env.DATABASE_URL || undefined,
     redisUrl: env.REDIS_URL || undefined,
     nodeEnv,
+    releaseChannel: normalizeReleaseChannel(env.RELEASE_CHANNEL, nodeEnv === 'development' ? 'development' : 'alpha'),
+    commitSha: sanitizeCommitSha(env.COMMIT_SHA),
   };
+}
+
+function sanitizeCommitSha(value: string | undefined): string {
+  return value && /^[a-f0-9]{7,40}$/i.test(value) ? value.toLowerCase() : 'unknown';
 }
