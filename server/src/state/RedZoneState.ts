@@ -14,11 +14,14 @@ export class PlayerState extends Schema {
   cargoCores = 0;
   kills = 0;
   lastSequence = 0;
+  linkCharge = 0;
+  dashCooldownMs = 0;
 }
 defineTypes(PlayerState, {
   playerId: 'string', displayName: 'string', x: 'number', y: 'number', aimAngle: 'number',
   hp: 'number', radiation: 'number', cargoScrap: 'number', cargoWater: 'number',
-  cargoData: 'number', cargoCores: 'number', kills: 'uint16', lastSequence: 'uint32',
+  cargoData: 'number', cargoCores: 'number', kills: 'uint16', lastSequence: 'uint32', linkCharge: 'uint8',
+  dashCooldownMs: 'uint16',
 });
 
 export class EnemyState extends Schema {

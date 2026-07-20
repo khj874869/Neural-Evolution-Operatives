@@ -1,4 +1,4 @@
-const CACHE_NAME = 'neo-static-v0.5.0';
+const CACHE_NAME = 'neo-static-v1.0.0';
 const APP_SHELL = ['./', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (event) => {

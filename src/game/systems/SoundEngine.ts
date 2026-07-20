@@ -1,5 +1,5 @@
 export type GameSfx = 'fire' | 'companion-fire' | 'hit' | 'kill' | 'hurt' | 'pickup' | 'extract' | 'storm'
-  | 'command' | 'ui' | 'weapon' | 'boss' | 'boss-ability' | 'boss-down';
+  | 'command' | 'ui' | 'weapon' | 'dash' | 'boss' | 'boss-ability' | 'boss-down' | 'neural-link';
 
 export class SoundEngine {
   private context?: AudioContext;
@@ -64,6 +64,10 @@ export class SoundEngine {
         this.tone(420, 260, 0.07, 'square', 0.035);
         this.tone(720, 840, 0.055, 'triangle', 0.025, 0.055);
         break;
+      case 'dash':
+        this.tone(520, 92, 0.16, 'sawtooth', 0.04);
+        this.tone(880, 260, 0.1, 'triangle', 0.025, 0.02);
+        break;
       case 'boss':
         this.tone(66, 29, 0.62, 'sawtooth', 0.08);
         this.tone(102, 44, 0.48, 'square', 0.035, 0.12);
@@ -74,6 +78,11 @@ export class SoundEngine {
       case 'boss-down':
         this.tone(94, 31, 0.5, 'sawtooth', 0.075);
         this.tone(320, 760, 0.42, 'sine', 0.05, 0.18);
+        break;
+      case 'neural-link':
+        this.tone(180, 980, 0.42, 'sawtooth', 0.055);
+        this.tone(440, 1320, 0.34, 'triangle', 0.045, 0.08);
+        this.tone(110, 220, 0.5, 'square', 0.028, 0.16);
         break;
     }
   }

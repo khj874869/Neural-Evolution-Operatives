@@ -12,9 +12,28 @@ import { describeSquadBonuses } from '../packages/shared/src/squad';
 import { SoundEngine, type GameSfx } from './game/systems/SoundEngine';
 import type { OperationStatus } from './game/systems/OperationZero';
 import { WEAPON_SPECS, type WeaponId } from '../packages/shared/src/combat';
+import {
+  RECRUIT_ODDS,
+  STORE_PRODUCTS,
+  type CommercePlatform,
+  type StoreProductId,
+} from '../packages/shared/src/commerce';
+import { neuralLinkSkill } from '../packages/shared/src/neuralLink';
+
+declare global {
+  interface Window {
+    NeoBilling?: {
+      getProducts(): Promise<Array<{ productId: StoreProductId; localizedPrice: string }>>;
+      purchase(productId: StoreProductId): Promise<{ platform: CommercePlatform; receipt: string }>;
+      restorePurchases(): Promise<Array<{ platform: CommercePlatform; productId: StoreProductId; receipt: string }>>;
+    };
+  }
+}
 
 const state = new GameState();
-const mobileInput: MobileInputState = { up: false, down: false, left: false, right: false, fire: false };
+const mobileInput: MobileInputState = {
+  up: false, down: false, left: false, right: false, fire: false, dash: false, extract: false,
+};
 const network = new GameServerClient();
 let settings = loadSettings();
 const sound = new SoundEngine();
@@ -53,9 +72,25 @@ const modalContent = byId<HTMLDivElement>('modalContent');
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
 const toast = byId<HTMLDivElement>('toast');
-let currentModal: 'shelter' | 'roster' | 'settings' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
+const neuralLinkButton = byId<HTMLButtonElement>('neuralLinkButton');
+const neuralLinkPortrait = byId<HTMLImageElement>('neuralLinkPortrait');
+const neuralLinkSkillText = byId<HTMLElement>('neuralLinkSkill');
+const neuralLinkBar = byId<HTMLElement>('neuralLinkBar');
+const neuralLinkChargeText = byId<HTMLElement>('neuralLinkCharge');
+const neuralCutin = byId<HTMLElement>('neuralCutin');
+const neuralCutinPortrait = byId<HTMLImageElement>('neuralCutinPortrait');
+const neuralCutinSkill = byId<HTMLElement>('neuralCutinSkill');
+const neuralCutinName = byId<HTMLElement>('neuralCutinName');
+const neuralCutinLine = byId<HTMLElement>('neuralCutinLine');
+const bossIntro = byId<HTMLElement>('bossIntro');
+const dodgeButton = byId<HTMLButtonElement>('dodgeButton');
+let currentModal: 'shelter' | 'roster' | 'store' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
+let latestProfile: PlayerProfile | null = null;
+let currentLinkLeader = '';
+let cutinTimer = 0;
+let bossIntroTimer = 0;
 
 const labels = { scrap: '고철', water: '식수', data: '데이터', cores: '코어' } as const;
 const icons = { scrap: '▰', water: '◒', data: '◇', cores: '◈' } as const;
@@ -67,10 +102,12 @@ const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>>
 };
 const tutorialSteps = [
   { code: '01 // MOVE', icon: '⌖', title: '레드 존 이동', body: 'PC는 WASD 또는 방향키, 모바일은 왼쪽 방향 패드로 이동합니다. 멈춰 있으면 적응형 AI가 우회 병력을 투입합니다.' },
-  { code: '02 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 쓰러뜨린 적에게서 자원이 떨어집니다.' },
-  { code: '03 // LOADOUT', icon: '⌁', title: '실시간 무장 전환', body: '카빈은 균형형, 파쇄포는 근거리 산탄, 코일건은 장거리 고화력 무장입니다. PC는 숫자 1·2·3, 모바일은 하단 무장 버튼으로 바꿉니다.' },
-  { code: '04 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.' },
-  { code: '05 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E를 누르세요. 모바일은 리프트 진입 시 자동 추출합니다. 사망하면 현장 화물을 모두 잃습니다.' },
+  { code: '02 // DODGE', icon: '➤', title: '긴급 회피', body: 'PC는 Space, 모바일은 DODGE로 1.8초마다 빠르게 이탈합니다. 게임패드는 B 버튼을 사용합니다.' },
+  { code: '03 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 게임패드는 오른쪽 스틱과 A/RT를 사용합니다.' },
+  { code: '04 // LOADOUT', icon: '⌁', title: '실시간 무장 전환', body: '카빈은 균형형, 파쇄포는 근거리 산탄, 코일건은 장거리 고화력 무장입니다. PC는 숫자 1·2·3, 모바일은 하단 무장 버튼으로 바꿉니다.' },
+  { code: '05 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.' },
+  { code: '06 // NEURAL LINK', icon: '◉', title: '분대 리미트 브레이크', body: '교전으로 링크 게이지를 100% 충전한 뒤 PC는 Q, 모바일은 리더 초상화 버튼을 누르세요. 분대 1번 리더의 역할별 필살기가 발동합니다.' },
+  { code: '07 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E, 모바일은 EXTRACT를 누르세요. 사망하면 현장 화물을 모두 잃습니다.' },
 ] as const;
 
 function renderPersistentHud(): void {
@@ -90,6 +127,38 @@ function showToast(message: string): void {
   toast.textContent = message;
   toast.classList.add('show');
   window.setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+function showNeuralCutin(operatorId: string, skillName: string): void {
+  const operator = getOperator(operatorId);
+  const skill = neuralLinkSkill(operatorId);
+  window.clearTimeout(cutinTimer);
+  neuralCutin.style.setProperty('--link-color', `#${skill.color.toString(16).padStart(6, '0')}`);
+  neuralCutinPortrait.src = operator.portrait;
+  neuralCutinPortrait.alt = `${operator.name} 뉴럴 링크 컷인`;
+  neuralCutinSkill.textContent = skillName;
+  neuralCutinName.textContent = `${operator.callsign} // ${operator.name}`;
+  neuralCutinLine.textContent = `“${operator.combatLine}”`;
+  neuralCutin.setAttribute('aria-hidden', 'false');
+  neuralCutin.classList.remove('active');
+  void neuralCutin.offsetWidth;
+  neuralCutin.classList.add('active');
+  cutinTimer = window.setTimeout(() => {
+    neuralCutin.classList.remove('active');
+    neuralCutin.setAttribute('aria-hidden', 'true');
+  }, settings.reducedMotion ? 850 : 2200);
+}
+
+function showBossIntro(): void {
+  window.clearTimeout(bossIntroTimer);
+  bossIntro.setAttribute('aria-hidden', 'false');
+  bossIntro.classList.remove('active');
+  void bossIntro.offsetWidth;
+  bossIntro.classList.add('active');
+  bossIntroTimer = window.setTimeout(() => {
+    bossIntro.classList.remove('active');
+    bossIntro.setAttribute('aria-hidden', 'true');
+  }, settings.reducedMotion ? 900 : 2600);
 }
 
 function escapeHtml(value: string): string {
@@ -112,14 +181,21 @@ function pauseForModal(): void {
 }
 
 function closeModal(): void {
+  const closing = currentModal;
   if (currentModal === 'tutorial' && !settings.tutorialComplete) {
     settings = { ...settings, tutorialComplete: true };
+    applySettings();
+    void network.track('tutorial_complete', { steps: tutorialSteps.length, skipped: true });
+  }
+  if (currentModal === 'privacy' && !settings.consentReviewed) {
+    settings = { ...settings, consentReviewed: true, analyticsConsent: false };
     applySettings();
   }
   modalBackdrop.classList.add('hidden');
   currentModal = null;
   sound.play('ui');
   gameEvents.emit('resume-world');
+  if (closing === 'privacy' && !settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 180);
 }
 
 function applySettings(): void {
@@ -128,17 +204,22 @@ function applySettings(): void {
   game.sound.mute = !settings.sound;
   game.registry.set('settings', settings);
   document.body.classList.toggle('reduced-motion', settings.reducedMotion);
+  document.body.classList.remove('ui-compact', 'ui-large', 'vision-deuteranopia', 'vision-high-contrast');
+  if (settings.uiScale !== 'standard') document.body.classList.add(`ui-${settings.uiScale}`);
+  if (settings.colorVision !== 'standard') document.body.classList.add(`vision-${settings.colorVision}`);
   byId<HTMLButtonElement>('muteButton').textContent = settings.sound ? 'SFX ON' : 'SFX OFF';
+  network.setAnalyticsConsent(settings.analyticsConsent);
   gameEvents.emit('settings-changed', settings);
 }
 
 function renderSettings(): void {
   currentModal = 'settings';
   pauseForModal();
-  const toggles: Array<{ key: 'sound' | 'haptics' | 'reducedMotion'; label: string; description: string }> = [
+  const toggles: Array<{ key: 'sound' | 'haptics' | 'reducedMotion' | 'analyticsConsent'; label: string; description: string }> = [
     { key: 'sound', label: '전투 사운드', description: '사격, 타격, 환경 경보와 UI 합성음을 재생합니다.' },
     { key: 'haptics', label: '모바일 진동', description: '사격, 피격, 획득과 추출 순간에 촉각 피드백을 제공합니다.' },
     { key: 'reducedMotion', label: '모션 감소', description: '화면 흔들림과 전투 파티클 수를 줄여 멀미와 발열을 완화합니다.' },
+    { key: 'analyticsConsent', label: '선택 분석 데이터', description: '개인 대화 내용 없이 진행·오류 이벤트만 전송합니다. 언제든 끌 수 있습니다.' },
   ];
   modalContent.innerHTML = `
     <span class="eyebrow">SYSTEM CONFIG // DEVICE PROFILE</span>
@@ -149,21 +230,126 @@ function renderSettings(): void {
         <span><b>${toggle.label}</b><small>${toggle.description}</small></span>
         <em>${settings[toggle.key] ? 'ON' : 'OFF'}</em>
       </button>`).join('')}</div>
+    <div class="setting-choice"><span><b>인터페이스 크기</b><small>HUD와 메뉴 텍스트 크기를 조정합니다.</small></span><div>
+      ${(['compact', 'standard', 'large'] as const).map((value) => `<button data-ui-scale="${value}" class="${settings.uiScale === value ? 'selected' : ''}">${value === 'compact' ? '작게' : value === 'large' ? '크게' : '기본'}</button>`).join('')}
+    </div></div>
+    <div class="setting-choice"><span><b>색상 식별 모드</b><small>위험·아군·상호작용 색 대비를 변경합니다.</small></span><div>
+      ${(['standard', 'deuteranopia', 'high-contrast'] as const).map((value) => `<button data-color-vision="${value}" class="${settings.colorVision === value ? 'selected' : ''}">${value === 'standard' ? '기본' : value === 'deuteranopia' ? '적록 보정' : '고대비'}</button>`).join('')}
+    </div></div>
     <div class="settings-actions">
       <button id="replayTutorial">튜토리얼 다시 보기</button>
+      <button id="openPrivacy">개인정보·AI 안내</button>
       <button class="primary" id="closeSettings">설정 완료</button>
     </div>`;
   modalContent.querySelectorAll<HTMLButtonElement>('[data-setting]').forEach((button) => {
     button.addEventListener('click', () => {
-      const key = button.dataset.setting as 'sound' | 'haptics' | 'reducedMotion';
+      const key = button.dataset.setting as 'sound' | 'haptics' | 'reducedMotion' | 'analyticsConsent';
       settings = { ...settings, [key]: !settings[key] };
       applySettings();
       if (settings.sound) sound.play('ui');
       renderSettings();
     });
   });
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-ui-scale]').forEach((button) => {
+    button.addEventListener('click', () => {
+      settings = { ...settings, uiScale: button.dataset.uiScale as typeof settings.uiScale };
+      applySettings();
+      renderSettings();
+    });
+  });
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-color-vision]').forEach((button) => {
+    button.addEventListener('click', () => {
+      settings = { ...settings, colorVision: button.dataset.colorVision as typeof settings.colorVision };
+      applySettings();
+      renderSettings();
+    });
+  });
   modalContent.querySelector<HTMLButtonElement>('#replayTutorial')?.addEventListener('click', () => renderTutorial(0));
+  modalContent.querySelector<HTMLButtonElement>('#openPrivacy')?.addEventListener('click', () => renderPrivacyCenter());
   modalContent.querySelector<HTMLButtonElement>('#closeSettings')?.addEventListener('click', closeModal);
+}
+
+function renderPrivacyCenter(): void {
+  currentModal = 'privacy';
+  pauseForModal();
+  modalContent.innerHTML = `
+    <span class="eyebrow">TRUST CENTER // RELEASE 1.0</span>
+    <h2>개인정보·AI 투명성</h2>
+    <p class="subtle">플레이에 필요한 데이터와 선택 분석 데이터를 분리하며, 대화 원문은 분석 이벤트에 포함하지 않습니다.</p>
+    <div class="privacy-grid">
+      <article><b>필수 게임 데이터</b><p>게스트 식별자, 재화, 쉘터, 오퍼레이터, 편성과 구매 검증 기록을 계정 유지와 부정 지급 방지에 사용합니다.</p></article>
+      <article><b>선택 분석 데이터</b><p>동의한 경우 튜토리얼·작전·보급소 진행과 익명화된 오류 종류만 기록합니다. 설정에서 즉시 철회할 수 있습니다.</p></article>
+      <article><b>AI 처리 범위</b><p>현재 전술 명령과 캐릭터 응답은 안전한 규칙 엔진으로 기기에서 처리됩니다. 외부 LLM·음성 API로 대화를 전송하지 않습니다.</p></article>
+    </div>
+    <div class="consent-panel">선택 분석 데이터: <b>${settings.analyticsConsent ? '허용됨' : '사용 안 함'}</b><br />결제 영수증은 재화 중복 지급 방지를 위해 계정 삭제 후에도 거래 식별자만 분리 보존될 수 있습니다.</div>
+    ${!settings.consentReviewed ? `<div class="privacy-actions"><button id="essentialOnly">필수 데이터만 사용</button><button class="primary" id="allowAnalytics">선택 분석 허용</button></div>` : `
+      <div class="privacy-actions">
+        <button id="toggleAnalytics">선택 분석 ${settings.analyticsConsent ? '끄기' : '켜기'}</button>
+        <button id="exportAccount">내 데이터 JSON 내보내기</button>
+      </div>
+      <div class="account-delete"><input id="deleteConfirmation" autocomplete="off" placeholder="계정을 삭제하려면 DELETE 입력" /><button class="danger" id="deleteAccount" disabled>계정 영구 삭제</button></div>
+      <div class="settings-actions"><button class="primary" id="privacyDone">설정으로 돌아가기</button></div>`}
+  `;
+
+  const finishConsent = (analyticsConsent: boolean) => {
+    settings = { ...settings, analyticsConsent, consentReviewed: true };
+    applySettings();
+    closeModal();
+  };
+  modalContent.querySelector<HTMLButtonElement>('#essentialOnly')?.addEventListener('click', () => finishConsent(false));
+  modalContent.querySelector<HTMLButtonElement>('#allowAnalytics')?.addEventListener('click', () => finishConsent(true));
+  modalContent.querySelector<HTMLButtonElement>('#toggleAnalytics')?.addEventListener('click', () => {
+    settings = { ...settings, analyticsConsent: !settings.analyticsConsent, consentReviewed: true };
+    applySettings();
+    renderPrivacyCenter();
+  });
+  modalContent.querySelector<HTMLButtonElement>('#exportAccount')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    button.disabled = true;
+    button.textContent = '내보내는 중...';
+    try {
+      const payload = network.connected
+        ? await network.exportAccount()
+        : { schemaVersion: 1, exportedAt: new Date().toISOString(), mode: 'local', profile: state.snapshot() };
+      downloadJson(`neural-operatives-data-${new Date().toISOString().slice(0, 10)}.json`, payload);
+      showToast('계정 데이터 내보내기 완료');
+    } catch {
+      showToast('데이터를 내보내지 못했습니다. 연결 상태를 확인하세요.');
+      button.disabled = false;
+      button.textContent = '내 데이터 JSON 내보내기';
+    }
+  });
+  const confirmation = modalContent.querySelector<HTMLInputElement>('#deleteConfirmation');
+  const deleteButton = modalContent.querySelector<HTMLButtonElement>('#deleteAccount');
+  confirmation?.addEventListener('input', () => { if (deleteButton) deleteButton.disabled = confirmation.value !== 'DELETE'; });
+  deleteButton?.addEventListener('click', async () => {
+    if (confirmation?.value !== 'DELETE') return;
+    deleteButton.disabled = true;
+    deleteButton.textContent = '삭제 중...';
+    try {
+      if (network.connected) await network.deleteAccount();
+      clearLocalAccount();
+      window.location.reload();
+    } catch {
+      deleteButton.disabled = false;
+      deleteButton.textContent = '계정 영구 삭제';
+      showToast('계정을 삭제하지 못했습니다. 서버 연결을 확인하세요.');
+    }
+  });
+  modalContent.querySelector<HTMLButtonElement>('#privacyDone')?.addEventListener('click', renderSettings);
+}
+
+function downloadJson(filename: string, value: unknown): void {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+function clearLocalAccount(): void {
+  for (const key of ['neo-save-v1', 'neo-settings-v1', 'neo-settings-v2', 'neo-device-id']) localStorage.removeItem(key);
 }
 
 function renderTutorial(step: number): void {
@@ -179,9 +365,11 @@ function renderTutorial(step: number): void {
       <h2>${tutorial.title}</h2>
       <p>${tutorial.body}</p>
       <div class="tutorial-keys">${safeStep === 0 ? '<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>'
-        : safeStep === 1 ? '<kbd>CLICK</kbd><kbd>FIRE</kbd>'
-          : safeStep === 2 ? '<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>'
-            : safeStep === 3 ? '<kbd>TACTICAL://</kbd>' : '<kbd>E</kbd><kbd>AUTO</kbd>'}</div>
+        : safeStep === 1 ? '<kbd>SPACE</kbd><kbd>DODGE</kbd>'
+          : safeStep === 2 ? '<kbd>CLICK</kbd><kbd>FIRE</kbd>'
+            : safeStep === 3 ? '<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>'
+              : safeStep === 4 ? '<kbd>TACTICAL://</kbd>'
+                : safeStep === 5 ? '<kbd>Q</kbd><kbd>100%</kbd>' : '<kbd>E</kbd><kbd>EXTRACT</kbd>'}</div>
       <div class="tutorial-actions">
         <button id="skipTutorial">건너뛰기</button>
         <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? '작전 투입' : '다음 단계'}</button>
@@ -196,6 +384,7 @@ function renderTutorial(step: number): void {
     }
     settings = { ...settings, tutorialComplete: true };
     applySettings();
+    void network.track('tutorial_complete', { steps: tutorialSteps.length });
     closeModal();
   });
 }
@@ -354,6 +543,95 @@ function renderRoster(): void {
   });
 }
 
+async function renderStore(): Promise<void> {
+  const wasOpen = currentModal === 'store';
+  currentModal = 'store';
+  pauseForModal();
+  modalContent.innerHTML = `
+    <div class="store-loading">
+      <span class="eyebrow">SHELTER QUARTERMASTER // SECURE UPLINK</span>
+      <h2>보급소 연결 중</h2><i></i>
+    </div>`;
+  if (!wasOpen) void network.track('store_view', { source: 'command_dock' });
+
+  const catalog = await network.getStoreCatalog();
+  const platformListings = window.NeoBilling
+    ? await window.NeoBilling.getProducts().catch(() => [])
+    : [];
+  if (currentModal !== 'store') return;
+  const products = catalog?.products ?? [...STORE_PRODUCTS];
+  const odds = catalog?.recruitOdds ?? RECRUIT_ODDS;
+  const billingReady = Boolean(network.connected && catalog?.checkoutAvailable && window.NeoBilling && platformListings.length);
+  const founderOwned = latestProfile?.commerce.entitlements.includes('founder_badge') ?? false;
+  const subscriptionUntil = latestProfile?.commerce.subscriptionUntil;
+  const subscriptionActive = subscriptionUntil ? new Date(subscriptionUntil).getTime() > Date.now() : false;
+
+  modalContent.innerHTML = `
+    <span class="eyebrow">SHELTER QUARTERMASTER // VERIFIED SUPPLY</span>
+    <div class="store-heading">
+      <div><h2>레드 존 보급소</h2><p class="subtle">결제 성공을 플랫폼과 서버가 모두 확인한 뒤에만 계정으로 지급됩니다.</p></div>
+      <div class="store-status"><span class="checkout-state ${billingReady ? 'ready' : ''}">${billingReady ? '● CHECKOUT READY' : '○ PREVIEW MODE'}</span>
+        <button id="restorePurchases" ${billingReady ? '' : 'disabled'}>구매 복원</button></div>
+    </div>
+    <div class="store-grid">${products.map((product) => {
+      const listing = platformListings.find((item) => item.productId === product.id);
+      const owned = product.id === 'founder_supply' && founderOwned;
+      const active = product.id === 'neural_sync_30d' && subscriptionActive;
+      const disabled = !billingReady || !listing || owned;
+      return `<article class="store-card ${product.badge ? 'featured' : ''}">
+        <div class="store-card-top"><span>${product.badge ?? product.type.replace('_', ' ').toUpperCase()}</span><b>${escapeHtml(product.title)}</b></div>
+        <div class="store-product-mark">${product.id === 'core_cache_s' ? '◈' : product.id === 'founder_supply' ? 'N//E' : '∞'}</div>
+        <p>${escapeHtml(product.description)}</p>
+        ${active ? `<small class="active-plan">ACTIVE // ${new Date(subscriptionUntil!).toLocaleDateString('ko-KR')}까지</small>` : ''}
+        <div class="store-purchase"><strong>${escapeHtml(listing?.localizedPrice ?? `₩${product.displayPriceKrw.toLocaleString('ko-KR')}`)}</strong>
+          <button class="primary" data-purchase="${product.id}" ${disabled ? 'disabled' : ''}>${owned ? '보유 중' : billingReady ? '구매' : '결제 준비 중'}</button>
+        </div>
+      </article>`;
+    }).join('')}</div>
+    <section class="odds-disclosure">
+      <div><span class="eyebrow">NEURAL CORE RESTORE // DISCLOSED ODDS</span><b>오퍼레이터 모집 확률</b></div>
+      <dl><div><dt>SSR</dt><dd>${Math.round(odds.SSR * 100)}%</dd></div><div><dt>SR</dt><dd>${Math.round(odds.SR * 100)}%</dd></div><div><dt>R</dt><dd>${Math.round(odds.R * 100)}%</dd></div><div><dt>SSR 확정</dt><dd>${odds.pityAt}회 이내</dd></div></dl>
+    </section>
+    <p class="store-notice">${escapeHtml(catalog?.priceNotice ?? '표시 가격은 한국 원화 기준 예시이며, 최종 가격과 결제 통화는 플랫폼 결제창의 값이 우선합니다.')}<br />현재 빌드는 결제 어댑터가 연결되기 전까지 미리보기만 제공하며, 결제나 재화 지급을 시도하지 않습니다.</p>`;
+
+  modalContent.querySelector<HTMLButtonElement>('#restorePurchases')?.addEventListener('click', async (event) => {
+    if (!billingReady || !window.NeoBilling) return;
+    const button = event.currentTarget as HTMLButtonElement;
+    button.disabled = true;
+    button.textContent = '복원 중...';
+    try {
+      const purchases = await window.NeoBilling.restorePurchases();
+      for (const purchase of purchases) {
+        await network.verifyPurchase(purchase.platform, purchase.productId, purchase.receipt);
+      }
+      showToast(`구매 복원 완료 // ${purchases.length}건 확인`);
+    } catch {
+      button.disabled = false;
+      button.textContent = '구매 복원';
+      showToast('구매 내역을 복원하지 못했습니다. 잠시 후 다시 시도하세요.');
+    }
+  });
+
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-purchase]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const productId = button.dataset.purchase as StoreProductId;
+      if (!billingReady || !window.NeoBilling) return;
+      button.disabled = true;
+      button.textContent = '확인 중...';
+      void network.track('checkout_intent', { productId });
+      try {
+        const purchase = await window.NeoBilling.purchase(productId);
+        await network.verifyPurchase(purchase.platform, productId, purchase.receipt);
+        showToast('구매 검증 완료 // 보급품이 계정에 지급되었습니다.');
+      } catch {
+        button.disabled = false;
+        button.textContent = '구매';
+        showToast('결제가 완료되지 않았습니다. 재화는 지급되지 않았습니다.');
+      }
+    });
+  });
+}
+
 function renderGameOver(cargo: Record<string, number>): void {
   currentModal = 'game-over';
   pauseForModal();
@@ -404,6 +682,7 @@ commandForm.addEventListener('submit', (event) => {
 
 byId('shelterButton').addEventListener('click', renderShelter);
 byId('rosterButton').addEventListener('click', renderRoster);
+byId('storeButton').addEventListener('click', () => { void renderStore(); });
 byId('settingsButton').addEventListener('click', renderSettings);
 byId('closeModal').addEventListener('click', closeModal);
 modalBackdrop.addEventListener('click', (event) => {
@@ -431,6 +710,9 @@ document.querySelectorAll<HTMLButtonElement>('[data-move]').forEach((button) => 
 const fireButton = byId<HTMLButtonElement>('fireButton');
 fireButton.addEventListener('pointerdown', () => { mobileInput.fire = true; });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach((name) => fireButton.addEventListener(name, () => { mobileInput.fire = false; }));
+dodgeButton.addEventListener('pointerdown', () => { mobileInput.dash = true; });
+byId<HTMLButtonElement>('extractButton').addEventListener('pointerdown', () => { mobileInput.extract = true; });
+neuralLinkButton.addEventListener('click', () => gameEvents.emit('neural-link-request'));
 
 document.querySelectorAll<HTMLButtonElement>('[data-weapon]').forEach((button) => {
   button.addEventListener('click', () => gameEvents.emit('weapon-select', button.dataset.weapon));
@@ -454,9 +736,21 @@ gameEvents.on('operator-reply', (operator: ReturnType<typeof getOperator>, reply
   showToast(`${operator.name} // ${reply}`);
   renderPersistentHud();
 });
+gameEvents.on('neural-link-activated', (operatorId: string, skillName: string) => {
+  showNeuralCutin(operatorId, skillName);
+  showToast(`${getOperator(operatorId).name} // ${skillName}`);
+});
+gameEvents.on('boss-intro', showBossIntro);
 gameEvents.on('state-changed', renderPersistentHud);
 gameEvents.on('game-over', renderGameOver);
-gameEvents.on('operation-complete', renderOperationDebrief);
+gameEvents.on('operation-complete', (result: {
+  kills: number; collected: number; weapon: string; online: boolean; bonusCores: number; bonusData: number;
+}) => {
+  renderOperationDebrief(result);
+  void network.track('operation_complete', {
+    kills: result.kills, collected: result.collected, weapon: result.weapon, online: result.online,
+  });
+});
 gameEvents.on('weapon-selected', (weapon: WeaponId) => {
   document.querySelectorAll<HTMLButtonElement>('[data-weapon]').forEach((button) => {
     const selected = button.dataset.weapon === weapon;
@@ -467,12 +761,15 @@ gameEvents.on('weapon-selected', (weapon: WeaponId) => {
   showToast(`${spec.name} // ${spec.description}`);
 });
 gameEvents.on('network-profile', (profile: PlayerProfile) => {
+  latestProfile = profile;
   const previousSquad = state.snapshot().squad.join('|');
   state.applyServerProfile(profile);
+  byId('founderBadge').classList.toggle('hidden', !profile.commerce.entitlements.includes('founder_badge'));
   if (previousSquad !== profile.squad.join('|')) gameEvents.emit('squad-changed');
   renderPersistentHud();
   if (currentModal === 'shelter') renderShelter();
   if (currentModal === 'roster') renderRoster();
+  if (currentModal === 'store') void renderStore();
 });
 gameEvents.on('network-status', (status: 'online' | 'offline' | 'connecting', label: string) => {
   serverStatus.className = `server-status ${status}`;
@@ -486,6 +783,13 @@ document.addEventListener('visibilitychange', () => {
     game.loop.wake();
   }
 });
+window.addEventListener('error', (event) => {
+  void network.track('client_error', { type: 'runtime', message: String(event.message || 'unknown').slice(0, 100) });
+});
+window.addEventListener('unhandledrejection', (event) => {
+  const message = event.reason instanceof Error ? event.reason.message : String(event.reason ?? 'unknown');
+  void network.track('client_error', { type: 'promise', message: message.slice(0, 100) });
+});
 gameEvents.on('hud-update', (hud: {
   hp: number;
   radiation: number;
@@ -494,6 +798,9 @@ gameEvents.on('hud-update', (hud: {
   mission: Mission;
   operation: OperationStatus;
   weapon: WeaponId;
+  linkCharge: number;
+  linkLeader: string;
+  dashCooldownMs: number;
   boss: { hp: number; maxHp: number } | null;
 }) => {
   hpText.textContent = `${Math.ceil(hud.hp)}%`;
@@ -508,6 +815,19 @@ gameEvents.on('hud-update', (hud: {
   operationCount.textContent = hud.operation.stage === 'WARDEN' ? 'BOSS SIGNAL LOCKED'
     : hud.operation.stage === 'EXTRACT' ? 'RETURN TO SHELTER LIFT'
       : `${Math.min(hud.operation.current, hud.operation.target)} / ${hud.operation.target}`;
+  const charge = Math.max(0, Math.min(100, Math.floor(hud.linkCharge)));
+  neuralLinkBar.style.width = `${charge}%`;
+  neuralLinkChargeText.textContent = `${charge}%`;
+  neuralLinkButton.disabled = charge < 100;
+  neuralLinkButton.classList.toggle('ready', charge >= 100);
+  dodgeButton.disabled = hud.dashCooldownMs > 0;
+  dodgeButton.textContent = hud.dashCooldownMs > 0 ? `${Math.ceil(hud.dashCooldownMs / 100) / 10}s` : 'DODGE';
+  if (currentLinkLeader !== hud.linkLeader) {
+    currentLinkLeader = hud.linkLeader;
+    const leader = getOperator(hud.linkLeader);
+    neuralLinkPortrait.src = leader.portrait;
+    neuralLinkSkillText.textContent = neuralLinkSkill(hud.linkLeader).name;
+  }
   bossHud.classList.toggle('hidden', !hud.boss);
   if (hud.boss) {
     bossHpBar.style.width = `${Math.max(0, hud.boss.hp / hud.boss.maxHp * 100)}%`;
@@ -520,7 +840,8 @@ renderPersistentHud();
 if (state.offlineReward.elapsedMinutes >= 2) {
   showToast(`오프라인 ${state.offlineReward.elapsedMinutes}분 회수 // 고철 ${state.offlineReward.scrap} · 식수 ${state.offlineReward.water}`);
 }
-if (!settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 450);
+if (!settings.consentReviewed) window.setTimeout(() => renderPrivacyCenter(), 320);
+else if (!settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 450);
 void network.connect();
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {

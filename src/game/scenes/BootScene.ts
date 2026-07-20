@@ -1,8 +1,13 @@
 import Phaser from 'phaser';
+import { OPERATORS } from '../data/operators';
 
 export class BootScene extends Phaser.Scene {
   constructor() {
     super('BootScene');
+  }
+
+  preload(): void {
+    for (const operator of OPERATORS) this.load.image(`operator-${operator.id}`, operator.portrait);
   }
 
   create(): void {
@@ -32,6 +37,18 @@ export class BootScene extends Phaser.Scene {
     graphics.fillStyle(0xffffff).fillCircle(16, 16, 2);
     graphics.lineStyle(2, 0xffffff, 0.6).lineBetween(16, 8, 16, 1);
     graphics.generateTexture('operative', 32, 32);
+    graphics.clear();
+
+    // Illustrated operator field frame. The portrait remains upright while this tactical frame carries role color.
+    graphics.fillStyle(0x06100d, 0.72).fillRoundedRect(2, 2, 52, 64, 7);
+    graphics.lineStyle(2, 0xffffff, 0.92).strokeRoundedRect(2, 2, 52, 64, 7);
+    graphics.lineStyle(3, 0xffffff, 0.9)
+      .lineBetween(2, 14, 2, 2).lineBetween(2, 2, 14, 2)
+      .lineBetween(42, 2, 54, 2).lineBetween(54, 2, 54, 14)
+      .lineBetween(2, 54, 2, 66).lineBetween(2, 66, 14, 66)
+      .lineBetween(42, 66, 54, 66).lineBetween(54, 66, 54, 54);
+    graphics.fillStyle(0xffffff).fillCircle(28, 61, 3);
+    graphics.generateTexture('operative-frame', 56, 68);
     graphics.clear();
 
     // Drone: four rotors and a central optical core.
@@ -68,6 +85,21 @@ export class BootScene extends Phaser.Scene {
     graphics.fillStyle(0xffffff).fillCircle(21, 25, 3).fillCircle(35, 25, 3);
     graphics.lineStyle(5, 0xffffff).lineBetween(13, 34, 4, 47).lineBetween(43, 34, 52, 47);
     graphics.generateTexture('enemy-breaker', 56, 56);
+    graphics.clear();
+
+    // Jammer: a floating signal disruptor with three antenna blades and a pulsing core.
+    graphics.fillStyle(0x000000, 0.35).fillEllipse(28, 39, 46, 18);
+    graphics.lineStyle(5, 0xffffff, 0.9)
+      .lineBetween(28, 25, 28, 2).lineBetween(20, 27, 7, 9).lineBetween(36, 27, 49, 9);
+    graphics.fillStyle(0xffffff)
+      .fillTriangle(24, 4, 32, 4, 28, 17)
+      .fillTriangle(4, 8, 11, 5, 16, 20)
+      .fillTriangle(52, 8, 45, 5, 40, 20);
+    graphics.fillStyle(0xffffff).fillRoundedRect(12, 20, 32, 28, 10);
+    graphics.fillStyle(0x07100e).fillCircle(28, 34, 11);
+    graphics.lineStyle(3, 0xffffff, 0.75).strokeCircle(28, 34, 15).strokeCircle(28, 34, 8);
+    graphics.fillStyle(0xffffff).fillCircle(28, 34, 4);
+    graphics.generateTexture('enemy-jammer', 56, 56);
     graphics.clear();
 
     // Warden boss: a wide command chassis with four siege limbs and a volatile neural core.

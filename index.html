@@ -16,6 +16,7 @@
         <div class="brand">
           <span class="brand-mark">N//E</span>
           <span><b>NEURAL EVOLUTION</b><small>OPERATIVES // RED ZONE UPLINK</small></span>
+          <em id="founderBadge" class="founder-badge hidden">FOUNDER</em>
         </div>
         <div class="mission"><span id="serverStatus" class="server-status connecting">● 서버 연결 중</span><span id="missionText">링크 초기화 중...</span></div>
         <div class="resources" id="resourceHud"></div>
@@ -40,6 +41,11 @@
           <button data-weapon="scatter"><kbd>2</kbd><span><b>SCATTER</b><small>근접 돌파</small></span></button>
           <button data-weapon="rail"><kbd>3</kbd><span><b>COIL</b><small>장거리 정밀</small></span></button>
         </div>
+        <button class="neural-link-dock glass" id="neuralLinkButton" aria-label="뉴럴 링크 발동" disabled>
+          <img id="neuralLinkPortrait" alt="분대 리더" />
+          <span><small>Q // NEURAL LINK</small><b id="neuralLinkSkill">SYNC CHARGING</b><i><em id="neuralLinkBar"></em></i></span>
+          <strong id="neuralLinkCharge">0%</strong>
+        </button>
         <div class="status-stack">
           <div class="bar-label"><span>생체 신호</span><span id="hpText">100%</span></div>
           <div class="bar"><i id="hpBar"></i></div>
@@ -53,6 +59,7 @@
       <nav class="command-dock glass">
         <button id="shelterButton"><span>⌂</span> 쉘터</button>
         <button id="rosterButton"><span>◈</span> 오퍼레이터</button>
+        <button id="storeButton"><span>▣</span> 보급소</button>
         <form id="commandForm">
           <span class="prompt">TACTICAL://</span>
           <input id="commandInput" maxlength="100" autocomplete="off" placeholder="예: 방패병 시선 끌어줘, 내가 우회할게" />
@@ -69,7 +76,11 @@
           <button data-move="down">▼</button>
           <button data-move="right">▶</button>
         </div>
-        <button class="fire" id="fireButton">FIRE</button>
+        <div class="mobile-actions">
+          <button class="extract" id="extractButton">EXTRACT</button>
+          <button class="dodge" id="dodgeButton">DODGE</button>
+          <button class="fire" id="fireButton">FIRE</button>
+        </div>
       </div>
 
       <div class="modal-backdrop hidden" id="modalBackdrop">
@@ -80,6 +91,15 @@
       </div>
 
       <div class="toast" id="toast" aria-live="polite"></div>
+      <section class="neural-cutin" id="neuralCutin" aria-live="assertive" aria-hidden="true">
+        <div class="neural-cutin-scan"></div>
+        <img id="neuralCutinPortrait" alt="" />
+        <div><span>NEURAL LINK // LIMIT BREAK</span><strong id="neuralCutinSkill">AEGIS OVERDRIVE</strong><b id="neuralCutinName">AEGIS-07</b><p id="neuralCutinLine"></p></div>
+      </section>
+      <section class="boss-intro" id="bossIntro" aria-live="assertive" aria-hidden="true">
+        <div class="boss-intro-sigil" aria-hidden="true"><i></i><b>MB</b><i></i></div>
+        <div><span>HOSTILE NEURAL SIGNATURE DETECTED</span><strong>감시자 케르베로스</strong><b>MOTHERBRAIN // COMMAND UNIT 01</b><p>봉쇄 프로토콜 개시. 충격파 예측선을 확인하고 분산 기동하십시오.</p></div>
+      </section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -18,7 +18,21 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
     pity: 0,
     accountLevel: 1,
     xp: 0,
+    commerce: { entitlements: [], subscriptionUntil: null, purchases: [] },
     lastSeenAt: now.toISOString(),
     createdAt: now.toISOString(),
   };
+}
+
+export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
+  profile.commerce ??= { entitlements: [], subscriptionUntil: null, purchases: [] };
+  profile.commerce.entitlements ??= [];
+  profile.commerce.subscriptionUntil ??= null;
+  profile.commerce.purchases ??= [];
+  profile.commerce.purchases = profile.commerce.purchases.map((purchase) => ({
+    ...purchase,
+    amountMinor: Number.isFinite(purchase.amountMinor) ? purchase.amountMinor : 0,
+    currency: purchase.currency || 'UNKNOWN',
+  }));
+  return profile;
 }

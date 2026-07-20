@@ -13,6 +13,8 @@ const inputSchema = z.object({
   fire: z.boolean(),
   extract: z.boolean(),
   weapon: z.enum(['carbine', 'scatter', 'rail']),
+  activateLink: z.boolean().optional().default(false),
+  dash: z.boolean().optional().default(false),
 });
 const tacticalSchema = z.object({ text: z.string().trim().min(1).max(100) });
 
@@ -97,6 +99,11 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
         this.broadcast('server-event', {
           type: 'mission', message: event.message, payload: { bossDefeated: true },
         } satisfies ServerEventMessage);
+      } else if (event.type === 'neural-link') {
+        this.clients.find((client) => client.sessionId === event.playerSessionId)?.send('server-event', {
+          type: 'neural-link', message: event.message,
+          payload: { operatorId: event.operatorId, skillName: event.skillName },
+        } satisfies ServerEventMessage);
       } else {
         this.broadcast('server-event', { type: 'feed', message: event.message } satisfies ServerEventMessage);
       }
@@ -120,6 +127,8 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
       target.cargoCores = source.cargo.cores;
       target.kills = source.kills;
       target.lastSequence = source.lastSequence;
+      target.linkCharge = source.linkCharge;
+      target.dashCooldownMs = source.dashCooldownMs;
     });
     syncMap(this.state.enemies, this.simulation.enemies, () => new EnemyState(), (target, source) => {
       target.kind = source.kind;

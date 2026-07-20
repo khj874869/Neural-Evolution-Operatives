@@ -11,6 +11,9 @@ import { createPersonaReply } from '../systems/PersonaEngine';
 import { parseTacticalCommand, type TacticalOrder } from '../systems/TacticalCommand';
 import { isWeaponId, projectileAngles, WEAPON_SPECS, weaponFromSlot, type WeaponId } from '../../../packages/shared/src/combat';
 import type { EnemyKind } from '../../../packages/shared/src/protocol';
+import {
+  addNeuralCharge, NEURAL_LINK_MAX, neuralLinkLeader, neuralLinkSkill,
+} from '../../../packages/shared/src/neuralLink';
 
 type EnemySprite = Phaser.Physics.Arcade.Sprite & { archetype?: EnemyKind };
 type ResourceSprite = Phaser.Physics.Arcade.Sprite & { resourceKind?: keyof Resources; value?: number };
@@ -22,6 +25,7 @@ const ENEMY_STATS: Record<EnemyKind, { texture: string; tint: number; hp: number
   raider: { texture: 'enemy-raider', tint: 0xe67d62, hp: 38, speed: 76, damage: 10, scale: 0.95 },
   stalker: { texture: 'enemy-stalker', tint: 0xb47cff, hp: 28, speed: 138, damage: 13, scale: 0.94 },
   breaker: { texture: 'enemy-breaker', tint: 0xff5147, hp: 92, speed: 48, damage: 19, scale: 1.08 },
+  jammer: { texture: 'enemy-jammer', tint: 0x48d9ff, hp: 55, speed: 60, damage: 5, scale: 1.02 },
   warden: { texture: 'enemy-warden', tint: 0xff426f, hp: 520, speed: 46, damage: 24, scale: 1.08 },
 };
 const RESOURCE_TEXTURES: Record<keyof Resources, string> = {
@@ -36,7 +40,7 @@ export class WorldScene extends Phaser.Scene {
   private bullets!: Phaser.Physics.Arcade.Group;
   private resources!: Phaser.Physics.Arcade.Group;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private keys!: Record<'W' | 'A' | 'S' | 'D' | 'E' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
+  private keys!: Record<'W' | 'A' | 'S' | 'D' | 'E' | 'Q' | 'SPACE' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
   private director = new AdaptiveDirector();
   private telemetry: CombatTelemetry = freshTelemetry();
   private mission!: Mission;
@@ -68,6 +72,15 @@ export class WorldScene extends Phaser.Scene {
   private operationStatus: OperationStatus = evaluateOperationZero({ collected: 0, kills: 0, bossDefeated: false, extracted: false });
   private lastNetworkCargo = 0;
   private bossAbilityAt = 0;
+  private bossIntroShown = false;
+  private neuralLinkCharge = 0;
+  private linkRequested = false;
+  private linkLeader = 'aegis-07';
+  private dashCooldownMs = 0;
+  private dashNetworkPending = false;
+  private extractRequested = false;
+  private gamepadConnected = false;
+  private gamepadButtons = new Set<number>();
   private readonly serverEnemies = new Map<string, EnemySprite>();
   private readonly serverResources = new Map<string, ResourceSprite>();
 
@@ -109,6 +122,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('boss-defeated', this.handleBossDefeated, this);
     gameEvents.on('server-extraction', this.handleServerExtraction, this);
     gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
+    gameEvents.on('neural-link-request', this.requestNeuralLink, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
@@ -118,6 +132,7 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.off('boss-defeated', this.handleBossDefeated, this);
       gameEvents.off('server-extraction', this.handleServerExtraction, this);
       gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
+      gameEvents.off('neural-link-request', this.requestNeuralLink, this);
       this.scale.off('resize', this.handleResize, this);
     });
 
@@ -176,22 +191,34 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private spawnCompanions(): void {
-    for (const companion of this.companions) companion.destroy();
+    for (const companion of this.companions) {
+      (companion.getData('frame') as Phaser.GameObjects.Image | undefined)?.destroy();
+      (companion.getData('label') as Phaser.GameObjects.Text | undefined)?.destroy();
+      companion.destroy();
+    }
     const squad = this.state.getSquad();
+    this.linkLeader = neuralLinkLeader(squad.map(({ definition }) => definition.id));
     this.companions = squad.map(({ definition }, index) => {
       const angle = (Math.PI * 2 * index) / Math.max(1, squad.length);
       const sprite = this.physics.add.sprite(
         this.player.x + Math.cos(angle) * 50,
         this.player.y + Math.sin(angle) * 50,
-        'operative',
-      ).setTint(definition.color).setDepth(4).setScale(0.92);
+        `operator-${definition.id}`,
+      ).setDepth(4).setDisplaySize(46, 58).setOrigin(0.5, 0.68).setAlpha(0.94);
+      const frame = this.add.image(sprite.x, sprite.y, 'operative-frame')
+        .setTint(definition.color).setDepth(3.9).setDisplaySize(52, 63).setOrigin(0.5, 0.68);
+      const label = this.add.text(sprite.x, sprite.y + 24, definition.callsign, {
+        color: '#eafff1', backgroundColor: '#06100dcc', fontFamily: 'Share Tech Mono', fontSize: '7px',
+        padding: { x: 3, y: 1 },
+      }).setOrigin(0.5).setDepth(4.2);
       sprite.setData('operatorId', definition.id);
       sprite.setData('role', definition.role);
       sprite.setData('slot', index);
+      sprite.setData('frame', frame);
+      sprite.setData('label', label);
       this.tweens.add({
         targets: sprite,
-        scaleX: 1.02,
-        scaleY: 1.02,
+        alpha: 0.76,
         yoyo: true,
         repeat: -1,
         duration: 900 + index * 120,
@@ -220,6 +247,7 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.emit('sfx', 'hit');
       if (this.networkConnected) return;
       const damage = (bullet.getData('damage') as number | undefined) ?? (bullet.getData('companion') ? 14 : 19);
+      if (!bullet.getData('companion')) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 4);
       enemy.setData('hp', (enemy.getData('hp') as number) - damage);
       this.telemetry.hits += 1;
       enemy.setTintFill(0xffffff);
@@ -251,18 +279,23 @@ export class WorldScene extends Phaser.Scene {
       S: Phaser.Input.Keyboard.KeyCodes.S,
       D: Phaser.Input.Keyboard.KeyCodes.D,
       E: Phaser.Input.Keyboard.KeyCodes.E,
+      Q: Phaser.Input.Keyboard.KeyCodes.Q,
+      SPACE: Phaser.Input.Keyboard.KeyCodes.SPACE,
       ONE: Phaser.Input.Keyboard.KeyCodes.ONE,
       TWO: Phaser.Input.Keyboard.KeyCodes.TWO,
       THREE: Phaser.Input.Keyboard.KeyCodes.THREE,
-    }) as Record<'W' | 'A' | 'S' | 'D' | 'E' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
+    }) as Record<'W' | 'A' | 'S' | 'D' | 'E' | 'Q' | 'SPACE' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
   }
 
   private updatePlayer(time: number, delta: number): void {
     const mobile = this.registry.get('mobileInput') as MobileInputState;
-    const horizontal = Number(this.keys.D.isDown || this.cursors.right.isDown || mobile.right)
+    const controller = this.pollGamepad();
+    const digitalHorizontal = Number(this.keys.D.isDown || this.cursors.right.isDown || mobile.right)
       - Number(this.keys.A.isDown || this.cursors.left.isDown || mobile.left);
-    const vertical = Number(this.keys.S.isDown || this.cursors.down.isDown || mobile.down)
+    const digitalVertical = Number(this.keys.S.isDown || this.cursors.down.isDown || mobile.down)
       - Number(this.keys.W.isDown || this.cursors.up.isDown || mobile.up);
+    const horizontal = Math.abs(controller.moveX) > 0.14 ? controller.moveX : digitalHorizontal;
+    const vertical = Math.abs(controller.moveY) > 0.14 ? controller.moveY : digitalVertical;
     const movement = new Phaser.Math.Vector2(horizontal, vertical);
     if (movement.lengthSq() > 0) {
       movement.normalize().scale(205);
@@ -276,30 +309,102 @@ export class WorldScene extends Phaser.Scene {
 
     const pointer = this.input.activePointer;
     const worldPoint = pointer.positionToCamera(this.cameras.main) as Phaser.Math.Vector2;
-    if (worldPoint) this.player.setRotation(Phaser.Math.Angle.Between(this.player.x, this.player.y, worldPoint.x, worldPoint.y) + Math.PI / 2);
+    if (Math.hypot(controller.aimX, controller.aimY) > 0.32) {
+      this.player.setRotation(Math.atan2(controller.aimY, controller.aimX) + Math.PI / 2);
+    } else if (worldPoint) {
+      this.player.setRotation(Phaser.Math.Angle.Between(this.player.x, this.player.y, worldPoint.x, worldPoint.y) + Math.PI / 2);
+    }
     if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectWeapon(weaponFromSlot(1) ?? 'carbine');
     if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) this.selectWeapon(weaponFromSlot(2) ?? 'scatter');
     if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) this.selectWeapon(weaponFromSlot(3) ?? 'rail');
+    if (controller.weaponSlot) this.selectWeapon(weaponFromSlot(controller.weaponSlot) ?? 'carbine');
+    if (Phaser.Input.Keyboard.JustDown(this.keys.Q) || controller.link) this.linkRequested = true;
+    this.extractRequested ||= Phaser.Input.Keyboard.JustDown(this.keys.E) || mobile.extract || controller.extract;
+    mobile.extract = false;
+    this.dashCooldownMs = Math.max(0, this.dashCooldownMs - delta);
+    const dashActivated = (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || mobile.dash || controller.dash)
+      && this.performDash(movement);
+    if (this.networkConnected) this.dashNetworkPending ||= dashActivated;
+    mobile.dash = false;
+    if (this.linkRequested && !this.networkConnected) {
+      this.activateNeuralLink();
+      this.linkRequested = false;
+    }
     const weapon = WEAPON_SPECS[this.currentWeapon];
-    if ((pointer.isDown || mobile.fire) && time - this.lastShotAt > weapon.cooldownMs) {
-      const target = mobile.fire ? this.findNearestEnemy(this.player.x, this.player.y, weapon.range) : undefined;
+    const assistedFire = mobile.fire || controller.fire;
+    if ((pointer.isDown || assistedFire) && time - this.lastShotAt > weapon.cooldownMs) {
+      const target = assistedFire ? this.findNearestEnemy(this.player.x, this.player.y, weapon.range) : undefined;
       this.firePlayerWeapon(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y);
       this.lastShotAt = time;
     }
     if (this.networkConnected && time - this.lastNetworkInputAt >= 50) {
-      const distanceToExtraction = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION.x, EXTRACTION.y);
-      const touchExtract = this.sys.game.device.input.touch && distanceToExtraction < 72;
       this.network?.sendInput({
         sequence: ++this.networkSequence,
         moveX: movement.lengthSq() > 0 ? movement.x / 205 : 0,
         moveY: movement.lengthSq() > 0 ? movement.y / 205 : 0,
         aimAngle: this.player.rotation - Math.PI / 2,
-        fire: pointer.isDown || mobile.fire,
-        extract: Phaser.Input.Keyboard.JustDown(this.keys.E) || touchExtract,
+        fire: pointer.isDown || assistedFire,
+        extract: this.extractRequested,
         weapon: this.currentWeapon,
+        activateLink: this.linkRequested,
+        dash: this.dashNetworkPending,
       });
+      this.linkRequested = false;
+      this.extractRequested = false;
+      this.dashNetworkPending = false;
       this.lastNetworkInputAt = time;
     }
+  }
+
+  private performDash(movement: Phaser.Math.Vector2): boolean {
+    if (this.dashCooldownMs > 0 || this.hp <= 0) return false;
+    const angle = movement.lengthSq() > 0 ? movement.angle() : this.player.rotation - Math.PI / 2;
+    const startX = this.player.x;
+    const startY = this.player.y;
+    this.player.setPosition(
+      Phaser.Math.Clamp(startX + Math.cos(angle) * 138, 18, WORLD_SIZE - 18),
+      Phaser.Math.Clamp(startY + Math.sin(angle) * 138, 18, WORLD_SIZE - 18),
+    );
+    const trail = this.add.line(0, 0, startX, startY, this.player.x, this.player.y, 0x8bffba, 0.7)
+      .setOrigin(0).setLineWidth(8).setDepth(3).setBlendMode(Phaser.BlendModes.ADD);
+    this.tweens.add({ targets: trail, alpha: 0, duration: this.reducedMotion ? 80 : 220, onComplete: () => trail.destroy() });
+    this.dashCooldownMs = 1_800;
+    gameEvents.emit('sfx', 'dash');
+    gameEvents.emit('haptic', 'light');
+    return true;
+  }
+
+  private pollGamepad(): {
+    moveX: number; moveY: number; aimX: number; aimY: number; fire: boolean;
+    dash: boolean; extract: boolean; link: boolean; weaponSlot?: 1 | 2 | 3;
+  } {
+    const pad = typeof navigator.getGamepads === 'function'
+      ? [...navigator.getGamepads()].find((candidate): candidate is Gamepad => Boolean(candidate?.connected))
+      : undefined;
+    if (!pad) {
+      if (this.gamepadConnected) this.emitFeed('게임패드 연결이 해제되었습니다.');
+      this.gamepadConnected = false;
+      this.gamepadButtons.clear();
+      return { moveX: 0, moveY: 0, aimX: 0, aimY: 0, fire: false, dash: false, extract: false, link: false };
+    }
+    if (!this.gamepadConnected) this.emitFeed('게임패드 연결 // A 사격 · B 회피 · X 추출 · Y 뉴럴 링크');
+    this.gamepadConnected = true;
+    const pressed = new Set<number>();
+    pad.buttons.forEach((button, index) => { if (button.pressed) pressed.add(index); });
+    const justPressed = (index: number) => pressed.has(index) && !this.gamepadButtons.has(index);
+    const result = {
+      moveX: pad.axes[0] ?? 0,
+      moveY: pad.axes[1] ?? 0,
+      aimX: pad.axes[2] ?? 0,
+      aimY: pad.axes[3] ?? 0,
+      fire: Boolean(pad.buttons[0]?.pressed || pad.buttons[7]?.pressed),
+      dash: justPressed(1),
+      extract: justPressed(2),
+      link: justPressed(3),
+      weaponSlot: (justPressed(12) ? 1 : justPressed(13) ? 2 : justPressed(14) ? 3 : undefined) as 1 | 2 | 3 | undefined,
+    };
+    this.gamepadButtons = pressed;
+    return result;
   }
 
   private updateCompanions(time: number): void {
@@ -320,6 +425,10 @@ export class WorldScene extends Phaser.Scene {
         companion.setVelocity(0, 0);
       }
       if (Phaser.Math.Distance.Between(companion.x, companion.y, destinationX, destinationY) < 8) companion.setVelocity(0, 0);
+      const frame = companion.getData('frame') as Phaser.GameObjects.Image | undefined;
+      const label = companion.getData('label') as Phaser.GameObjects.Text | undefined;
+      frame?.setPosition(companion.x, companion.y);
+      label?.setPosition(companion.x, companion.y + 24);
     }
 
     if (time - this.companionShotAt > 520) {
@@ -346,7 +455,7 @@ export class WorldScene extends Phaser.Scene {
         this.bossAbilityAt = time + (enemy.getData('hp') < stats.hp * 0.5 ? 3_100 : 4_300);
         this.triggerBossShockwave(enemy);
       }
-      const attackRange = archetype === 'warden' ? 125 : 30;
+      const attackRange = archetype === 'warden' ? 125 : archetype === 'jammer' ? 180 : 30;
       if (distance > attackRange) {
         let offset = 0;
         if (archetype === 'stalker') offset = Math.sin(time * 0.004 + enemy.x) * 0.9;
@@ -354,8 +463,15 @@ export class WorldScene extends Phaser.Scene {
         const enraged = archetype === 'warden' && enemy.getData('hp') < stats.hp * 0.5 ? 1.35 : 1;
         enemy.setVelocity(Math.cos(angle) * stats.speed * enraged, Math.sin(angle) * stats.speed * enraged);
       } else if (time > (enemy.getData('attackAt') as number)) {
-        enemy.setData('attackAt', time + (archetype === 'warden' ? 1_350 : 820));
-        if (target === this.player) this.damagePlayer(stats.damage);
+        enemy.setData('attackAt', time + (archetype === 'warden' ? 1_350 : archetype === 'jammer' ? 1_450 : 820));
+        if (target === this.player) {
+          this.damagePlayer(stats.damage);
+          if (archetype === 'jammer') {
+            this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 18);
+            this.impactBurst(this.player.x, this.player.y, stats.tint, 10);
+            this.emitFeed('뉴럴 재머 피격 // 링크 게이지 -18%', true);
+          }
+        }
       }
       enemy.setRotation(Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y));
       if (distance > 1250 && archetype !== 'warden') enemy.disableBody(true, true);
@@ -471,6 +587,10 @@ export class WorldScene extends Phaser.Scene {
     this.tweens.add({ targets: enemy, alpha: 1, duration: this.reducedMotion ? 60 : 260 });
     this.impactBurst(x, y, stats.tint, archetype === 'warden' ? 24 : archetype === 'breaker' ? 10 : 4);
     if (archetype === 'warden') {
+      if (!this.bossIntroShown) {
+        this.bossIntroShown = true;
+        gameEvents.emit('boss-intro');
+      }
       this.cameras.main.flash(300, 255, 34, 74, false);
       gameEvents.emit('sfx', 'boss');
       gameEvents.emit('haptic', 'warning');
@@ -535,6 +655,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.emit('sfx', 'kill');
     gameEvents.emit('haptic', archetype === 'breaker' ? 'heavy' : 'light');
     this.missionKills += 1;
+    this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 12);
     this.telemetry.kills += 1;
     this.state.recordKill();
     if (archetype === 'warden') {
@@ -546,7 +667,7 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.emit('haptic', 'success');
       return;
     }
-    const kind: keyof Resources = Math.random() < 0.28 ? this.mission.targetResource : 'scrap';
+    const kind: keyof Resources = archetype === 'jammer' ? 'data' : Math.random() < 0.28 ? this.mission.targetResource : 'scrap';
     this.spawnResource(x, y, kind, archetype === 'breaker' ? 8 : Phaser.Math.Between(1, 4));
     if (Math.random() < 0.035) this.spawnResource(x + 12, y, 'cores', 1);
   }
@@ -583,8 +704,9 @@ export class WorldScene extends Phaser.Scene {
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION.x, EXTRACTION.y);
     const hasCargo = Object.values(this.fieldCargo).some((value) => value > 0);
     this.extractionRing.setStrokeStyle(2, hasCargo && distance < 120 ? 0xc9f456 : 0x8bffba, 0.7);
-    const touchAutoExtract = this.sys.game.device.input.touch && distance < 72;
-    if (distance < 72 && hasCargo && (Phaser.Input.Keyboard.JustDown(this.keys.E) || touchAutoExtract)) {
+    const requested = this.extractRequested;
+    this.extractRequested = false;
+    if (distance < 72 && hasCargo && requested) {
       const cargo = { ...this.fieldCargo };
       this.state.recordExtraction(cargo.scrap);
       this.state.addResources({ water: cargo.water, data: cargo.data, cores: cargo.cores });
@@ -637,8 +759,66 @@ export class WorldScene extends Phaser.Scene {
     this.emitFeed(`전술 명령 수신: ${parsed.order} / 신뢰도 ${Math.round(parsed.confidence * 100)}%`);
   }
 
+  private requestNeuralLink(): void {
+    this.linkRequested = true;
+  }
+
+  private activateNeuralLink(): boolean {
+    if (this.neuralLinkCharge < NEURAL_LINK_MAX || this.hp <= 0) {
+      if (this.neuralLinkCharge < NEURAL_LINK_MAX) this.emitFeed(`뉴럴 링크 충전 부족 // ${Math.floor(this.neuralLinkCharge)}%`);
+      return false;
+    }
+    const operatorId = this.linkLeader;
+    const operator = getOperator(operatorId);
+    const skill = neuralLinkSkill(operatorId);
+    this.neuralLinkCharge = 0;
+
+    if (skill.role === 'Vanguard') {
+      this.hp = Math.min(100, this.hp + 15);
+      const ring = this.add.circle(this.player.x, this.player.y, 20, skill.color, 0.1)
+        .setStrokeStyle(4, skill.color, 0.9).setDepth(8);
+      this.tweens.add({ targets: ring, scale: 13, alpha: 0, duration: 420, onComplete: () => ring.destroy() });
+      for (const child of this.enemies.getChildren()) {
+        const enemy = child as EnemySprite;
+        if (!enemy.active || Phaser.Math.Distance.Between(enemy.x, enemy.y, this.player.x, this.player.y) > 260) continue;
+        enemy.setData('hp', Number(enemy.getData('hp') ?? 0) - 55);
+        this.impactBurst(enemy.x, enemy.y, skill.color, 12);
+        if (Number(enemy.getData('hp')) <= 0) this.defeatEnemy(enemy);
+      }
+    } else if (skill.role === 'Sniper') {
+      const targets = this.enemies.getChildren().filter((child) => (child as EnemySprite).active)
+        .map((child) => child as EnemySprite)
+        .sort((left, right) => Phaser.Math.Distance.Between(left.x, left.y, this.player.x, this.player.y)
+          - Phaser.Math.Distance.Between(right.x, right.y, this.player.x, this.player.y))
+        .slice(0, 3);
+      for (const enemy of targets) {
+        enemy.setData('hp', Number(enemy.getData('hp') ?? 0) - 95);
+        this.impactBurst(enemy.x, enemy.y, skill.color, 18);
+        if (Number(enemy.getData('hp')) <= 0) this.defeatEnemy(enemy);
+      }
+    } else if (skill.role === 'Support') {
+      this.hp = Math.min(100, this.hp + 45);
+      this.radiation = Math.max(0, this.radiation - 45);
+      this.impactBurst(this.player.x, this.player.y, skill.color, 22);
+    } else {
+      this.fieldCargo.scrap += 12;
+      this.fieldCargo.data += 3;
+      this.operationCollected += 15;
+      this.impactBurst(this.player.x, this.player.y, skill.color, 24);
+    }
+
+    this.state.remember(operatorId, `${skill.name} 뉴럴 링크를 전장에서 발동했다.`);
+    gameEvents.emit('neural-link-activated', operatorId, skill.name);
+    gameEvents.emit('sfx', 'neural-link');
+    gameEvents.emit('haptic', 'success');
+    this.cameras.main.flash(260, 160, 255, 220, false);
+    this.emitFeed(`${operator.callsign} // ${skill.name} 발동`);
+    return true;
+  }
+
   private damagePlayer(amount: number): void {
     this.hp = Math.max(0, this.hp - amount);
+    if (!this.networkConnected) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 6);
     this.telemetry.damageTaken += amount;
     if (!this.reducedMotion) this.cameras.main.shake(90, 0.004);
     this.impactBurst(this.player.x, this.player.y, 0xff5d5d, 7);
@@ -666,6 +846,9 @@ export class WorldScene extends Phaser.Scene {
       mission: this.mission,
       operation: this.operationStatus,
       weapon: this.currentWeapon,
+      linkCharge: this.neuralLinkCharge,
+      linkLeader: this.linkLeader,
+      dashCooldownMs: this.dashCooldownMs,
       boss: boss ? { hp: Number(boss.getData('hp') ?? 0), maxHp: ENEMY_STATS.warden.hp } : null,
     });
   }
@@ -718,6 +901,8 @@ export class WorldScene extends Phaser.Scene {
       this.lastNetworkCargo = nextCargoTotal;
       this.fieldCargo = nextCargo;
       this.networkSequence = Math.max(this.networkSequence, own.lastSequence);
+      this.neuralLinkCharge = own.linkCharge;
+      this.dashCooldownMs = Math.max(this.dashCooldownMs, own.dashCooldownMs);
     }
     if (snapshot.enemies.some((enemy) => enemy.kind === 'warden')) this.operationBossSpawned = true;
     this.syncNetworkEnemies(snapshot.enemies);
@@ -747,6 +932,12 @@ export class WorldScene extends Phaser.Scene {
         sprite = this.enemies.get(source.x, source.y, ENEMY_STATS[source.kind].texture) as EnemySprite | null ?? undefined;
         if (!sprite) continue;
         this.serverEnemies.set(source.id, sprite);
+        if (source.kind === 'warden' && !this.bossIntroShown) {
+          this.bossIntroShown = true;
+          gameEvents.emit('boss-intro');
+          gameEvents.emit('sfx', 'boss');
+          gameEvents.emit('haptic', 'warning');
+        }
       }
       const stats = ENEMY_STATS[source.kind];
       const previousHp = sprite.getData('hp') as number | undefined;

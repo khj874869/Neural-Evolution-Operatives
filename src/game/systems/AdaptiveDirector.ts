@@ -1,4 +1,4 @@
-export type EnemyArchetype = 'drone' | 'raider' | 'stalker' | 'breaker';
+export type EnemyArchetype = 'drone' | 'raider' | 'stalker' | 'breaker' | 'jammer';
 
 export interface CombatTelemetry {
   shots: number;
@@ -32,7 +32,7 @@ export class AdaptiveDirector {
     const isCamping = telemetry.stationarySeconds > 11;
     const isAccurate = accuracy > 0.58 && telemetry.shots > 8;
 
-    const weights: ThreatProfile['weights'] = { drone: 0.35, raider: 0.35, stalker: 0.18, breaker: 0.12 };
+    const weights: ThreatProfile['weights'] = { drone: 0.3, raider: 0.3, stalker: 0.16, breaker: 0.1, jammer: 0.14 };
     let counterMessage = '마더브레인 전술망이 탐사대를 분석 중입니다.';
     if (isCamping || isAccurate) {
       weights.stalker += 0.25;
@@ -53,7 +53,7 @@ export class AdaptiveDirector {
   pickArchetype(profile: ThreatProfile, random = Math.random): EnemyArchetype {
     const roll = random();
     let cursor = 0;
-    for (const type of ['drone', 'raider', 'stalker', 'breaker'] as const) {
+    for (const type of ['drone', 'raider', 'stalker', 'breaker', 'jammer'] as const) {
       cursor += Math.max(0, profile.weights[type]);
       if (roll <= cursor) return type;
     }

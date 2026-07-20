@@ -73,9 +73,11 @@ export class EconomyService {
     const mutation = await this.repository.mutate(playerId, idempotencyKey, 'OFFLINE_CLAIM', (profile) => {
       const lastSeen = new Date(profile.lastSeenAt).getTime();
       const elapsedMinutes = Math.min(480, Math.max(0, Math.floor((now.getTime() - lastSeen) / 60_000)));
-      const scrap = Math.floor(elapsedMinutes * 0.22 * (1 + (profile.shelter.workshop - 1) * 0.35));
-      const water = Math.floor(elapsedMinutes * 0.14 * (1 + (profile.shelter.purifier - 1) * 0.3));
-      const data = Math.floor(elapsedMinutes * 0.025 * (1 + profile.shelter.command * 0.1));
+      const syncMultiplier = profile.commerce?.subscriptionUntil
+        && new Date(profile.commerce.subscriptionUntil).getTime() > now.getTime() ? 1.5 : 1;
+      const scrap = Math.floor(elapsedMinutes * 0.22 * (1 + (profile.shelter.workshop - 1) * 0.35) * syncMultiplier);
+      const water = Math.floor(elapsedMinutes * 0.14 * (1 + (profile.shelter.purifier - 1) * 0.3) * syncMultiplier);
+      const data = Math.floor(elapsedMinutes * 0.025 * (1 + profile.shelter.command * 0.1) * syncMultiplier);
       reward = { scrap, water, data, cores: 0, elapsedMinutes };
       profile.resources.scrap += scrap;
       profile.resources.water += water;

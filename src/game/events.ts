@@ -10,6 +10,8 @@ export interface MobileInputState {
   left: boolean;
   right: boolean;
   fire: boolean;
+  dash: boolean;
+  extract: boolean;
 }
 
 export type { GameSfx, PlayerSettings };

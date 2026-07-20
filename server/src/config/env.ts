@@ -16,6 +16,12 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   if (nodeEnv === 'production' && (!env.JWT_SECRET || jwtSecret.length < 32)) {
     throw new Error('JWT_SECRET must be explicitly set to at least 32 characters in production');
   }
+  if (nodeEnv === 'production' && !env.DATABASE_URL) {
+    throw new Error('DATABASE_URL must be configured in production');
+  }
+  if (nodeEnv === 'production' && !env.CORS_ORIGIN) {
+    throw new Error('CORS_ORIGIN must be explicitly configured in production');
+  }
   return {
     host: env.HOST ?? '0.0.0.0',
     port,

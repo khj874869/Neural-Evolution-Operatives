@@ -1,7 +1,8 @@
 export type ResourceKind = 'scrap' | 'water' | 'data' | 'cores';
 import type { WeaponId } from './combat.js';
+import type { CommercePlatform, StoreProductId } from './commerce.js';
 
-export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker' | 'warden';
+export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker' | 'jammer' | 'warden';
 
 export interface ResourceWallet {
   scrap: number;
@@ -18,6 +19,8 @@ export interface GameInputMessage {
   fire: boolean;
   extract: boolean;
   weapon: WeaponId;
+  activateLink?: boolean;
+  dash?: boolean;
 }
 
 export interface TacticalMessage {
@@ -25,7 +28,7 @@ export interface TacticalMessage {
 }
 
 export interface ServerEventMessage {
-  type: 'feed' | 'extraction' | 'mission' | 'error';
+  type: 'feed' | 'extraction' | 'mission' | 'neural-link' | 'error';
   message: string;
   payload?: Record<string, unknown>;
 }
@@ -57,6 +60,18 @@ export interface PlayerProfile {
   pity: number;
   accountLevel: number;
   xp: number;
+  commerce: {
+    entitlements: string[];
+    subscriptionUntil: string | null;
+    purchases: Array<{
+      transactionId: string;
+      productId: StoreProductId;
+      platform: CommercePlatform;
+      purchasedAt: string;
+      amountMinor: number;
+      currency: string;
+    }>;
+  };
   lastSeenAt: string;
   createdAt: string;
 }

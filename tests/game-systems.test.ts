@@ -8,6 +8,7 @@ import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/
 import { DEFAULT_SETTINGS, sanitizeSettings } from '../src/game/settings';
 import { projectileAngles, WEAPON_SPECS, weaponFromSlot } from '../packages/shared/src/combat';
 import { evaluateOperationZero } from '../src/game/systems/OperationZero';
+import { addNeuralCharge, neuralLinkLeader, neuralLinkSkill } from '../packages/shared/src/neuralLink';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -41,6 +42,7 @@ describe('adaptive director', () => {
     const profile = director.evaluate(telemetry, 2);
     expect(profile.weights.stalker).toBeGreaterThan(0.3);
     expect(profile.counterMessage).toContain('장거리');
+    expect(profile.weights.jammer).toBeGreaterThan(0);
   });
 });
 
@@ -69,6 +71,9 @@ describe('player settings', () => {
       reducedMotion: true,
     });
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
+    expect(sanitizeSettings({ uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true })).toMatchObject({
+      version: 2, uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true,
+    });
   });
 });
 
@@ -89,5 +94,14 @@ describe('operation zero progression', () => {
     expect(evaluateOperationZero({ collected: 8, kills: 10, bossDefeated: false, extracted: false }).stage).toBe('WARDEN');
     expect(evaluateOperationZero({ collected: 8, kills: 11, bossDefeated: true, extracted: false }).stage).toBe('EXTRACT');
     expect(evaluateOperationZero({ collected: 8, kills: 11, bossDefeated: true, extracted: true }).stage).toBe('COMPLETE');
+  });
+});
+
+describe('neural link rules', () => {
+  it('uses the first valid squad operator as leader and caps combat charge', () => {
+    expect(neuralLinkLeader(['lumen', 'ratchet', 'rook'])).toBe('lumen');
+    expect(neuralLinkSkill('lumen').role).toBe('Support');
+    expect(neuralLinkSkill('morrow').name).toBe('LAST LIGHT');
+    expect(addNeuralCharge(94, 12)).toBe(100);
   });
 });

@@ -1,6 +1,9 @@
 import type { EnemyKind, GameInputMessage, ResourceKind, ResourceWallet } from '../../../packages/shared/src/protocol.js';
 import { calculateSquadBonuses, type SquadBonuses } from '../../../packages/shared/src/squad.js';
 import { isWeaponId, projectileAngles, WEAPON_SPECS } from '../../../packages/shared/src/combat.js';
+import {
+  addNeuralCharge, NEURAL_LINK_MAX, neuralLinkLeader, neuralLinkSkill,
+} from '../../../packages/shared/src/neuralLink.js';
 
 export const WORLD_SIZE = 2400;
 export const EXTRACTION_POINT = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
@@ -19,6 +22,8 @@ export interface SimPlayer {
   lastSequence: number;
   squad: string[];
   bonuses: SquadBonuses;
+  linkCharge: number;
+  dashCooldownMs: number;
 }
 
 export interface SimEnemy {
@@ -41,6 +46,7 @@ export interface SimResource {
 export type SimulationEvent =
   | { type: 'feed'; playerSessionId?: string; message: string }
   | { type: 'boss-defeated'; playerSessionId: string; message: string }
+  | { type: 'neural-link'; playerSessionId: string; operatorId: string; skillName: string; message: string }
   | { type: 'extraction'; playerSessionId: string; playerId: string; cargo: ResourceWallet; extractionNumber: number }
   | { type: 'death'; playerSessionId: string; message: string };
 
@@ -59,11 +65,13 @@ const ENEMY_STATS: Record<EnemyKind, { hp: number; speed: number; damage: number
   raider: { hp: 38, speed: 76, damage: 10 },
   stalker: { hp: 28, speed: 138, damage: 13 },
   breaker: { hp: 92, speed: 48, damage: 19 },
+  jammer: { hp: 55, speed: 60, damage: 5 },
   warden: { hp: 520, speed: 46, damage: 24 },
 };
 
 const EMPTY_INPUT: GameInputMessage = {
-  sequence: 0, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false, weapon: 'carbine',
+  sequence: 0, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false,
+  weapon: 'carbine', activateLink: false, dash: false,
 };
 
 export class RedZoneSimulation {
@@ -98,6 +106,8 @@ export class RedZoneSimulation {
       lastSequence: 0,
       squad: [...squad],
       bonuses: calculateSquadBonuses(squad),
+      linkCharge: 0,
+      dashCooldownMs: 0,
       input: { ...EMPTY_INPUT },
       lastShotAtMs: -1_000,
       stationaryMs: 0,
@@ -139,6 +149,8 @@ export class RedZoneSimulation {
       fire: Boolean(input.fire),
       extract: Boolean(input.extract),
       weapon: isWeaponId(input.weapon) ? input.weapon : 'carbine',
+      activateLink: Boolean(input.activateLink),
+      dash: Boolean(input.dash),
     };
     player.lastSequence = input.sequence;
     return true;
@@ -170,6 +182,11 @@ export class RedZoneSimulation {
   }
 
   private updatePlayer(player: InternalPlayer, deltaMs: number): void {
+    player.dashCooldownMs = Math.max(0, player.dashCooldownMs - deltaMs);
+    if (player.input.dash) {
+      player.input.dash = false;
+      this.dash(player);
+    }
     const speed = 205 * player.bonuses.moveSpeedMultiplier;
     player.x = clamp(player.x + player.input.moveX * speed * deltaMs / 1000, 18, WORLD_SIZE - 18);
     player.y = clamp(player.y + player.input.moveY * speed * deltaMs / 1000, 18, WORLD_SIZE - 18);
@@ -188,10 +205,24 @@ export class RedZoneSimulation {
       player.hp = Math.min(100, player.hp + player.bonuses.regenPerSecond * deltaMs / 1000);
     }
     const weapon = WEAPON_SPECS[player.input.weapon];
+    if (player.input.activateLink) {
+      player.input.activateLink = false;
+      this.activateNeuralLink(player);
+    }
     if (player.input.fire && this.elapsedMs - player.lastShotAtMs >= weapon.cooldownMs * player.bonuses.fireCooldownMultiplier) this.fire(player);
     this.collectNearbyResources(player);
     if (player.input.extract) this.tryExtract(player);
     if (player.hp <= 0) this.respawn(player);
+  }
+
+  private dash(player: InternalPlayer): boolean {
+    if (player.dashCooldownMs > 0 || player.hp <= 0) return false;
+    const moving = Math.hypot(player.input.moveX, player.input.moveY) > 0.04;
+    const angle = moving ? Math.atan2(player.input.moveY, player.input.moveX) : player.aimAngle;
+    player.x = clamp(player.x + Math.cos(angle) * 138, 18, WORLD_SIZE - 18);
+    player.y = clamp(player.y + Math.sin(angle) * 138, 18, WORLD_SIZE - 18);
+    player.dashCooldownMs = 1_800;
+    return true;
   }
 
   private fire(player: InternalPlayer): void {
@@ -212,6 +243,7 @@ export class RedZoneSimulation {
       }
       if (!target) continue;
       player.hits += 1;
+      player.linkCharge = addNeuralCharge(player.linkCharge, 4);
       target.hp -= weapon.damage * player.bonuses.damageMultiplier;
       if (target.hp <= 0) this.defeatEnemy(player, target);
     }
@@ -224,7 +256,7 @@ export class RedZoneSimulation {
     const dx = target.x - enemy.x;
     const dy = target.y - enemy.y;
     const distance = Math.hypot(dx, dy);
-    const attackRange = enemy.kind === 'warden' ? 125 : 30;
+    const attackRange = enemy.kind === 'warden' ? 125 : enemy.kind === 'jammer' ? 180 : 30;
     if (distance > attackRange) {
       let angle = Math.atan2(dy, dx);
       if (enemy.kind === 'stalker') angle += Math.sin(this.elapsedMs * 0.004 + enemy.x) * 0.9;
@@ -235,7 +267,9 @@ export class RedZoneSimulation {
       enemy.attackCooldownMs -= deltaMs;
       if (enemy.attackCooldownMs <= 0) {
         target.hp -= stats.damage * target.bonuses.damageTakenMultiplier;
-        enemy.attackCooldownMs = enemy.kind === 'warden' ? 1_350 : 820;
+        target.linkCharge = addNeuralCharge(target.linkCharge, 6);
+        if (enemy.kind === 'jammer') target.linkCharge = Math.max(0, target.linkCharge - 18);
+        enemy.attackCooldownMs = enemy.kind === 'warden' ? 1_350 : enemy.kind === 'jammer' ? 1_450 : 820;
       }
     }
   }
@@ -243,6 +277,7 @@ export class RedZoneSimulation {
   private defeatEnemy(player: InternalPlayer, enemy: SimEnemy): void {
     this.enemies.delete(enemy.id);
     player.kills += 1;
+    player.linkCharge = addNeuralCharge(player.linkCharge, 12);
     if (enemy.kind === 'warden') {
       const coreId = `resource-${this.nextEntityId++}`;
       const dataId = `resource-${this.nextEntityId++}`;
@@ -254,7 +289,8 @@ export class RedZoneSimulation {
       });
       return;
     }
-    const kind: ResourceKind = this.random() < 0.22 ? (this.random() < 0.5 ? 'water' : 'data') : 'scrap';
+    const kind: ResourceKind = enemy.kind === 'jammer' ? 'data'
+      : this.random() < 0.22 ? (this.random() < 0.5 ? 'water' : 'data') : 'scrap';
     const resourceId = `resource-${this.nextEntityId++}`;
     this.resources.set(resourceId, {
       id: resourceId,
@@ -272,6 +308,44 @@ export class RedZoneSimulation {
       player.salvageCollected += resource.value;
       this.resources.delete(resource.id);
     }
+  }
+
+  private activateNeuralLink(player: InternalPlayer): boolean {
+    if (player.linkCharge < NEURAL_LINK_MAX || player.hp <= 0) return false;
+    const operatorId = neuralLinkLeader(player.squad);
+    const skill = neuralLinkSkill(operatorId);
+    player.linkCharge = 0;
+
+    if (skill.role === 'Vanguard') {
+      player.hp = Math.min(100, player.hp + 15);
+      for (const enemy of [...this.enemies.values()]) {
+        if (Math.hypot(enemy.x - player.x, enemy.y - player.y) > 260) continue;
+        enemy.hp -= 55;
+        if (enemy.hp <= 0) this.defeatEnemy(player, enemy);
+      }
+    } else if (skill.role === 'Sniper') {
+      const targets = [...this.enemies.values()]
+        .sort((left, right) => Math.hypot(left.x - player.x, left.y - player.y)
+          - Math.hypot(right.x - player.x, right.y - player.y))
+        .slice(0, 3);
+      for (const enemy of targets) {
+        enemy.hp -= 95;
+        if (enemy.hp <= 0) this.defeatEnemy(player, enemy);
+      }
+    } else if (skill.role === 'Support') {
+      player.hp = Math.min(100, player.hp + 45);
+      player.radiation = Math.max(0, player.radiation - 45);
+    } else {
+      player.cargo.scrap += 12;
+      player.cargo.data += 3;
+      player.salvageCollected += 15;
+    }
+
+    this.events.push({
+      type: 'neural-link', playerSessionId: player.id, operatorId, skillName: skill.name,
+      message: `${operatorId.toUpperCase()} // ${skill.name} 발동`,
+    });
+    return true;
   }
 
   private tryExtract(player: InternalPlayer): void {
@@ -311,7 +385,10 @@ export class RedZoneSimulation {
     const campers = [...this.players.values()].some((player) => player.stationaryMs > 11_000 || (player.shots > 8 && player.hits / player.shots > 0.58));
     for (let index = 0; index < count; index += 1) {
       const roll = this.random();
-      const kind: EnemyKind = campers && roll < 0.38 ? 'stalker' : roll < 0.42 ? 'drone' : roll < 0.8 ? 'raider' : roll < 0.94 ? 'stalker' : 'breaker';
+      const highLink = [...this.players.values()].some((player) => player.linkCharge >= 60);
+      const kind: EnemyKind = highLink && roll < 0.2 ? 'jammer'
+        : campers && roll < 0.38 ? 'stalker'
+          : roll < 0.38 ? 'drone' : roll < 0.72 ? 'raider' : roll < 0.88 ? 'stalker' : roll < 0.96 ? 'jammer' : 'breaker';
       const center = [...this.players.values()][index % Math.max(1, this.players.size)] ?? { x: EXTRACTION_POINT.x, y: EXTRACTION_POINT.y };
       const angle = this.random() * Math.PI * 2;
       const distance = 430 + this.random() * 220;

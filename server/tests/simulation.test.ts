@@ -75,4 +75,51 @@ describe('authoritative red zone simulation', () => {
     simulation.tick(50);
     expect(simulation.enemies.get('target')?.hp).toBe(472);
   });
+
+  it('activates a charged leader skill only inside the authoritative simulation', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-link', 'player-link', 'LINKER', ['lumen', 'ratchet', 'rook']);
+    player.hp = 40;
+    player.radiation = 70;
+    player.linkCharge = 100;
+    simulation.applyInput('session-link', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      weapon: 'carbine', activateLink: true,
+    });
+    simulation.tick(50);
+    expect(player.hp).toBeGreaterThan(84);
+    expect(player.radiation).toBeLessThan(26);
+    expect(player.linkCharge).toBe(0);
+    expect(simulation.drainEvents()).toContainEqual(expect.objectContaining({
+      type: 'neural-link', operatorId: 'lumen', skillName: 'PULSE RESTORE',
+    }));
+  });
+
+  it('validates dash cooldown and neural jammer disruption on the server', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    simulation.resources.clear();
+    simulation.enemies.clear();
+    const player = simulation.addPlayer('session-dash', 'player-dash', 'RUNNER');
+    const initialX = player.x;
+    simulation.applyInput('session-dash', {
+      sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      weapon: 'carbine', dash: true,
+    });
+    simulation.tick(50);
+    expect(player.x).toBeGreaterThan(initialX + 130);
+    const afterDash = player.x;
+    simulation.applyInput('session-dash', {
+      sequence: 2, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      weapon: 'carbine', dash: true,
+    });
+    simulation.tick(50);
+    expect(player.x).toBe(afterDash);
+
+    player.linkCharge = 60;
+    simulation.enemies.set('jammer-test', {
+      id: 'jammer-test', kind: 'jammer', x: player.x + 100, y: player.y, hp: 55, attackCooldownMs: 0,
+    });
+    simulation.tick(50);
+    expect(player.linkCharge).toBeLessThan(60);
+  });
 });

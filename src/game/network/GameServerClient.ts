@@ -1,5 +1,7 @@
 import { Client, type Room } from '@colyseus/sdk';
 import type { EnemyKind, GameInputMessage, GuestAuthResponse, PlayerProfile, ServerEventMessage } from '../../../packages/shared/src/protocol';
+import type { FunnelEventName, FunnelProperties } from '../../../packages/shared/src/analytics';
+import type { CommercePlatform, StoreProduct, StoreProductId } from '../../../packages/shared/src/commerce';
 import { gameEvents } from '../events';
 
 export interface NetworkSnapshot {
@@ -8,20 +10,32 @@ export interface NetworkSnapshot {
   players: Array<{
     id: string; playerId: string; displayName: string; x: number; y: number; aimAngle: number;
     hp: number; radiation: number; cargoScrap: number; cargoWater: number; cargoData: number;
-    cargoCores: number; kills: number; lastSequence: number;
+    cargoCores: number; kills: number; lastSequence: number; linkCharge: number; dashCooldownMs: number;
   }>;
   enemies: Array<{ id: string; kind: EnemyKind; x: number; y: number; hp: number }>;
   resources: Array<{ id: string; kind: 'scrap' | 'water' | 'data' | 'cores'; x: number; y: number; value: number }>;
+}
+
+export interface StoreCatalogResponse {
+  products: StoreProduct[];
+  recruitOdds: { SSR: number; SR: number; R: number; pityAt: number };
+  checkoutAvailable: boolean;
+  priceNotice: string;
 }
 
 export class GameServerClient {
   private room?: Room;
   private token?: string;
   private readonly endpoint: string;
+  private analyticsConsent = false;
   connected = false;
 
   constructor(endpoint = import.meta.env.VITE_GAME_SERVER_URL || (import.meta.env.DEV ? 'http://localhost:2567' : '')) {
     this.endpoint = endpoint.replace(/\/$/, '');
+  }
+
+  setAnalyticsConsent(consented: boolean): void {
+    this.analyticsConsent = consented;
   }
 
   async connect(): Promise<void> {
@@ -50,12 +64,18 @@ export class GameServerClient {
           void this.refreshProfile();
         }
         if (event.type === 'mission' && event.payload?.bossDefeated) gameEvents.emit('boss-defeated');
+        if (event.type === 'neural-link' && typeof event.payload?.operatorId === 'string' && typeof event.payload?.skillName === 'string') {
+          gameEvents.emit('neural-link-activated', event.payload.operatorId, event.payload.skillName);
+          gameEvents.emit('sfx', 'neural-link');
+          gameEvents.emit('haptic', 'success');
+        }
       });
       this.room.onLeave(() => {
         this.connected = false;
         gameEvents.emit('network-status', 'offline', '연결 종료 · 로컬 모드');
       });
       this.room.onError((_code, message) => gameEvents.emit('feed', message ?? '게임룸 통신 오류', true));
+      void this.track('session_start', { mode: 'online' });
       void this.claimOffline();
     } catch {
       this.connected = false;
@@ -94,6 +114,47 @@ export class GameServerClient {
     gameEvents.emit('network-profile', response.profile);
     if (this.connected) this.room?.send('sync-squad');
     return response.profile;
+  }
+
+  async getStoreCatalog(): Promise<StoreCatalogResponse | null> {
+    if (!this.endpoint) return null;
+    try {
+      return await this.request<StoreCatalogResponse>('/api/store/catalog', { method: 'GET' });
+    } catch {
+      return null;
+    }
+  }
+
+  async verifyPurchase(platform: CommercePlatform, productId: StoreProductId, receipt: string): Promise<PlayerProfile> {
+    const response = await this.authorized<{ profile: PlayerProfile }>('/api/store/verify', {
+      method: 'POST', body: JSON.stringify({ platform, productId, receipt }),
+    });
+    gameEvents.emit('network-profile', response.profile);
+    return response.profile;
+  }
+
+  async exportAccount(): Promise<unknown> {
+    return this.authorized('/api/account/export', { method: 'GET' });
+  }
+
+  async deleteAccount(): Promise<void> {
+    await this.authorized('/api/account', {
+      method: 'DELETE', body: JSON.stringify({ confirmation: 'DELETE' }),
+    });
+    await this.room?.leave().catch(() => undefined);
+    this.connected = false;
+    this.token = undefined;
+  }
+
+  async track(event: FunnelEventName, properties: FunnelProperties = {}): Promise<void> {
+    if (!this.analyticsConsent || !this.endpoint || !this.token) return;
+    try {
+      await this.authorized('/api/analytics/events', {
+        method: 'POST', body: JSON.stringify({ event, properties }),
+      });
+    } catch {
+      // Funnel tracking must never interrupt play.
+    }
   }
 
   private async claimOffline(): Promise<void> {

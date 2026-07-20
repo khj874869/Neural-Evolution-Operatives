@@ -11,6 +11,7 @@ import { PostgresPlayerRepository } from './persistence/PostgresPlayerRepository
 import type { PlayerRepository } from './persistence/PlayerRepository.js';
 import { configureRoomDependencies } from './rooms/dependencies.js';
 import { RedZoneRoom } from './rooms/RedZoneRoom.js';
+import { CommerceService } from './commerce/CommerceService.js';
 
 export interface GameServerBundle {
   gameServer: Server;
@@ -23,6 +24,7 @@ export function createGameServer(config: ServerConfig): GameServerBundle {
     : new InMemoryPlayerRepository();
   const tokens = new TokenService(config.jwtSecret);
   const economy = new EconomyService(repository);
+  const commerce = new CommerceService(repository);
   configureRoomDependencies({ tokens, repository, economy });
 
   const gameServer = new Server({
@@ -31,7 +33,7 @@ export function createGameServer(config: ServerConfig): GameServerBundle {
     driver: config.redisUrl ? new RedisDriver(config.redisUrl) : undefined,
     greet: config.nodeEnv !== 'test',
     beforeListen: () => repository.initialize(),
-    express: (app) => configureHttpApp(app, { config, repository, economy, tokens }),
+    express: (app) => configureHttpApp(app, { config, repository, economy, tokens, commerce }),
   });
   gameServer.define('red_zone', RedZoneRoom);
   gameServer.onShutdown(() => repository.shutdown());

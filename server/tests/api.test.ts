@@ -13,9 +13,10 @@ const config: ServerConfig = {
 
 describe('game account API', () => {
   let app: ReturnType<typeof createStandaloneHttpApp>;
+  let repository: InMemoryPlayerRepository;
 
   beforeEach(async () => {
-    const repository = new InMemoryPlayerRepository();
+    repository = new InMemoryPlayerRepository();
     await repository.initialize();
     const tokens = new TokenService(config.jwtSecret);
     app = createStandaloneHttpApp({ config, repository, tokens, economy: new EconomyService(repository, () => 0.5) });
@@ -45,5 +46,40 @@ describe('game account API', () => {
       .send({ squad: ['lumen', 'aegis-07', 'ratchet'] })
       .expect(200);
     expect(response.body.profile.squad).toEqual(['lumen', 'aegis-07', 'ratchet']);
+  });
+
+  it('publishes a transparent store catalog and records funnel events', async () => {
+    const catalog = await request(app).get('/api/store/catalog').expect(200);
+    expect(catalog.body.products).toHaveLength(3);
+    expect(catalog.body.recruitOdds).toEqual({ SSR: 0.04, SR: 0.24, R: 0.72, pityAt: 20 });
+    expect(catalog.body.checkoutAvailable).toBe(false);
+
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:analytics-device-01' }).expect(200);
+    await request(app).post('/api/analytics/events')
+      .set('authorization', `Bearer ${auth.body.token}`)
+      .send({ event: 'store_view', properties: { source: 'command_dock' } })
+      .expect(202);
+    expect(repository.analytics).toContainEqual(expect.objectContaining({ event: 'store_view' }));
+  });
+
+  it('never grants a purchase while platform receipt verification is not configured', async () => {
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:purchase-device-01' }).expect(200);
+    await request(app).post('/api/store/verify')
+      .set('authorization', `Bearer ${auth.body.token}`)
+      .send({ platform: 'google', productId: 'core_cache_s', receipt: 'unverified-receipt' })
+      .expect(503, { error: 'PLATFORM_BILLING_NOT_CONFIGURED' });
+  });
+
+  it('exports account data and deletes the authenticated guest profile', async () => {
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:privacy-device-001' }).expect(200);
+    const authorization = `Bearer ${auth.body.token}`;
+    const exported = await request(app).get('/api/account/export').set('authorization', authorization).expect(200);
+    expect(exported.body.profile.playerId).toBe(auth.body.profile.playerId);
+    expect(exported.body.dataUse.ai).toContain('기기');
+    await request(app).delete('/api/account').set('authorization', authorization)
+      .send({ confirmation: 'WRONG' }).expect(400);
+    await request(app).delete('/api/account').set('authorization', authorization)
+      .send({ confirmation: 'DELETE' }).expect(200, { deleted: true });
+    await request(app).get('/api/profile').set('authorization', authorization).expect(404);
   });
 });

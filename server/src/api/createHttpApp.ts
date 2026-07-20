@@ -6,12 +6,16 @@ import type { ServerConfig } from '../config/env.js';
 import { EconomyError, EconomyService } from '../economy/EconomyService.js';
 import type { PlayerRepository } from '../persistence/PlayerRepository.js';
 import { TokenService } from '../auth/TokenService.js';
+import { CommerceError, CommerceService } from '../commerce/CommerceService.js';
+import { FUNNEL_EVENTS } from '../../../packages/shared/src/analytics.js';
+import { RECRUIT_ODDS, STORE_PRODUCT_IDS, STORE_PRODUCTS } from '../../../packages/shared/src/commerce.js';
 
 export interface ApiDependencies {
   config: ServerConfig;
   repository: PlayerRepository;
   economy: EconomyService;
   tokens: TokenService;
+  commerce?: CommerceService;
 }
 
 const deviceSchema = z.object({
@@ -22,10 +26,31 @@ const squadSchema = z.object({
   squad: z.array(z.string().min(1).max(32)).length(3)
     .refine((operators) => new Set(operators).size === operators.length, 'Squad operators must be unique'),
 });
+const purchaseSchema = z.object({
+  platform: z.enum(['google', 'apple', 'steam']),
+  productId: z.enum(STORE_PRODUCT_IDS),
+  receipt: z.string().min(6).max(16_000),
+});
+const analyticsSchema = z.object({
+  event: z.enum(FUNNEL_EVENTS),
+  properties: z.record(
+    z.string().min(1).max(32),
+    z.union([z.string().max(120), z.number().finite(), z.boolean()]),
+  ).refine((value) => Object.keys(value).length <= 12, 'Too many analytics properties').default({}),
+});
+const deleteAccountSchema = z.object({ confirmation: z.literal('DELETE') });
 
 export function configureHttpApp(app: express.Application, deps: ApiDependencies): void {
+  const commerce = deps.commerce ?? new CommerceService(deps.repository);
   app.disable('x-powered-by');
   app.use(cors({ origin: deps.config.corsOrigin.split(',').map((origin) => origin.trim()), credentials: false }));
+  app.use((_request, response, next) => {
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    response.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    response.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+    next();
+  });
   app.use(express.json({ limit: '32kb' }));
 
   app.get('/health', async (_request, response) => {
@@ -42,6 +67,28 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     const profile = await deps.repository.getById(response.locals.playerId as string);
     if (!profile) return response.status(404).json({ error: 'PLAYER_NOT_FOUND' });
     return response.json({ profile });
+  });
+
+  app.get('/api/account/export', requirePlayer(deps.tokens), async (_request, response) => {
+    const profile = await deps.repository.getById(response.locals.playerId as string);
+    if (!profile) return response.status(404).json({ error: 'PLAYER_NOT_FOUND' });
+    return response.json({
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      profile,
+      dataUse: {
+        required: ['인증 식별자', '게임 진행도', '구매 검증 기록'],
+        optional: ['동의한 경우의 진행·오류 분석 이벤트'],
+        ai: '현재 대화와 페르소나 응답은 규칙 기반으로 기기에서 처리됩니다.',
+      },
+    });
+  });
+
+  app.delete('/api/account', requirePlayer(deps.tokens), async (request, response) => {
+    deleteAccountSchema.parse(request.body);
+    const deleted = await deps.repository.deletePlayer(response.locals.playerId as string);
+    if (!deleted) return response.status(404).json({ error: 'PLAYER_NOT_FOUND' });
+    return response.json({ deleted: true });
   });
 
   app.post('/api/economy/offline/claim', requirePlayer(deps.tokens), async (request, response) => {
@@ -77,9 +124,41 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     response.json(result);
   });
 
+  app.get('/api/store/catalog', (_request, response) => {
+    response.json({
+      products: STORE_PRODUCTS,
+      recruitOdds: RECRUIT_ODDS,
+      checkoutAvailable: commerce.checkoutAvailable,
+      priceNotice: '최종 가격과 결제 통화는 플랫폼 결제창에 표시된 값이 우선합니다.',
+    });
+  });
+
+  app.post('/api/store/verify', requirePlayer(deps.tokens), async (request, response) => {
+    const body = purchaseSchema.parse(request.body);
+    const playerId = response.locals.playerId as string;
+    const result = await commerce.verifyAndGrant({ ...body, playerId });
+    if (!result.replayed) {
+      await deps.repository.recordAnalytics(playerId, 'purchase_complete', {
+        productId: body.productId, platform: body.platform,
+        amountMinor: result.purchase.amountMinor, currency: result.purchase.currency,
+      });
+    }
+    response.json(result);
+  });
+
+  app.post('/api/analytics/events', requirePlayer(deps.tokens), async (request, response) => {
+    const body = analyticsSchema.parse(request.body);
+    await deps.repository.recordAnalytics(response.locals.playerId as string, body.event, body.properties);
+    response.status(202).json({ accepted: true });
+  });
+
   app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
+    if (error instanceof SyntaxError && 'status' in error && error.status === 400) {
+      return response.status(400).json({ error: 'INVALID_JSON' });
+    }
     if (error instanceof z.ZodError) return response.status(400).json({ error: 'INVALID_REQUEST', issues: error.issues });
     if (error instanceof EconomyError) return response.status(error.status).json({ error: error.message });
+    if (error instanceof CommerceError) return response.status(error.status).json({ error: error.message });
     if (error instanceof Error && error.message === 'PLAYER_NOT_FOUND') return response.status(404).json({ error: error.message });
     console.error(error);
     return response.status(500).json({ error: 'INTERNAL_SERVER_ERROR' });
