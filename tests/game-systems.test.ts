@@ -15,6 +15,10 @@ import { createClientErrorReport, sanitizeErrorMessage } from '../src/game/telem
 import {
   activeOperationId, evaluateOperation, isOperationUnlocked,
 } from '../packages/shared/src/operations';
+import {
+  EXTRACTION_POINT, isCircleBlocked, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  RELAY_POSITIONS, resolveCircleMovement, worldObstacles,
+} from '../packages/shared/src/world';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -115,6 +119,42 @@ describe('operation ashfall campaign', () => {
     expect(evaluateOperation('operation-ashfall', {
       collected: 20, dataCollected: 12, kills: 16, relaysDestroyed: 3, bossDefeated: false, extracted: false,
     })).toMatchObject({ stage: 'WARDEN', title: '신호포식자 헤카톤' });
+  });
+});
+
+describe('shared red-zone cover geometry', () => {
+  it('keeps operation layouts deterministic and critical objectives accessible', () => {
+    const zero = worldObstacles('operation-zero');
+    const ashfall = worldObstacles('operation-ashfall');
+    expect(worldObstacles('operation-zero')).toBe(zero);
+    expect(ashfall).not.toEqual(zero);
+    expect(zero).toHaveLength(16);
+    expect(ashfall).toHaveLength(16);
+    for (const obstacles of [zero, ashfall]) {
+      expect(isCircleBlocked(EXTRACTION_POINT, 220, obstacles)).toBe(false);
+      for (const relay of RELAY_POSITIONS) expect(isCircleBlocked(relay, 30, obstacles)).toBe(false);
+    }
+  });
+
+  it('slides movement against cover and blocks fire through the same rectangle', () => {
+    const obstacles = worldObstacles('operation-zero');
+    const obstacle = obstacles[0];
+    const leftEdge = obstacle.x - obstacle.width / 2;
+    const start = { x: leftEdge - PLAYER_COLLISION_RADIUS - 4, y: obstacle.y };
+    const movement = resolveCircleMovement(start, { x: 180, y: 36 }, PLAYER_COLLISION_RADIUS, obstacles);
+    expect(movement.blocked).toBe(true);
+    expect(movement.x).toBeLessThanOrEqual(leftEdge - PLAYER_COLLISION_RADIUS);
+    expect(movement.y).toBeGreaterThan(start.y);
+    expect(isLineBlocked(
+      { x: leftEdge - 80, y: obstacle.y },
+      { x: obstacle.x + obstacle.width / 2 + 80, y: obstacle.y },
+      obstacles,
+    )).toBe(true);
+    expect(isLineBlocked(
+      { x: leftEdge - 80, y: obstacle.y - obstacle.height },
+      { x: obstacle.x + obstacle.width / 2 + 80, y: obstacle.y - obstacle.height },
+      obstacles,
+    )).toBe(false);
   });
 });
 

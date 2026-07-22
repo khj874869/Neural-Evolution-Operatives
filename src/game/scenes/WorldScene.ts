@@ -17,12 +17,14 @@ import {
   evaluateOperation, operationDefinition,
   type OperationDefinition, type OperationId, type OperationStage, type OperationStatus,
 } from '../../../packages/shared/src/operations';
+import {
+  EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
+} from '../../../packages/shared/src/world';
 
 type EnemySprite = Phaser.Physics.Arcade.Sprite & { archetype?: EnemyKind };
 type ResourceSprite = Phaser.Physics.Arcade.Sprite & { resourceKind?: keyof Resources; value?: number };
 
-const WORLD_SIZE = 2400;
-const EXTRACTION = new Phaser.Math.Vector2(WORLD_SIZE / 2, WORLD_SIZE / 2);
 const ENEMY_STATS: Record<EnemyKind, { texture: string; tint: number; hp: number; speed: number; damage: number; scale: number }> = {
   drone: { texture: 'enemy-drone', tint: 0xd8df74, hp: 22, speed: 115, damage: 7, scale: 0.92 },
   raider: { texture: 'enemy-raider', tint: 0xe67d62, hp: 38, speed: 76, damage: 10, scale: 0.95 },
@@ -45,6 +47,7 @@ export class WorldScene extends Phaser.Scene {
   private enemies!: Phaser.Physics.Arcade.Group;
   private bullets!: Phaser.Physics.Arcade.Group;
   private resources!: Phaser.Physics.Arcade.Group;
+  private obstacles!: Phaser.Physics.Arcade.StaticGroup;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private keys!: Record<'W' | 'A' | 'S' | 'D' | 'E' | 'Q' | 'SPACE' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
   private director = new AdaptiveDirector();
@@ -80,6 +83,7 @@ export class WorldScene extends Phaser.Scene {
   private operationStage?: OperationStage;
   private operationId: OperationId = 'operation-zero';
   private operationDefinition: OperationDefinition = operationDefinition('operation-zero');
+  private cover: readonly WorldObstacle[] = worldObstacles('operation-zero');
   private operationStatus: OperationStatus = evaluateOperation('operation-zero', {
     collected: 0, dataCollected: 0, kills: 0, relaysDestroyed: 0, bossDefeated: false, extracted: false,
   });
@@ -107,18 +111,20 @@ export class WorldScene extends Phaser.Scene {
     this.reducedMotion = Boolean((this.registry.get('settings') as PlayerSettings | undefined)?.reducedMotion);
     this.operationId = this.state.activeOperationId();
     this.operationDefinition = operationDefinition(this.operationId);
+    this.cover = worldObstacles(this.operationId);
     this.operationStatus = evaluateOperation(this.operationId, {
       collected: 0, dataCollected: 0, kills: 0, relaysDestroyed: 0, bossDefeated: false, extracted: false,
     });
     this.mission = generateMission(this.state.snapshot().accountLevel, this.state.snapshot().resources);
     this.physics.world.setBounds(0, 0, WORLD_SIZE, WORLD_SIZE);
+    this.obstacles = this.physics.add.staticGroup();
     this.drawWorld();
 
     this.enemies = this.physics.add.group({ maxSize: 80 });
     this.bullets = this.physics.add.group({ maxSize: 140 });
     this.resources = this.physics.add.group({ maxSize: 90 });
-    this.player = this.physics.add.sprite(EXTRACTION.x, EXTRACTION.y + 130, 'player').setTint(0x9cffbb).setDepth(5);
-    this.player.setCollideWorldBounds(true).setCircle(15, 9, 9);
+    this.player = this.physics.add.sprite(EXTRACTION_POINT.x, EXTRACTION_POINT.y + 130, 'player').setTint(0x9cffbb).setDepth(5);
+    this.player.setCollideWorldBounds(true).setCircle(PLAYER_COLLISION_RADIUS, 6, 6);
 
     this.spawnCompanions();
     this.spawnResourceCaches();
@@ -188,40 +194,50 @@ export class WorldScene extends Phaser.Scene {
       ground.lineBetween(0, axis, WORLD_SIZE, axis);
     }
     ground.lineStyle(2, palette.accent, 0.16);
-    ground.strokeCircle(EXTRACTION.x, EXTRACTION.y, 130);
+    ground.strokeCircle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 130);
     ground.setDepth(-5);
 
     const seed = new Phaser.Math.RandomDataGenerator([this.operationDefinition.codename]);
-    for (let index = 0; index < 92; index += 1) {
+    for (let index = 0; index < 64; index += 1) {
       const x = seed.between(90, WORLD_SIZE - 90);
       const y = seed.between(90, WORLD_SIZE - 90);
-      if (Phaser.Math.Distance.Between(x, y, EXTRACTION.x, EXTRACTION.y) < 220) continue;
-      const texture = index % 4 === 0 ? 'wreck' : 'ruin';
-      this.add.image(x, y, texture)
+      if (Phaser.Math.Distance.Between(x, y, EXTRACTION_POINT.x, EXTRACTION_POINT.y) < 220) continue;
+      const scarColor = this.operationId === 'operation-ashfall' ? 0xff6f3c : 0xe2b84c;
+      ground.lineStyle(seed.between(1, 3), scarColor, seed.realInRange(0.05, 0.13))
+        .strokeCircle(x, y, seed.between(12, 52));
+      ground.lineBetween(x - seed.between(8, 30), y, x + seed.between(8, 30), y + seed.between(-18, 18));
+    }
+    for (const obstacle of this.cover) {
+      const sprite = this.obstacles.create(obstacle.x, obstacle.y, obstacle.kind) as Phaser.Physics.Arcade.Sprite;
+      sprite.setDisplaySize(obstacle.width, obstacle.height)
         .setTint(seed.pick([...palette.ruinTints]))
-        .setAlpha(seed.realInRange(0.65, 0.94))
-        .setRotation(seed.realInRange(-0.8, 0.8))
-        .setScale(seed.realInRange(0.72, 1.18));
-      if (index % 7 === 0) {
-        ground.lineStyle(2, this.operationId === 'operation-ashfall' ? 0xff6f3c : 0xe2b84c, 0.12)
-          .strokeCircle(x, y, seed.between(45, 85));
-      }
+        .setAlpha(0.94)
+        .setDepth(2);
+      sprite.refreshBody();
+      ground.lineStyle(2, palette.accent, 0.13)
+        .strokeRoundedRect(
+          obstacle.x - obstacle.width / 2 - 5,
+          obstacle.y - obstacle.height / 2 - 5,
+          obstacle.width + 10,
+          obstacle.height + 10,
+          8,
+        );
     }
     if (this.operationId === 'operation-ashfall') {
       for (let index = 0; index < 8; index += 1) {
         const angle = index / 8 * Math.PI * 2;
         const distance = 420 + (index % 2) * 230;
         ground.lineStyle(5, 0xff6f3c, 0.12).lineBetween(
-          EXTRACTION.x + Math.cos(angle) * 170,
-          EXTRACTION.y + Math.sin(angle) * 170,
-          EXTRACTION.x + Math.cos(angle) * distance,
-          EXTRACTION.y + Math.sin(angle) * distance,
+          EXTRACTION_POINT.x + Math.cos(angle) * 170,
+          EXTRACTION_POINT.y + Math.sin(angle) * 170,
+          EXTRACTION_POINT.x + Math.cos(angle) * distance,
+          EXTRACTION_POINT.y + Math.sin(angle) * distance,
         );
       }
     }
-    this.extractionRing = this.add.circle(EXTRACTION.x, EXTRACTION.y, 64, palette.accent, 0.045)
+    this.extractionRing = this.add.circle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 64, palette.accent, 0.045)
       .setStrokeStyle(2, palette.accent, 0.7).setDepth(1);
-    this.add.text(EXTRACTION.x, EXTRACTION.y - 88, `${this.operationDefinition.zoneName} // EXTRACTION`, {
+    this.add.text(EXTRACTION_POINT.x, EXTRACTION_POINT.y - 88, `${this.operationDefinition.zoneName} // EXTRACTION`, {
       color: `#${palette.accent.toString(16).padStart(6, '0')}`, fontFamily: 'Share Tech Mono', fontSize: '11px',
     }).setOrigin(0.5);
   }
@@ -276,6 +292,15 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private setupPhysics(): void {
+    this.physics.add.collider(this.player, this.obstacles);
+    this.physics.add.collider(this.enemies, this.obstacles, undefined, () => !this.networkConnected);
+    this.physics.add.collider(this.bullets, this.obstacles, (bulletObject) => {
+      const bullet = bulletObject as Phaser.Physics.Arcade.Sprite;
+      if (!bullet.active) return;
+      const { x, y } = bullet;
+      bullet.disableBody(true, true);
+      this.impactBurst(x, y, 0xa7b1aa, 3);
+    });
     this.physics.add.overlap(this.bullets, this.enemies, (bulletObject, enemyObject) => {
       const bullet = bulletObject as Phaser.Physics.Arcade.Sprite;
       const enemy = enemyObject as EnemySprite;
@@ -400,10 +425,11 @@ export class WorldScene extends Phaser.Scene {
     const angle = movement.lengthSq() > 0 ? movement.angle() : this.player.rotation - Math.PI / 2;
     const startX = this.player.x;
     const startY = this.player.y;
-    this.player.setPosition(
-      Phaser.Math.Clamp(startX + Math.cos(angle) * 138, 18, WORLD_SIZE - 18),
-      Phaser.Math.Clamp(startY + Math.sin(angle) * 138, 18, WORLD_SIZE - 18),
-    );
+    const destination = resolveCircleMovement({ x: startX, y: startY }, {
+      x: Math.cos(angle) * 138,
+      y: Math.sin(angle) * 138,
+    }, PLAYER_COLLISION_RADIUS, this.cover);
+    this.player.setPosition(destination.x, destination.y);
     const trail = this.add.line(0, 0, startX, startY, this.player.x, this.player.y, 0x8bffba, 0.7)
       .setOrigin(0).setLineWidth(8).setDepth(3).setBlendMode(Phaser.BlendModes.ADD);
     this.tweens.add({ targets: trail, alpha: 0, duration: this.reducedMotion ? 80 : 220, onComplete: () => trail.destroy() });
@@ -499,13 +525,15 @@ export class WorldScene extends Phaser.Scene {
         : archetype === 'warden' ? 125
           : archetype === 'relay' ? 240
             : archetype === 'sapper' || archetype === 'jammer' ? 180 : 30;
-      if (distance > attackRange) {
+      const hasCoverBetween = isLineBlocked(enemy, target, this.cover, 2);
+      if (distance > attackRange || hasCoverBetween) {
         if (archetype === 'relay') {
           enemy.setVelocity(0, 0);
           return true;
         }
         let offset = 0;
         if (archetype === 'stalker' || archetype === 'sapper') offset = Math.sin(time * 0.004 + enemy.x) * 0.9;
+        if (hasCoverBetween) offset += ((enemy.getData('flankSign') as number | undefined) ?? 1) * Math.PI / 2;
         const angle = Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y) + offset;
         const enraged = (archetype === 'warden' || archetype === 'harvester')
           && enemy.getData('hp') < stats.hp * 0.5 ? 1.35 : 1;
@@ -684,8 +712,11 @@ export class WorldScene extends Phaser.Scene {
     const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
     const isBoss = archetype === 'warden' || archetype === 'harvester';
     const distance = forcedDistance ?? (isBoss ? 560 : Phaser.Math.Between(430, 680));
-    const x = Phaser.Math.Clamp(this.player.x + Math.cos(angle) * distance, 24, WORLD_SIZE - 24);
-    const y = Phaser.Math.Clamp(this.player.y + Math.sin(angle) * distance, 24, WORLD_SIZE - 24);
+    const position = findOpenPosition({
+      x: Phaser.Math.Clamp(this.player.x + Math.cos(angle) * distance, 24, WORLD_SIZE - 24),
+      y: Phaser.Math.Clamp(this.player.y + Math.sin(angle) * distance, 24, WORLD_SIZE - 24),
+    }, isBoss ? 38 : archetype === 'breaker' || archetype === 'relay' ? 24 : 14, this.cover);
+    const { x, y } = position;
     const stats = ENEMY_STATS[archetype];
     const enemy = this.enemies.get(x, y, stats.texture) as EnemySprite | null;
     if (!enemy) return;
@@ -693,6 +724,7 @@ export class WorldScene extends Phaser.Scene {
       .setTint(stats.tint).setScale(stats.scale).setDepth(3).setAlpha(0);
     enemy.archetype = archetype;
     enemy.setData('hp', stats.hp).setData('attackAt', 0)
+      .setData('flankSign', Phaser.Math.Between(0, 1) === 0 ? -1 : 1)
       .setCircle(isBoss ? 36 : archetype === 'relay' ? 24 : archetype === 'breaker' ? 20 : 12,
         isBoss ? 14 : archetype === 'relay' ? 8 : archetype === 'breaker' ? 8 : 4,
         isBoss ? 14 : archetype === 'relay' ? 8 : archetype === 'breaker' ? 8 : 4);
@@ -710,12 +742,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private spawnRelayNetwork(): void {
-    const positions = [
-      { x: 470, y: 520 },
-      { x: WORLD_SIZE - 500, y: 620 },
-      { x: WORLD_SIZE / 2 + 260, y: WORLD_SIZE - 470 },
-    ];
-    for (const position of positions) {
+    for (const position of RELAY_POSITIONS) {
       const stats = ENEMY_STATS.relay;
       const enemy = this.enemies.get(position.x, position.y, stats.texture) as EnemySprite | null;
       if (!enemy) continue;
@@ -814,10 +841,11 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private spawnResource(x: number, y: number, kind: keyof Resources, value: number): void {
-    const resource = this.resources.get(x, y, RESOURCE_TEXTURES[kind]) as ResourceSprite | null;
+    const position = findOpenPosition({ x, y }, 12, this.cover);
+    const resource = this.resources.get(position.x, position.y, RESOURCE_TEXTURES[kind]) as ResourceSprite | null;
     if (!resource) return;
     const tints: Record<keyof Resources, number> = { scrap: 0xa7b1aa, water: 0x61b9ff, data: 0xb47cff, cores: 0xffd76a };
-    resource.setTexture(RESOURCE_TEXTURES[kind]).enableBody(true, x, y, true, true).setTint(tints[kind]).setDepth(2).setScale(0.9);
+    resource.setTexture(RESOURCE_TEXTURES[kind]).enableBody(true, position.x, position.y, true, true).setTint(tints[kind]).setDepth(2).setScale(0.9);
     resource.resourceKind = kind;
     resource.value = value;
     this.tweens.killTweensOf(resource);
@@ -831,7 +859,7 @@ export class WorldScene extends Phaser.Scene {
       const enemy = child as EnemySprite;
       if (!enemy.active) return true;
       const distance = Phaser.Math.Distance.Between(x, y, enemy.x, enemy.y);
-      if (distance < nearestDistance) {
+      if (distance < nearestDistance && !isLineBlocked({ x, y }, enemy, this.cover)) {
         nearest = enemy;
         nearestDistance = distance;
       }
@@ -842,7 +870,7 @@ export class WorldScene extends Phaser.Scene {
 
   private checkExtraction(): void {
     if (this.networkConnected) return;
-    const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION.x, EXTRACTION.y);
+    const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION_POINT.x, EXTRACTION_POINT.y);
     const hasCargo = Object.values(this.fieldCargo).some((value) => value > 0);
     this.extractionRing.setStrokeStyle(2, hasCargo && distance < 120 ? 0xc9f456 : 0x8bffba, 0.7);
     const requested = this.extractRequested;
@@ -852,7 +880,7 @@ export class WorldScene extends Phaser.Scene {
       this.state.recordExtraction(cargo.scrap);
       this.state.addResources({ water: cargo.water, data: cargo.data, cores: cargo.cores });
       this.fieldCargo = { scrap: 0, water: 0, data: 0, cores: 0 };
-      this.impactBurst(EXTRACTION.x, EXTRACTION.y, 0xc9f456, 22);
+      this.impactBurst(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 0xc9f456, 22);
       gameEvents.emit('sfx', 'extract');
       gameEvents.emit('haptic', 'success');
       const missionComplete = this.missionKills >= this.mission.targetKills && cargo[this.mission.targetResource] >= this.mission.targetAmount;

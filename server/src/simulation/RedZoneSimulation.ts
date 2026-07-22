@@ -7,9 +7,12 @@ import {
 import {
   evaluateOperation, operationDefinition, type OperationId,
 } from '../../../packages/shared/src/operations.js';
+import {
+  EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
+} from '../../../packages/shared/src/world.js';
 
-export const WORLD_SIZE = 2400;
-export const EXTRACTION_POINT = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+export { EXTRACTION_POINT, WORLD_SIZE };
 
 export interface SimPlayer {
   id: string;
@@ -99,12 +102,14 @@ export class RedZoneSimulation {
   private bossSpawned = false;
   private bossDefeated = false;
   private relaysSpawned = false;
+  private readonly obstacles: readonly WorldObstacle[];
   relaysDestroyed = 0;
 
   constructor(
     private readonly random: () => number = Math.random,
     readonly operationId: OperationId = 'operation-zero',
   ) {
+    this.obstacles = worldObstacles(operationId);
     for (let index = 0; index < 18; index += 1) this.spawnResourceCache();
   }
 
@@ -218,8 +223,12 @@ export class RedZoneSimulation {
       this.dash(player);
     }
     const speed = 205 * player.bonuses.moveSpeedMultiplier;
-    player.x = clamp(player.x + player.input.moveX * speed * deltaMs / 1000, 18, WORLD_SIZE - 18);
-    player.y = clamp(player.y + player.input.moveY * speed * deltaMs / 1000, 18, WORLD_SIZE - 18);
+    const movement = resolveCircleMovement(player, {
+      x: player.input.moveX * speed * deltaMs / 1000,
+      y: player.input.moveY * speed * deltaMs / 1000,
+    }, PLAYER_COLLISION_RADIUS, this.obstacles);
+    player.x = movement.x;
+    player.y = movement.y;
     player.aimAngle = player.input.aimAngle;
     const moving = Math.abs(player.input.moveX) + Math.abs(player.input.moveY) > 0.04;
     player.stationaryMs = moving ? Math.max(0, player.stationaryMs - deltaMs) : player.stationaryMs + deltaMs;
@@ -249,8 +258,12 @@ export class RedZoneSimulation {
     if (player.dashCooldownMs > 0 || player.hp <= 0) return false;
     const moving = Math.hypot(player.input.moveX, player.input.moveY) > 0.04;
     const angle = moving ? Math.atan2(player.input.moveY, player.input.moveX) : player.aimAngle;
-    player.x = clamp(player.x + Math.cos(angle) * 138, 18, WORLD_SIZE - 18);
-    player.y = clamp(player.y + Math.sin(angle) * 138, 18, WORLD_SIZE - 18);
+    const destination = resolveCircleMovement(player, {
+      x: Math.cos(angle) * 138,
+      y: Math.sin(angle) * 138,
+    }, PLAYER_COLLISION_RADIUS, this.obstacles);
+    player.x = destination.x;
+    player.y = destination.y;
     player.dashCooldownMs = 1_800;
     return true;
   }
@@ -268,6 +281,7 @@ export class RedZoneSimulation {
         if (distance >= targetDistance) continue;
         const angle = Math.atan2(enemy.y - player.y, enemy.x - player.x);
         if (Math.abs(normalizeAngle(angle - shotAngle)) > 0.16) continue;
+        if (isLineBlocked(player, enemy, this.obstacles)) continue;
         target = enemy;
         targetDistance = distance;
       }
@@ -286,19 +300,37 @@ export class RedZoneSimulation {
     const dx = target.x - enemy.x;
     const dy = target.y - enemy.y;
     const distance = Math.hypot(dx, dy);
+    const hasCoverBetween = isLineBlocked(enemy, target, this.obstacles, 2);
     if (enemy.kind === 'harvester') this.updateHarvesterAbility(enemy, target, deltaMs);
     const attackRange = enemy.kind === 'harvester' ? 165
       : enemy.kind === 'warden' ? 125
         : enemy.kind === 'relay' ? 240
           : enemy.kind === 'sapper' || enemy.kind === 'jammer' ? 180 : 30;
-    if (distance > attackRange) {
+    if (distance > attackRange || hasCoverBetween) {
       if (enemy.kind === 'relay') return;
       let angle = Math.atan2(dy, dx);
       if (enemy.kind === 'stalker' || enemy.kind === 'sapper') angle += Math.sin(this.elapsedMs * 0.004 + enemy.x) * 0.9;
       const enraged = (enemy.kind === 'warden' || enemy.kind === 'harvester')
         && enemy.hp < ENEMY_STATS[enemy.kind].hp * 0.5 ? 1.35 : 1;
-      enemy.x += Math.cos(angle) * stats.speed * enraged * deltaMs / 1000;
-      enemy.y += Math.sin(angle) * stats.speed * enraged * deltaMs / 1000;
+      const distanceThisTick = stats.speed * enraged * deltaMs / 1000;
+      const radius = enemyCollisionRadius(enemy.kind);
+      const direct = resolveCircleMovement(enemy, {
+        x: Math.cos(angle) * distanceThisTick,
+        y: Math.sin(angle) * distanceThisTick,
+      }, radius, this.obstacles);
+      let destination = direct;
+      if (direct.blocked || hasCoverBetween) {
+        const flankAngle = Math.atan2(dy, dx) + navigationSign(enemy.id) * Math.PI / 2;
+        const flank = resolveCircleMovement(enemy, {
+          x: Math.cos(flankAngle) * distanceThisTick,
+          y: Math.sin(flankAngle) * distanceThisTick,
+        }, radius, this.obstacles);
+        const directProgress = Math.hypot(direct.x - enemy.x, direct.y - enemy.y);
+        const flankProgress = Math.hypot(flank.x - enemy.x, flank.y - enemy.y);
+        if (flankProgress > directProgress + 0.01) destination = flank;
+      }
+      enemy.x = destination.x;
+      enemy.y = destination.y;
     } else {
       enemy.attackCooldownMs -= deltaMs;
       if (enemy.attackCooldownMs <= 0) {
@@ -470,10 +502,14 @@ export class RedZoneSimulation {
       const angle = this.random() * Math.PI * 2;
       const distance = 430 + this.random() * 220;
       const id = `enemy-${this.nextEntityId++}`;
-      this.enemies.set(id, {
-        id, kind,
+      const position = findOpenPosition({
         x: clamp(center.x + Math.cos(angle) * distance, 20, WORLD_SIZE - 20),
         y: clamp(center.y + Math.sin(angle) * distance, 20, WORLD_SIZE - 20),
+      }, enemyCollisionRadius(kind), this.obstacles);
+      this.enemies.set(id, {
+        id, kind,
+        x: position.x,
+        y: position.y,
         hp: ENEMY_STATS[kind].hp,
         attackCooldownMs: 0,
       });
@@ -486,9 +522,13 @@ export class RedZoneSimulation {
     this.bossSpawned = true;
     const definition = operationDefinition(this.operationId);
     const id = `enemy-${this.nextEntityId++}`;
+    const position = findOpenPosition({
+      x: clamp(player.x + 560, 80, WORLD_SIZE - 80),
+      y: clamp(player.y - 220, 80, WORLD_SIZE - 80),
+    }, enemyCollisionRadius(definition.bossKind), this.obstacles);
     this.enemies.set(id, {
-      id, kind: definition.bossKind, x: clamp(player.x + 560, 80, WORLD_SIZE - 80),
-      y: clamp(player.y - 220, 80, WORLD_SIZE - 80), hp: ENEMY_STATS[definition.bossKind].hp,
+      id, kind: definition.bossKind, x: position.x,
+      y: position.y, hp: ENEMY_STATS[definition.bossKind].hp,
       attackCooldownMs: 900, abilityCooldownMs: 2_400, abilityPattern: 0,
     });
     this.events.push({ type: 'feed', message: `경고: ${definition.bossClass} 「${definition.bossName}」가 전장에 진입합니다.` });
@@ -496,12 +536,7 @@ export class RedZoneSimulation {
 
   private spawnRelays(): void {
     this.relaysSpawned = true;
-    const positions = [
-      { x: 470, y: 520 },
-      { x: WORLD_SIZE - 500, y: 620 },
-      { x: WORLD_SIZE / 2 + 260, y: WORLD_SIZE - 470 },
-    ];
-    for (const position of positions) {
+    for (const position of RELAY_POSITIONS) {
       const id = `enemy-${this.nextEntityId++}`;
       this.enemies.set(id, {
         id, kind: 'relay', x: position.x, y: position.y,
@@ -514,10 +549,14 @@ export class RedZoneSimulation {
   private spawnEnemyNear(target: InternalPlayer, kind: EnemyKind, distance: number): void {
     const angle = this.random() * Math.PI * 2;
     const id = `enemy-${this.nextEntityId++}`;
-    this.enemies.set(id, {
-      id, kind,
+    const position = findOpenPosition({
       x: clamp(target.x + Math.cos(angle) * distance, 20, WORLD_SIZE - 20),
       y: clamp(target.y + Math.sin(angle) * distance, 20, WORLD_SIZE - 20),
+    }, enemyCollisionRadius(kind), this.obstacles);
+    this.enemies.set(id, {
+      id, kind,
+      x: position.x,
+      y: position.y,
       hp: ENEMY_STATS[kind].hp, attackCooldownMs: 300,
     });
   }
@@ -525,11 +564,15 @@ export class RedZoneSimulation {
   private spawnResourceCache(): void {
     const kinds: ResourceKind[] = ['scrap', 'scrap', 'scrap', 'water', 'data'];
     const id = `resource-${this.nextEntityId++}`;
+    const position = findOpenPosition({
+      x: 80 + this.random() * (WORLD_SIZE - 160),
+      y: 80 + this.random() * (WORLD_SIZE - 160),
+    }, 12, this.obstacles);
     this.resources.set(id, {
       id,
       kind: kinds[Math.floor(this.random() * kinds.length)],
-      x: 80 + this.random() * (WORLD_SIZE - 160),
-      y: 80 + this.random() * (WORLD_SIZE - 160),
+      x: position.x,
+      y: position.y,
       value: 2 + Math.floor(this.random() * 6),
     });
   }
@@ -559,4 +602,16 @@ function clamp(value: number, min: number, max: number): number {
 function normalizeAngle(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.atan2(Math.sin(value), Math.cos(value));
+}
+
+function enemyCollisionRadius(kind: EnemyKind): number {
+  if (kind === 'warden' || kind === 'harvester') return 38;
+  if (kind === 'breaker' || kind === 'relay') return 24;
+  return 14;
+}
+
+function navigationSign(id: string): -1 | 1 {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) hash = (hash * 31 + id.charCodeAt(index)) | 0;
+  return hash % 2 === 0 ? 1 : -1;
 }

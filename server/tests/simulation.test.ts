@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EXTRACTION_POINT, RedZoneSimulation } from '../src/simulation/RedZoneSimulation.js';
+import { PLAYER_COLLISION_RADIUS, worldObstacles } from '../../packages/shared/src/world.js';
 
 describe('authoritative red zone simulation', () => {
   it('accepts ordered inputs and rejects replayed sequences', () => {
@@ -88,6 +89,65 @@ describe('authoritative red zone simulation', () => {
     });
     simulation.tick(50);
     expect(simulation.enemies.get('target')?.hp).toBe(472);
+  });
+
+  it('prevents authoritative movement and dashes from crossing hard cover', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-cover', 'player-cover', 'BREACHER');
+    simulation.enemies.clear();
+    simulation.resources.clear();
+    const obstacle = worldObstacles('operation-zero')[0];
+    const leftEdge = obstacle.x - obstacle.width / 2;
+    player.x = leftEdge - PLAYER_COLLISION_RADIUS - 4;
+    player.y = obstacle.y;
+    simulation.applyInput('session-cover', {
+      sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      weapon: 'carbine', dash: true,
+    });
+    simulation.tick(100);
+    expect(player.x).toBeLessThanOrEqual(leftEdge - PLAYER_COLLISION_RADIUS);
+    for (let index = 0; index < 12; index += 1) simulation.tick(100);
+    expect(player.x).toBeLessThanOrEqual(leftEdge - PLAYER_COLLISION_RADIUS);
+  });
+
+  it('uses hard cover to block authoritative weapon hits', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-los', 'player-los', 'MARKSMAN');
+    simulation.enemies.clear();
+    simulation.resources.clear();
+    const obstacle = worldObstacles('operation-zero')[0];
+    player.x = obstacle.x - obstacle.width / 2 - 80;
+    player.y = obstacle.y;
+    simulation.enemies.set('covered-target', {
+      id: 'covered-target', kind: 'warden',
+      x: obstacle.x + obstacle.width / 2 + 80, y: obstacle.y,
+      hp: 520, attackCooldownMs: 9_999,
+    });
+    simulation.applyInput('session-los', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: true, extract: false,
+      weapon: 'rail',
+    });
+    simulation.tick(50);
+    expect(simulation.enemies.get('covered-target')?.hp).toBe(520);
+  });
+
+  it('makes ranged enemies flank instead of attacking through cover', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-flank', 'player-flank', 'SURVIVOR');
+    simulation.enemies.clear();
+    simulation.resources.clear();
+    const obstacle = worldObstacles('operation-zero')[1];
+    player.x = obstacle.x - obstacle.width / 2 - 30;
+    player.y = obstacle.y;
+    simulation.enemies.set('covered-jammer', {
+      id: 'covered-jammer', kind: 'jammer',
+      x: obstacle.x + obstacle.width / 2 + 30, y: obstacle.y,
+      hp: 55, attackCooldownMs: 0,
+    });
+    for (let index = 0; index < 10; index += 1) simulation.tick(100);
+    const jammer = simulation.enemies.get('covered-jammer');
+    expect(player.hp).toBe(100);
+    expect(jammer?.y).not.toBe(obstacle.y);
   });
 
   it('activates a charged leader skill only inside the authoritative simulation', () => {
