@@ -69,4 +69,18 @@ describe('server authoritative economy', () => {
     await expect(economy.setSquad(profile.playerId, ['lumen', 'morrow', 'ratchet'], 'squad:test:0003'))
       .rejects.toThrow('OPERATOR_NOT_OWNED');
   });
+
+  it('crafts gear idempotently, auto-equips it and validates loadouts', async () => {
+    const profile = await repository.getOrCreateGuest('test:gear-device');
+    const economy = new EconomyService(repository);
+    const crafted = await economy.craftGear(profile.playerId, 'sealed-filter', 'gear:craft:0001');
+    const replay = await economy.craftGear(profile.playerId, 'sealed-filter', 'gear:craft:0001');
+    expect(crafted.profile.resources).toMatchObject({ scrap: 110, water: 95, data: 33 });
+    expect(crafted.profile.gear).toEqual({ owned: ['sealed-filter'], equipped: ['sealed-filter'] });
+    expect(replay.replayed).toBe(true);
+    await expect(economy.setGearLoadout(profile.playerId, ['coil-governor'], 'gear:equip:0001'))
+      .rejects.toThrow('GEAR_NOT_OWNED');
+    await expect(economy.craftGear(profile.playerId, 'coil-governor', 'gear:craft:locked'))
+      .rejects.toThrow('WORKSHOP_LEVEL_REQUIRED');
+  });
 });

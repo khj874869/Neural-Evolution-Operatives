@@ -29,6 +29,7 @@ describe('game account API', () => {
     const profile = await request(app).get('/api/profile').set('authorization', `Bearer ${auth.body.token}`).expect(200);
     expect(profile.body.profile.deviceId).toBe('web:test-device-0001');
     expect(profile.body.profile.campaign).toEqual({ completedOperations: [] });
+    expect(profile.body.profile.gear).toEqual({ owned: [], equipped: [] });
   });
 
   it('rejects economy calls without authentication', async () => {
@@ -60,6 +61,27 @@ describe('game account API', () => {
       .send({ squad: ['lumen', 'aegis-07', 'ratchet'] })
       .expect(200);
     expect(response.body.profile.squad).toEqual(['lumen', 'aegis-07', 'ratchet']);
+  });
+
+  it('crafts and equips tactical gear through authenticated APIs', async () => {
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:gear-device-0001' }).expect(200);
+    const authorization = `Bearer ${auth.body.token}`;
+    const crafted = await request(app).post('/api/economy/gear/craft')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'gear:api:craft:0001')
+      .send({ gearId: 'sealed-filter' })
+      .expect(200);
+    expect(crafted.body.profile.gear).toEqual({ owned: ['sealed-filter'], equipped: ['sealed-filter'] });
+    const unequipped = await request(app).post('/api/profile/gear')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'gear:api:equip:0001')
+      .send({ equipped: [] })
+      .expect(200);
+    expect(unequipped.body.profile.gear.equipped).toEqual([]);
+    await request(app).post('/api/profile/gear')
+      .set('authorization', authorization)
+      .send({ equipped: ['coil-governor'] })
+      .expect(409, { error: 'GEAR_NOT_OWNED' });
   });
 
   it('publishes a transparent store catalog and records funnel events', async () => {

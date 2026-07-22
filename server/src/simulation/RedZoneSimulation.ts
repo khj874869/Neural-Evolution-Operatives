@@ -1,5 +1,5 @@
 import type { EnemyKind, GameInputMessage, ResourceKind, ResourceWallet } from '../../../packages/shared/src/protocol.js';
-import { calculateSquadBonuses, type SquadBonuses } from '../../../packages/shared/src/squad.js';
+import type { SquadBonuses } from '../../../packages/shared/src/squad.js';
 import { isWeaponId, projectileAngles, WEAPON_SPECS } from '../../../packages/shared/src/combat.js';
 import {
   addNeuralCharge, NEURAL_LINK_MAX, neuralLinkLeader, neuralLinkSkill,
@@ -11,6 +11,7 @@ import {
   EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
   RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
 } from '../../../packages/shared/src/world.js';
+import { calculateCombatBonuses, type GearId } from '../../../packages/shared/src/gear.js';
 
 export { EXTRACTION_POINT, WORLD_SIZE };
 
@@ -62,6 +63,7 @@ export type SimulationEvent =
   | { type: 'death'; playerSessionId: string; message: string };
 
 interface InternalPlayer extends SimPlayer {
+  gear: GearId[];
   input: GameInputMessage;
   lastShotAtMs: number;
   stationaryMs: number;
@@ -113,7 +115,13 @@ export class RedZoneSimulation {
     for (let index = 0; index < 18; index += 1) this.spawnResourceCache();
   }
 
-  addPlayer(sessionId: string, playerId: string, displayName: string, squad: string[] = []): SimPlayer {
+  addPlayer(
+    sessionId: string,
+    playerId: string,
+    displayName: string,
+    squad: string[] = [],
+    gear: GearId[] = [],
+  ): SimPlayer {
     const angle = this.random() * Math.PI * 2;
     const player: InternalPlayer = {
       id: sessionId,
@@ -128,7 +136,8 @@ export class RedZoneSimulation {
       kills: 0,
       lastSequence: 0,
       squad: [...squad],
-      bonuses: calculateSquadBonuses(squad),
+      gear: [...gear],
+      bonuses: calculateCombatBonuses(squad, gear),
       linkCharge: 0,
       dashCooldownMs: 0,
       input: { ...EMPTY_INPUT },
@@ -157,7 +166,15 @@ export class RedZoneSimulation {
     const player = this.players.get(sessionId);
     if (!player) return false;
     player.squad = [...squad];
-    player.bonuses = calculateSquadBonuses(squad);
+    player.bonuses = calculateCombatBonuses(squad, player.gear);
+    return true;
+  }
+
+  updateGear(sessionId: string, gear: GearId[]): boolean {
+    const player = this.players.get(sessionId);
+    if (!player) return false;
+    player.gear = [...gear];
+    player.bonuses = calculateCombatBonuses(player.squad, gear);
     return true;
   }
 
@@ -237,7 +254,7 @@ export class RedZoneSimulation {
       : -deltaMs * 0.0025;
     player.radiation = clamp(player.radiation + radiationDelta, 0, 100);
     if (player.radiation >= 100) {
-      player.hp -= 4;
+      player.hp -= 4 * player.bonuses.damageTakenMultiplier;
       player.radiation = 82;
     }
     if (player.bonuses.regenPerSecond > 0 && player.hp > 0) {

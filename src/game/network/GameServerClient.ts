@@ -7,6 +7,7 @@ import { CLIENT_RELEASE, clientPlatform } from '../../release';
 import { gameEvents } from '../events';
 import type { ClientErrorReport } from '../telemetry/ClientTelemetry';
 import { isOperationId, type OperationId } from '../../../packages/shared/src/operations';
+import type { GearId } from '../../../packages/shared/src/gear';
 
 export interface NetworkSnapshot {
   localSessionId: string;
@@ -130,6 +131,24 @@ export class GameServerClient {
     });
     gameEvents.emit('network-profile', response.profile);
     if (this.connected) this.room?.send('sync-squad');
+    return response.profile;
+  }
+
+  async craftGear(gearId: GearId): Promise<PlayerProfile> {
+    const response = await this.authorized<{ profile: PlayerProfile }>('/api/economy/gear/craft', {
+      method: 'POST', body: JSON.stringify({ gearId }),
+    });
+    gameEvents.emit('network-profile', response.profile);
+    if (this.connected) this.room?.send('sync-loadout');
+    return response.profile;
+  }
+
+  async setGearLoadout(equipped: GearId[]): Promise<PlayerProfile> {
+    const response = await this.authorized<{ profile: PlayerProfile }>('/api/profile/gear', {
+      method: 'POST', body: JSON.stringify({ equipped }),
+    });
+    gameEvents.emit('network-profile', response.profile);
+    if (this.connected) this.room?.send('sync-loadout');
     return response.profile;
   }
 

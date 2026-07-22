@@ -4,6 +4,9 @@ import type { PlayerRepository } from '../persistence/PlayerRepository.js';
 import {
   isOperationUnlocked, operationDefinition, type OperationId,
 } from '../../../packages/shared/src/operations.js';
+import {
+  GEAR_DEFINITIONS, MAX_EQUIPPED_GEAR, type GearId,
+} from '../../../packages/shared/src/gear.js';
 
 const OPERATOR_POOLS = {
   R: ['rook', 'patch'],
@@ -68,6 +71,37 @@ export class EconomyService {
         throw new EconomyError('OPERATOR_NOT_OWNED', 409);
       }
       profile.squad = [...squad];
+    });
+  }
+
+  async craftGear(playerId: string, gearId: GearId, idempotencyKey: string = randomUUID()) {
+    return this.repository.mutate(playerId, idempotencyKey, 'GEAR_CRAFT', (profile) => {
+      if (profile.gear.owned.includes(gearId)) throw new EconomyError('GEAR_ALREADY_OWNED', 409);
+      const definition = GEAR_DEFINITIONS[gearId];
+      if (profile.shelter.workshop < definition.requiredWorkshop) {
+        throw new EconomyError('WORKSHOP_LEVEL_REQUIRED', 409);
+      }
+      for (const key of ['scrap', 'water', 'data', 'cores'] as const) {
+        if (profile.resources[key] < definition.cost[key]) {
+          throw new EconomyError('INSUFFICIENT_RESOURCES', 409);
+        }
+      }
+      for (const key of ['scrap', 'water', 'data', 'cores'] as const) {
+        profile.resources[key] -= definition.cost[key];
+      }
+      profile.gear.owned.push(gearId);
+      if (profile.gear.equipped.length < MAX_EQUIPPED_GEAR) profile.gear.equipped.push(gearId);
+    });
+  }
+
+  async setGearLoadout(playerId: string, equipped: GearId[], idempotencyKey: string = randomUUID()) {
+    return this.repository.mutate(playerId, idempotencyKey, 'GEAR_LOADOUT_UPDATE', (profile) => {
+      if (equipped.length > MAX_EQUIPPED_GEAR || new Set(equipped).size !== equipped.length) {
+        throw new EconomyError('INVALID_GEAR_LOADOUT', 400);
+      }
+      const owned = new Set(profile.gear.owned);
+      if (equipped.some((gearId) => !owned.has(gearId))) throw new EconomyError('GEAR_NOT_OWNED', 409);
+      profile.gear.equipped = [...equipped];
     });
   }
 

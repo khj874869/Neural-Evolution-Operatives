@@ -10,6 +10,7 @@ import { CommerceError, CommerceService } from '../commerce/CommerceService.js';
 import { FUNNEL_EVENTS } from '../../../packages/shared/src/analytics.js';
 import { RECRUIT_ODDS, STORE_PRODUCT_IDS, STORE_PRODUCTS } from '../../../packages/shared/src/commerce.js';
 import { APP_VERSION } from '../../../packages/shared/src/release.js';
+import { GEAR_IDS } from '../../../packages/shared/src/gear.js';
 
 export interface ApiDependencies {
   config: ServerConfig;
@@ -26,6 +27,11 @@ const upgradeSchema = z.object({ module: z.enum(['command', 'purifier', 'worksho
 const squadSchema = z.object({
   squad: z.array(z.string().min(1).max(32)).length(3)
     .refine((operators) => new Set(operators).size === operators.length, 'Squad operators must be unique'),
+});
+const craftGearSchema = z.object({ gearId: z.enum(GEAR_IDS) });
+const gearLoadoutSchema = z.object({
+  equipped: z.array(z.enum(GEAR_IDS)).max(2)
+    .refine((gear) => new Set(gear).size === gear.length, 'Equipped gear must be unique'),
 });
 const purchaseSchema = z.object({
   platform: z.enum(['google', 'apple', 'steam']),
@@ -145,6 +151,26 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     const result = await deps.economy.setSquad(
       response.locals.playerId as string,
       body.squad,
+      idempotencyKey(request),
+    );
+    response.json(result);
+  });
+
+  app.post('/api/economy/gear/craft', requirePlayer(deps.tokens), async (request, response) => {
+    const body = craftGearSchema.parse(request.body);
+    const result = await deps.economy.craftGear(
+      response.locals.playerId as string,
+      body.gearId,
+      idempotencyKey(request),
+    );
+    response.json(result);
+  });
+
+  app.post('/api/profile/gear', requirePlayer(deps.tokens), async (request, response) => {
+    const body = gearLoadoutSchema.parse(request.body);
+    const result = await deps.economy.setGearLoadout(
+      response.locals.playerId as string,
+      body.equipped,
       idempotencyKey(request),
     );
     response.json(result);

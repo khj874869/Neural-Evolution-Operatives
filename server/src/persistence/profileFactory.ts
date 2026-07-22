@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { PlayerProfile } from '../../../packages/shared/src/protocol.js';
 import { isOperationId } from '../../../packages/shared/src/operations.js';
+import { normalizeGearState } from '../../../packages/shared/src/gear.js';
 
 export function createPlayerProfile(deviceId: string, now = new Date()): PlayerProfile {
   return {
@@ -16,6 +17,7 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
       { id: 'lumen', level: 1, bond: 2, memories: [] },
     ],
     squad: ['aegis-07', 'ratchet', 'lumen'],
+    gear: { owned: [], equipped: [] },
     pity: 0,
     accountLevel: 1,
     xp: 0,
@@ -27,6 +29,9 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
 }
 
 export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
+  const candidate = profile as PlayerProfile & {
+    gear?: { owned?: unknown[]; equipped?: unknown[] };
+  };
   profile.campaign ??= { completedOperations: [] };
   profile.campaign.completedOperations = [...new Set(
     (profile.campaign.completedOperations ?? []).filter(isOperationId),
@@ -40,5 +45,6 @@ export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
     amountMinor: Number.isFinite(purchase.amountMinor) ? purchase.amountMinor : 0,
     currency: purchase.currency || 'UNKNOWN',
   }));
+  profile.gear = normalizeGearState(candidate.gear?.owned, candidate.gear?.equipped);
   return profile;
 }

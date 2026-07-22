@@ -2,6 +2,7 @@ export type ResourceKind = 'scrap' | 'water' | 'data' | 'cores';
 import type { WeaponId } from './combat.js';
 import type { CommercePlatform, StoreProductId } from './commerce.js';
 import type { OperationId } from './operations.js';
+import type { GearId } from './gear.js';
 
 export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker' | 'jammer' | 'sapper' | 'relay' | 'warden' | 'harvester';
 
@@ -58,6 +59,10 @@ export interface PlayerProfile {
     memories: string[];
   }>;
   squad: string[];
+  gear: {
+    owned: GearId[];
+    equipped: GearId[];
+  };
   pity: number;
   accountLevel: number;
   xp: number;

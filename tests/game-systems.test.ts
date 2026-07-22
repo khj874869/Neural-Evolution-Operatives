@@ -19,12 +19,16 @@ import {
   EXTRACTION_POINT, isCircleBlocked, isLineBlocked, PLAYER_COLLISION_RADIUS,
   RELAY_POSITIONS, resolveCircleMovement, worldObstacles,
 } from '../packages/shared/src/world';
+import {
+  calculateCombatBonuses, describeGearBonuses, normalizeGearState,
+} from '../packages/shared/src/gear';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
   resources: { scrap: 0, water: 0, data: 0, cores: 0 },
   shelter: { command: 1, purifier: 1, workshop: 1, greenhouse: 0 },
   operators: [], squad: [], accountLevel: 1, xp: 0, pity: 0,
+  gear: { owned: [], equipped: [] },
   campaign: { completedOperations: [] },
   stats: { raids: 0, kills: 0, extractedScrap: 0 }, lastSeenAt,
 });
@@ -71,6 +75,27 @@ describe('operator squad links', () => {
     expect(bonuses.radiationGainMultiplier).toBe(0.82);
     expect(bonuses.pickupRadius).toBe(42);
     expect(describeSquadBonuses(['aegis-07', 'ratchet'])).toContain('방사선 저항 +18%');
+  });
+});
+
+describe('tactical gear loadout', () => {
+  it('stacks up to two valid gear effects with operator bonuses', () => {
+    const bonuses = calculateCombatBonuses(
+      ['morrow', 'ratchet'],
+      ['coil-governor', 'salvage-harness', 'sealed-filter'],
+    );
+    expect(bonuses.damageMultiplier).toBeCloseTo(1.18 * 1.12);
+    expect(bonuses.moveSpeedMultiplier).toBeCloseTo(1.03);
+    expect(bonuses.pickupRadius).toBe(60);
+    expect(bonuses.radiationGainMultiplier).toBe(1);
+    expect(describeGearBonuses(['coil-governor'])).toContain('화력 +12% · 연사 +4%');
+  });
+
+  it('repairs legacy or tampered gear state without granting items', () => {
+    expect(normalizeGearState(
+      ['sealed-filter', 'sealed-filter', 'unknown'],
+      ['coil-governor', 'sealed-filter', 'salvage-harness'],
+    )).toEqual({ owned: ['sealed-filter'], equipped: ['sealed-filter'] });
   });
 });
 

@@ -3,6 +3,9 @@ import type { PlayerProfile } from '../../../packages/shared/src/protocol';
 import {
   activeOperationId, isOperationId, type OperationId,
 } from '../../../packages/shared/src/operations';
+import {
+  GEAR_DEFINITIONS, MAX_EQUIPPED_GEAR, normalizeGearState, type GearId,
+} from '../../../packages/shared/src/gear';
 
 export interface Resources {
   scrap: number;
@@ -31,6 +34,7 @@ export interface SaveData {
   shelter: ShelterModules;
   operators: OwnedOperator[];
   squad: string[];
+  gear: { owned: GearId[]; equipped: GearId[] };
   accountLevel: number;
   xp: number;
   pity: number;
@@ -56,6 +60,7 @@ const initialSave = (): SaveData => ({
     { id: 'lumen', level: 1, bond: 2, memories: [] },
   ],
   squad: ['aegis-07', 'ratchet', 'lumen'],
+  gear: { owned: [], equipped: [] },
   accountLevel: 1,
   xp: 0,
   pity: 0,
@@ -114,6 +119,7 @@ export class GameState {
     this.data.shelter = { ...profile.shelter };
     this.data.operators = structuredClone(profile.operators);
     this.data.squad = [...profile.squad];
+    this.data.gear = normalizeGearState(profile.gear?.owned, profile.gear?.equipped);
     this.data.pity = profile.pity;
     this.data.accountLevel = profile.accountLevel;
     this.data.xp = profile.xp;
@@ -218,6 +224,31 @@ export class GameState {
     return true;
   }
 
+  craftGear(gearId: GearId): boolean {
+    if (this.data.gear.owned.includes(gearId)) return false;
+    const definition = GEAR_DEFINITIONS[gearId];
+    if (this.data.shelter.workshop < definition.requiredWorkshop) return false;
+    for (const key of ['scrap', 'water', 'data', 'cores'] as const) {
+      if (this.data.resources[key] < definition.cost[key]) return false;
+    }
+    for (const key of ['scrap', 'water', 'data', 'cores'] as const) {
+      this.data.resources[key] -= definition.cost[key];
+    }
+    this.data.gear.owned.push(gearId);
+    if (this.data.gear.equipped.length < MAX_EQUIPPED_GEAR) this.data.gear.equipped.push(gearId);
+    this.save();
+    return true;
+  }
+
+  setGearLoadout(equipped: GearId[]): boolean {
+    if (equipped.length > MAX_EQUIPPED_GEAR || new Set(equipped).size !== equipped.length) return false;
+    const owned = new Set(this.data.gear.owned);
+    if (equipped.some((gearId) => !owned.has(gearId))) return false;
+    this.data.gear.equipped = [...equipped];
+    this.save();
+    return true;
+  }
+
   getSquad() {
     return this.data.squad.flatMap((id) => {
       const owned = this.data.operators.find((operator) => operator.id === id);
@@ -227,10 +258,14 @@ export class GameState {
 }
 
 function normalizeSave(save: SaveData): SaveData {
-  const candidate = save as SaveData & { campaign?: { completedOperations?: unknown[] } };
+  const candidate = save as SaveData & {
+    campaign?: { completedOperations?: unknown[] };
+    gear?: { owned?: unknown[]; equipped?: unknown[] };
+  };
   const completedOperations = (candidate.campaign?.completedOperations ?? []).filter(isOperationId);
   return {
     ...save,
     campaign: { completedOperations: [...new Set(completedOperations)] },
+    gear: normalizeGearState(candidate.gear?.owned, candidate.gear?.equipped),
   };
 }

@@ -23,6 +23,9 @@ import {
 import { neuralLinkSkill } from '../packages/shared/src/neuralLink';
 import { CLIENT_RELEASE } from './release';
 import { installGlobalErrorReporting } from './game/telemetry/ClientTelemetry';
+import {
+  describeGearBonuses, GEAR_DEFINITIONS, GEAR_IDS, MAX_EQUIPPED_GEAR, type GearId,
+} from '../packages/shared/src/gear';
 
 declare global {
   interface Window {
@@ -123,10 +126,12 @@ const tutorialSteps = [
   { code: '05 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.' },
   { code: '06 // NEURAL LINK', icon: '◉', title: '분대 리미트 브레이크', body: '교전으로 링크 게이지를 100% 충전한 뒤 PC는 Q, 모바일은 리더 초상화 버튼을 누르세요. 분대 1번 리더의 역할별 필살기가 발동합니다.' },
   { code: '07 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E, 모바일은 EXTRACT를 누르세요. 사망하면 현장 화물을 모두 잃습니다.' },
+  { code: '08 // FABRICATE', icon: '▣', title: '추출 자원을 전력으로', body: '안전하게 추출한 뒤 쉘터의 전술 장비 제작에서 영구 장비를 만드세요. 최대 2개를 장착해 다음 탐사의 생존·화력·회수 능력을 바꿀 수 있습니다.' },
 ] as const;
 
 function renderPersistentHud(): void {
   const save = state.snapshot();
+  const equippedGear = save.gear.equipped.map((gearId) => GEAR_DEFINITIONS[gearId]);
   resourceHud.innerHTML = (Object.keys(labels) as Array<keyof typeof labels>).map((key) =>
     `<div class="resource"><span>${icons[key]} ${labels[key]}</span><b>${save.resources[key].toLocaleString()}</b></div>`,
   ).join('');
@@ -135,7 +140,8 @@ function renderPersistentHud(): void {
       <img class="op-avatar" src="${definition.portrait}" alt="${definition.name}" loading="eager" />
       <div><b>${definition.callsign}</b><small>${definition.role} · LINK ${owned.bond}%</small></div>
       <span class="rarity ${definition.rarity}">${definition.rarity}</span>
-    </div>`).join('')}`;
+    </div>`).join('')}${equippedGear.length ? `<div class="field-loadout"><span>GEAR // ${equippedGear.length}/${MAX_EQUIPPED_GEAR}</span>${equippedGear.map((gear) =>
+    `<i title="${gear.name} // ${gear.effectLabel}">${gear.mark}</i>`).join('')}</div>` : ''}`;
 }
 
 function showToast(message: string): void {
@@ -462,6 +468,7 @@ function renderShelter(): void {
     { key: 'workshop', name: '정크 워크숍', description: '오퍼레이터의 오프라인 고철 회수 효율을 높입니다.' },
     { key: 'greenhouse', name: '지하 온실', description: '장기 생존 기반 시설. 후속 버전에서 회복 버프를 제공합니다.' },
   ];
+  const gearBonuses = describeGearBonuses(save.gear.equipped);
   modalContent.innerHTML = `
     <span class="eyebrow">UNDERGROUND SHELTER // SECTOR 7</span>
     <h2>쉘터 재건</h2>
@@ -476,7 +483,32 @@ function renderShelter(): void {
         <button data-upgrade="${module.key}" ${disabled ? 'disabled' : ''}>${level >= 5 ? 'MAXIMUM' : `UPGRADE // ▰ ${scrapCost} + ◇ ${dataCost}`}</button>
       </article>`;
     }).join('')}</div>
-    <div class="recruit-panel"><div><b>방치 생산 예상치</b><div class="subtle">시간당 고철 ${Math.round(13.2 * (1 + (save.shelter.workshop - 1) * .35))} · 식수 ${Math.round(8.4 * (1 + (save.shelter.purifier - 1) * .3))}</div></div></div>`;
+    <div class="recruit-panel"><div><b>방치 생산 예상치</b><div class="subtle">시간당 고철 ${Math.round(13.2 * (1 + (save.shelter.workshop - 1) * .35))} · 식수 ${Math.round(8.4 * (1 + (save.shelter.purifier - 1) * .3))}</div></div></div>
+    <section class="fabrication-panel">
+      <div class="fabrication-heading">
+        <div><span class="eyebrow">JUNK WORKSHOP // TACTICAL FABRICATION</span><h3>전술 장비 제작</h3></div>
+        <div><b>${save.gear.equipped.length} / ${MAX_EQUIPPED_GEAR} 장착</b><small>${gearBonuses.join(' · ') || '활성 장비 효과 없음'}</small></div>
+      </div>
+      <p class="subtle">추출 자원을 영구 장비로 전환합니다. 효과는 로컬 훈련과 온라인 서버 전투에 동일하게 적용됩니다.</p>
+      <div class="gear-grid">${GEAR_IDS.map((gearId) => {
+        const gear = GEAR_DEFINITIONS[gearId];
+        const owned = save.gear.owned.includes(gearId);
+        const equipped = save.gear.equipped.includes(gearId);
+        const workshopLocked = save.shelter.workshop < gear.requiredWorkshop;
+        const affordable = (Object.keys(gear.cost) as Array<keyof typeof gear.cost>)
+          .every((key) => save.resources[key] >= gear.cost[key]);
+        const cost = (Object.keys(gear.cost) as Array<keyof typeof gear.cost>)
+          .filter((key) => gear.cost[key] > 0)
+          .map((key) => `${icons[key]} ${gear.cost[key]}`).join(' + ');
+        return `<article class="gear-card ${equipped ? 'equipped' : ''}">
+          <div class="gear-mark">${gear.mark}</div><span>${gear.category} // WORKSHOP LV.${gear.requiredWorkshop}</span>
+          <h4>${gear.name}</h4><p>${gear.description}</p><strong>${gear.effectLabel}</strong>
+          ${owned
+            ? `<button data-toggle-gear="${gearId}" class="${equipped ? 'remove' : ''}">${equipped ? '장착 해제' : 'LOADOUT 장착'}</button>`
+            : `<button data-craft-gear="${gearId}" ${workshopLocked || !affordable ? 'disabled' : ''}>${workshopLocked ? `워크숍 LV.${gear.requiredWorkshop} 필요` : `제작 // ${cost}`}</button>`}
+        </article>`;
+      }).join('')}</div>
+    </section>`;
   modalContent.querySelectorAll<HTMLButtonElement>('[data-upgrade]').forEach((button) => {
     button.addEventListener('click', async () => {
       const module = button.dataset.upgrade as keyof ShelterModules;
@@ -488,6 +520,44 @@ function renderShelter(): void {
         showToast('쉘터 모듈 업그레이드 완료');
       } catch {
         showToast('서버가 업그레이드를 거부했습니다. 재화와 연결 상태를 확인하세요.');
+      }
+    });
+  });
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-craft-gear]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const gearId = button.dataset.craftGear as GearId;
+      const hadOpenSlot = state.snapshot().gear.equipped.length < MAX_EQUIPPED_GEAR;
+      try {
+        const crafted = network.connected ? Boolean(await network.craftGear(gearId)) : state.craftGear(gearId);
+        if (!crafted) throw new Error('CRAFT_REJECTED');
+        if (!network.connected) gameEvents.emit('loadout-changed');
+        renderPersistentHud();
+        renderShelter();
+        showToast(`${GEAR_DEFINITIONS[gearId].name} 제작 완료${hadOpenSlot ? ' // 빈 슬롯에 자동 장착' : ' // 장비고에 보관'}`);
+      } catch {
+        showToast('장비 제작에 실패했습니다. 워크숍 레벨과 재화를 확인하세요.');
+      }
+    });
+  });
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-toggle-gear]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const gearId = button.dataset.toggleGear as GearId;
+      const current = state.snapshot().gear.equipped;
+      const equipped = current.includes(gearId);
+      if (!equipped && current.length >= MAX_EQUIPPED_GEAR) {
+        showToast(`장비 슬롯은 ${MAX_EQUIPPED_GEAR}개입니다. 기존 장비를 먼저 해제하세요.`);
+        return;
+      }
+      const next = equipped ? current.filter((id) => id !== gearId) : [...current, gearId];
+      try {
+        if (network.connected) await network.setGearLoadout(next);
+        else if (!state.setGearLoadout(next)) throw new Error('LOADOUT_REJECTED');
+        if (!network.connected) gameEvents.emit('loadout-changed');
+        renderPersistentHud();
+        renderShelter();
+        showToast(`${GEAR_DEFINITIONS[gearId].name} ${equipped ? '장착 해제' : '전투 적용'}`);
+      } catch {
+        showToast('장비 구성을 저장하지 못했습니다. 연결 상태를 확인하세요.');
       }
     });
   });
@@ -857,10 +927,13 @@ gameEvents.on('weapon-selected', (weapon: WeaponId) => {
 });
 gameEvents.on('network-profile', (profile: PlayerProfile) => {
   latestProfile = profile;
-  const previousSquad = state.snapshot().squad.join('|');
+  const previous = state.snapshot();
+  const previousSquad = previous.squad.join('|');
+  const previousGear = previous.gear.equipped.join('|');
   state.applyServerProfile(profile);
   byId('founderBadge').classList.toggle('hidden', !profile.commerce.entitlements.includes('founder_badge'));
   if (previousSquad !== profile.squad.join('|')) gameEvents.emit('squad-changed');
+  if (previousGear !== profile.gear.equipped.join('|')) gameEvents.emit('loadout-changed');
   renderPersistentHud();
   if (currentModal === 'shelter') renderShelter();
   if (currentModal === 'roster') renderRoster();

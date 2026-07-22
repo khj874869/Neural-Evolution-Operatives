@@ -91,6 +91,24 @@ describe('authoritative red zone simulation', () => {
     expect(simulation.enemies.get('target')?.hp).toBe(472);
   });
 
+  it('applies equipped gear bonuses inside authoritative combat', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    simulation.resources.clear();
+    const player = simulation.addPlayer(
+      'session-gear', 'player-gear', 'GEAR-TESTER', [], ['coil-governor'],
+    );
+    simulation.enemies.clear();
+    simulation.enemies.set('gear-target', {
+      id: 'gear-target', kind: 'warden', x: player.x + 120, y: player.y, hp: 520, attackCooldownMs: 9_999,
+    });
+    simulation.applyInput('session-gear', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'rail',
+    });
+    simulation.tick(50);
+    expect(simulation.enemies.get('gear-target')?.hp).toBeCloseTo(466.24);
+    expect(player.bonuses.fireCooldownMultiplier).toBeCloseTo(0.96);
+  });
+
   it('prevents authoritative movement and dashes from crossing hard cover', () => {
     const simulation = new RedZoneSimulation(() => 0.5);
     const player = simulation.addPlayer('session-cover', 'player-cover', 'BREACHER');

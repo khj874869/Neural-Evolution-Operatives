@@ -9,6 +9,20 @@ const authResponse = await fetch(`${endpoint}/api/auth/guest`, {
 });
 if (!authResponse.ok) throw new Error(`Guest auth failed: ${authResponse.status}`);
 const auth = await authResponse.json();
+const craftResponse = await fetch(`${endpoint}/api/economy/gear/craft`, {
+  method: 'POST',
+  headers: {
+    authorization: `Bearer ${auth.token}`,
+    'content-type': 'application/json',
+    'idempotency-key': `smoke-craft:${deviceId}`,
+  },
+  body: JSON.stringify({ gearId: 'sealed-filter' }),
+});
+if (!craftResponse.ok) throw new Error(`Gear craft failed: ${craftResponse.status}`);
+const crafted = await craftResponse.json();
+if (!crafted.profile?.gear?.owned?.includes('sealed-filter')) {
+  throw new Error('Crafted gear missing from authoritative profile');
+}
 const client = new Client(endpoint);
 const room = await client.joinOrCreate('red_zone', { token: auth.token });
 
@@ -28,5 +42,7 @@ const snapshot = await new Promise((resolve, reject) => {
   });
 });
 
-console.log(JSON.stringify({ status: 'ok', roomId: room.roomId, ...snapshot }));
+console.log(JSON.stringify({
+  status: 'ok', roomId: room.roomId, equippedGear: crafted.profile.gear.equipped, ...snapshot,
+}));
 await room.leave();

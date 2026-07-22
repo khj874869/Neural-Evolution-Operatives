@@ -65,6 +65,21 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
         } satisfies ServerEventMessage);
       }
     });
+    this.onMessage('sync-loadout', async (client) => {
+      try {
+        const playerId = this.simulation.getPlayerId(client.sessionId);
+        if (!playerId) return;
+        const profile = await roomDependencies().repository.getById(playerId);
+        if (!profile || !this.simulation.updateGear(client.sessionId, profile.gear.equipped)) return;
+        client.send('server-event', {
+          type: 'feed', message: '전술 장비 재동기화 // 서버 전투 보너스 적용 완료',
+        } satisfies ServerEventMessage);
+      } catch {
+        client.send('server-event', {
+          type: 'error', message: '전술 장비 재동기화에 실패했습니다.',
+        } satisfies ServerEventMessage);
+      }
+    });
   }
 
   async onAuth(_client: Client, options: { token?: string; operationId?: unknown }): Promise<PlayerAuth> {
@@ -82,7 +97,9 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
   async onJoin(client: Client, _options: unknown, auth: PlayerAuth): Promise<void> {
     const profile = await roomDependencies().repository.getById(auth.playerId);
     if (!profile) throw new Error('PLAYER_NOT_FOUND');
-    this.simulation.addPlayer(client.sessionId, profile.playerId, profile.displayName, profile.squad);
+    this.simulation.addPlayer(
+      client.sessionId, profile.playerId, profile.displayName, profile.squad, profile.gear.equipped,
+    );
   }
 
   onLeave(client: Client): void {

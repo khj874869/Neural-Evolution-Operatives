@@ -21,6 +21,8 @@ import {
   EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
   RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
 } from '../../../packages/shared/src/world';
+import { calculateCombatBonuses } from '../../../packages/shared/src/gear';
+import type { SquadBonuses } from '../../../packages/shared/src/squad';
 
 type EnemySprite = Phaser.Physics.Arcade.Sprite & { archetype?: EnemyKind };
 type ResourceSprite = Phaser.Physics.Arcade.Sprite & { resourceKind?: keyof Resources; value?: number };
@@ -84,6 +86,7 @@ export class WorldScene extends Phaser.Scene {
   private operationId: OperationId = 'operation-zero';
   private operationDefinition: OperationDefinition = operationDefinition('operation-zero');
   private cover: readonly WorldObstacle[] = worldObstacles('operation-zero');
+  private combatBonuses: SquadBonuses = calculateCombatBonuses([], []);
   private operationStatus: OperationStatus = evaluateOperation('operation-zero', {
     collected: 0, dataCollected: 0, kills: 0, relaysDestroyed: 0, bossDefeated: false, extracted: false,
   });
@@ -144,6 +147,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('tactical-command', this.handleTacticalCommand, this);
     gameEvents.on('resume-world', this.resumeWorld, this);
     gameEvents.on('squad-changed', this.spawnCompanions, this);
+    gameEvents.on('loadout-changed', this.refreshCombatBonuses, this);
     gameEvents.on('settings-changed', this.handleSettingsChanged, this);
     gameEvents.on('weapon-select', this.selectWeapon, this);
     gameEvents.on('boss-defeated', this.handleBossDefeated, this);
@@ -154,6 +158,7 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
       gameEvents.off('squad-changed', this.spawnCompanions, this);
+      gameEvents.off('loadout-changed', this.refreshCombatBonuses, this);
       gameEvents.off('settings-changed', this.handleSettingsChanged, this);
       gameEvents.off('weapon-select', this.selectWeapon, this);
       gameEvents.off('boss-defeated', this.handleBossDefeated, this);
@@ -175,6 +180,7 @@ export class WorldScene extends Phaser.Scene {
   update(time: number, delta: number): void {
     if (!this.player.active || this.hp <= 0) return;
     this.updatePlayer(time, delta);
+    this.collectNearbyResources();
     this.updateCompanions(time);
     this.updateEnemies(time, delta);
     this.updateDirector(time);
@@ -249,6 +255,10 @@ export class WorldScene extends Phaser.Scene {
       companion.destroy();
     }
     const squad = this.state.getSquad();
+    this.combatBonuses = calculateCombatBonuses(
+      squad.map(({ definition }) => definition.id),
+      this.state.snapshot().gear.equipped,
+    );
     this.linkLeader = neuralLinkLeader(squad.map(({ definition }) => definition.id));
     this.companions = squad.map(({ definition }, index) => {
       const angle = (Math.PI * 2 * index) / Math.max(1, squad.length);
@@ -319,18 +329,7 @@ export class WorldScene extends Phaser.Scene {
     });
 
     this.physics.add.overlap(this.player, this.resources, (_playerObject, resourceObject) => {
-      const resource = resourceObject as ResourceSprite;
-      if (this.networkConnected) return;
-      const kind = resource.resourceKind ?? 'scrap';
-      const value = resource.value ?? 1;
-      this.fieldCargo[kind] += value;
-      this.operationCollected += value;
-      if (kind === 'data') this.operationDataCollected += value;
-      resource.disableBody(true, true);
-      this.impactBurst(resource.x, resource.y, 0xffffff, 6);
-      gameEvents.emit('sfx', 'pickup');
-      gameEvents.emit('haptic', 'light');
-      this.emitFeed(`${kind.toUpperCase()} +${value} // 현장 화물`);
+      this.collectResource(resourceObject as ResourceSprite);
     });
   }
 
@@ -361,10 +360,11 @@ export class WorldScene extends Phaser.Scene {
     const horizontal = Math.abs(controller.moveX) > 0.14 ? controller.moveX : digitalHorizontal;
     const vertical = Math.abs(controller.moveY) > 0.14 ? controller.moveY : digitalVertical;
     const movement = new Phaser.Math.Vector2(horizontal, vertical);
+    const movementSpeed = 205 * this.combatBonuses.moveSpeedMultiplier;
     if (movement.lengthSq() > 0) {
-      movement.normalize().scale(205);
+      movement.normalize().scale(movementSpeed);
       this.player.setVelocity(movement.x, movement.y);
-      this.telemetry.distanceMoved += 205 * (delta / 1000);
+      this.telemetry.distanceMoved += movementSpeed * (delta / 1000);
       this.telemetry.stationarySeconds = Math.max(0, this.telemetry.stationarySeconds - delta / 1600);
     } else {
       this.player.setVelocity(0, 0);
@@ -396,7 +396,8 @@ export class WorldScene extends Phaser.Scene {
     }
     const weapon = WEAPON_SPECS[this.currentWeapon];
     const assistedFire = mobile.fire || controller.fire;
-    if ((pointer.isDown || assistedFire) && time - this.lastShotAt > weapon.cooldownMs) {
+    if ((pointer.isDown || assistedFire)
+      && time - this.lastShotAt > weapon.cooldownMs * this.combatBonuses.fireCooldownMultiplier) {
       const target = assistedFire ? this.findNearestEnemy(this.player.x, this.player.y, weapon.range) : undefined;
       this.firePlayerWeapon(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y);
       this.lastShotAt = time;
@@ -404,8 +405,8 @@ export class WorldScene extends Phaser.Scene {
     if (this.networkConnected && time - this.lastNetworkInputAt >= 50) {
       this.network?.sendInput({
         sequence: ++this.networkSequence,
-        moveX: movement.lengthSq() > 0 ? movement.x / 205 : 0,
-        moveY: movement.lengthSq() > 0 ? movement.y / 205 : 0,
+        moveX: movement.lengthSq() > 0 ? movement.x / movementSpeed : 0,
+        moveY: movement.lengthSq() > 0 ? movement.y / movementSpeed : 0,
         aimAngle: this.player.rotation - Math.PI / 2,
         fire: pointer.isDown || assistedFire,
         extract: this.extractRequested,
@@ -417,6 +418,9 @@ export class WorldScene extends Phaser.Scene {
       this.extractRequested = false;
       this.dashNetworkPending = false;
       this.lastNetworkInputAt = time;
+    }
+    if (!this.networkConnected && this.combatBonuses.regenPerSecond > 0 && this.hp > 0) {
+      this.hp = Math.min(100, this.hp + this.combatBonuses.regenPerSecond * delta / 1000);
     }
   }
 
@@ -590,7 +594,9 @@ export class WorldScene extends Phaser.Scene {
       }
       this.tweens.add({ targets: this.stormOverlay, alpha: this.stormActive ? 0.11 : 0, duration: 900 });
     }
-    this.radiation = Phaser.Math.Clamp(this.radiation + (this.stormActive ? delta * 0.0017 : -delta * 0.0025), 0, 100);
+    this.radiation = Phaser.Math.Clamp(this.radiation + (this.stormActive
+      ? delta * 0.0017 * this.combatBonuses.radiationGainMultiplier
+      : -delta * 0.0025), 0, 100);
     if (this.radiation >= 100) {
       this.damagePlayer(4);
       this.radiation = 82;
@@ -764,7 +770,7 @@ export class WorldScene extends Phaser.Scene {
         fromX + Math.cos(angle) * spec.range,
         fromY + Math.sin(angle) * spec.range,
         false,
-        spec.damage,
+        spec.damage * this.combatBonuses.damageMultiplier,
         spec.projectileSpeed,
         spec.tint,
         index === 0,
@@ -850,6 +856,32 @@ export class WorldScene extends Phaser.Scene {
     resource.value = value;
     this.tweens.killTweensOf(resource);
     this.tweens.add({ targets: resource, angle: 180, yoyo: true, repeat: -1, duration: 1100 });
+  }
+
+  private collectNearbyResources(): void {
+    if (this.networkConnected) return;
+    this.resources.children.each((child) => {
+      const resource = child as ResourceSprite;
+      if (!resource.active) return true;
+      if (Phaser.Math.Distance.Between(this.player.x, this.player.y, resource.x, resource.y)
+        <= this.combatBonuses.pickupRadius) this.collectResource(resource);
+      return true;
+    });
+  }
+
+  private collectResource(resource: ResourceSprite): void {
+    if (this.networkConnected || !resource.active) return;
+    const kind = resource.resourceKind ?? 'scrap';
+    const value = resource.value ?? 1;
+    const { x, y } = resource;
+    this.fieldCargo[kind] += value;
+    this.operationCollected += value;
+    if (kind === 'data') this.operationDataCollected += value;
+    resource.disableBody(true, true);
+    this.impactBurst(x, y, 0xffffff, 6);
+    gameEvents.emit('sfx', 'pickup');
+    gameEvents.emit('haptic', 'light');
+    this.emitFeed(`${kind.toUpperCase()} +${value} // 현장 화물`);
   }
 
   private findNearestEnemy(x: number, y: number, maxDistance = 620): EnemySprite | undefined {
@@ -993,9 +1025,10 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private damagePlayer(amount: number): void {
-    this.hp = Math.max(0, this.hp - amount);
+    const appliedDamage = amount * this.combatBonuses.damageTakenMultiplier;
+    this.hp = Math.max(0, this.hp - appliedDamage);
     if (!this.networkConnected) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 6);
-    this.telemetry.damageTaken += amount;
+    this.telemetry.damageTaken += appliedDamage;
     if (!this.reducedMotion) this.cameras.main.shake(90, 0.004);
     this.impactBurst(this.player.x, this.player.y, 0xff5d5d, 7);
     gameEvents.emit('sfx', 'hurt');
@@ -1008,6 +1041,11 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.emit('game-over', this.fieldCargo);
       this.emitFeed('생체 신호 소실 // 쉘터 리커버리 프로토콜 대기', true);
     }
+  }
+
+  private refreshCombatBonuses(): void {
+    const snapshot = this.state.snapshot();
+    this.combatBonuses = calculateCombatBonuses(snapshot.squad, snapshot.gear.equipped);
   }
 
   private updateHud(): void {

@@ -65,6 +65,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .squad { position: fixed; z-index: 10; top: 84px; left: 16px; width: 220px; padding: 9px; }
 .squad-title { color: #6f8f83; font: 10px 'Share Tech Mono'; margin: 2px 4px 8px; }
 .operative-chip { display: grid; grid-template-columns: 38px 1fr auto; gap: 8px; align-items: center; padding: 7px; border-top: 1px solid rgba(255,255,255,.06); }
+.field-loadout { display: flex; align-items: center; gap: 5px; padding: 7px 5px 1px; border-top: 1px solid rgba(255,255,255,.06); }
+.field-loadout span { margin-right: auto; color: #6f8f83; font: 8px 'Share Tech Mono'; }
+.field-loadout i { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid rgba(71,215,194,.3); color: var(--cyan); background: rgba(71,215,194,.06); font-style: normal; font-size: 12px; }
 .op-avatar { width: 36px; height: 36px; display: block; object-fit: cover; object-position: 50% 14%; background: #172720; border: 1px solid var(--line); }
 .operative-chip b { display: block; font-size: 11px; }
 .operative-chip small { display: block; color: #688177; font: 9px 'Share Tech Mono'; }
@@ -366,6 +369,25 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .dodge:disabled { opacity: .42; }
 .extract { border-color: rgba(71,215,194,.58) !important; color: var(--cyan) !important; }
 
+.fabrication-panel { margin-top: 18px; padding: 18px; border: 1px solid rgba(71,215,194,.2); background: linear-gradient(135deg, rgba(71,215,194,.035), rgba(4,12,10,.88)); }
+.fabrication-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.fabrication-heading h3 { margin: 5px 0 0; color: #eefaf4; font: 18px 'Black Ops One'; letter-spacing: .04em; }
+.fabrication-heading > div:last-child { display: grid; justify-items: end; max-width: 58%; text-align: right; }
+.fabrication-heading b { color: var(--cyan); font: 10px 'Share Tech Mono'; }
+.fabrication-heading small { margin-top: 4px; color: #779288; font: 9px/1.45 'Share Tech Mono'; }
+.gear-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
+.gear-card { position: relative; min-height: 222px; display: flex; flex-direction: column; overflow: hidden; padding: 14px; border: 1px solid rgba(255,255,255,.09); background: rgba(6,16,13,.86); }
+.gear-card.equipped { border-color: rgba(201,244,86,.55); box-shadow: inset 0 0 28px rgba(201,244,86,.055); }
+.gear-card.equipped::after { content: 'EQUIPPED'; position: absolute; right: -17px; top: 10px; width: 78px; padding: 3px 0; transform: rotate(35deg); color: #07100e; background: var(--lime); font: 7px 'Share Tech Mono'; text-align: center; }
+.gear-mark { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 10px; border: 1px solid rgba(71,215,194,.32); color: var(--cyan); background: rgba(71,215,194,.06); font-size: 19px; }
+.gear-card > span { color: #59736a; font: 8px 'Share Tech Mono'; letter-spacing: .08em; }
+.gear-card h4 { margin: 7px 0 5px; color: #eaf8f1; font-size: 13px; }
+.gear-card p { margin: 0 0 10px; color: #728a81; font-size: 10px; line-height: 1.55; }
+.gear-card strong { margin-top: auto; padding: 7px 0; color: var(--lime); font: 9px 'Share Tech Mono'; }
+.gear-card button { min-height: 34px; padding: 7px; border: 0; color: #07100e; background: var(--cyan); font: 8px 'Share Tech Mono'; }
+.gear-card button.remove { border: 1px solid rgba(255,93,93,.4); color: #ff948e; background: rgba(255,93,93,.04); }
+.gear-card button:disabled { color: #52675f; background: #18251f; }
+
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .topbar { padding-top: env(safe-area-inset-top); height: calc(68px + env(safe-area-inset-top)); }
   .command-dock { padding-bottom: max(9px, env(safe-area-inset-bottom)); height: calc(68px + env(safe-area-inset-bottom)); }
@@ -387,6 +409,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   #settingsButton span { display: none; }
   #commandInput { font-size: 10px; }
   .card-grid { grid-template-columns: 1fr; }
+  .gear-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .store-grid { grid-template-columns: 1fr; }
   .store-card { min-height: 260px; }
   .odds-disclosure { grid-template-columns: 1fr; }
@@ -415,6 +438,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   .operator-tile-grid { grid-template-columns: 1fr; }
   .recruit-panel { align-items: stretch; gap: 10px; flex-direction: column; }
   .recruit-panel button { width: 100%; }
+  .fabrication-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .fabrication-heading > div:last-child { justify-items: start; max-width: none; text-align: left; }
+  .gear-grid { grid-template-columns: 1fr; }
   .settings-actions { flex-direction: column; }
   .settings-actions button { width: 100%; }
   .debrief-stats { grid-template-columns: repeat(2, 1fr); }

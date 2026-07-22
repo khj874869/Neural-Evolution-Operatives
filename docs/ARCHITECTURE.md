@@ -23,6 +23,8 @@ flowchart TD
 
 분대 편성은 `POST /api/profile/squad`에서 보유 여부, 3인 정원, 중복을 검증한 뒤 프로필 트랜잭션으로 저장합니다. 게임룸 입장 시 확정된 분대를 읽어 공용 `calculateSquadBonuses` 규칙을 권위형 시뮬레이션에 적용하므로 클라이언트가 전투 보너스를 임의로 조작할 수 없습니다.
 
+장비 제작은 `POST /api/economy/gear/craft`, 장착은 `POST /api/profile/gear`를 사용합니다. 제작은 워크숍 레벨·보유 재화·중복·멱등 키를 검증하고, 장착은 소유권·중복·2슬롯 제한을 검증합니다. 룸 참가와 `sync-loadout` 시 서버 프로필을 다시 읽어 공용 `calculateCombatBonuses` 결과를 적용하므로 분대와 장비 효과가 오프라인 훈련과 온라인 전투에서 같은 수치로 동작합니다.
+
 캠페인 진행은 프로필의 `campaign.completedOperations`에 순서대로 저장합니다. 매칭 옵션의 `operationId`는 서버가 해금 상태와 대조하며, Colyseus 매치메이커는 같은 작전 ID의 플레이어만 한 방에 배치합니다. 보스 격파 후 추출이 확정되면 작전 보상과 해금도 별도의 멱등 키를 가진 트랜잭션으로 1회만 적용됩니다.
 
 ## 권위형 전투 프로토콜
@@ -50,7 +52,7 @@ flowchart TD
 
 - `players`: 현재 프로필 JSONB와 마지막 접속 시간
 - `economy_events`: 요청 키, 이벤트 유형, 처리 결과
-- 모집·쉘터·방치·추출은 `SELECT ... FOR UPDATE` 트랜잭션
+- 모집·쉘터·방치·추출·장비 제작은 `SELECT ... FOR UPDATE` 트랜잭션
 - 동일 플레이어/요청 키는 유일 제약으로 한 번만 처리
 - 전투 좌표는 DB에 매 틱 기록하지 않고 게임룸 메모리에 유지
 - 추출·사망·구매 같은 확정 지점에서만 영구 저장
