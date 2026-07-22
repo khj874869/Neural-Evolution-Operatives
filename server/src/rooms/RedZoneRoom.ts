@@ -4,6 +4,9 @@ import type { GameInputMessage, ServerEventMessage, TacticalMessage } from '../.
 import { RedZoneSimulation } from '../simulation/RedZoneSimulation.js';
 import { EnemyState, PlayerState, RedZoneState, ResourceState } from '../state/RedZoneState.js';
 import { roomDependencies } from './dependencies.js';
+import {
+  isOperationId, isOperationUnlocked, type OperationId,
+} from '../../../packages/shared/src/operations.js';
 
 const inputSchema = z.object({
   sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
@@ -21,14 +24,19 @@ const tacticalSchema = z.object({ text: z.string().trim().min(1).max(100) });
 interface PlayerAuth {
   playerId: string;
   deviceId: string;
+  operationId: OperationId;
 }
 
 export class RedZoneRoom extends Room<{ state: RedZoneState }> {
   state = new RedZoneState();
   maxClients = 4;
-  private readonly simulation = new RedZoneSimulation();
+  private simulation!: RedZoneSimulation;
+  private operationId: OperationId = 'operation-zero';
 
-  onCreate(): void {
+  onCreate(options: { operationId?: unknown } = {}): void {
+    this.operationId = isOperationId(options.operationId) ? options.operationId : 'operation-zero';
+    this.simulation = new RedZoneSimulation(Math.random, this.operationId);
+    this.state.operationId = this.operationId;
     this.setSimulationInterval((deltaMs) => this.updateSimulation(deltaMs), 50);
     this.onMessage('input', (client, message: GameInputMessage) => {
       const parsed = inputSchema.safeParse(message);
@@ -59,12 +67,16 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
     });
   }
 
-  async onAuth(_client: Client, options: { token?: string }): Promise<PlayerAuth> {
+  async onAuth(_client: Client, options: { token?: string; operationId?: unknown }): Promise<PlayerAuth> {
     if (!options.token) throw new Error('AUTH_REQUIRED');
     const claims = roomDependencies().tokens.verify(options.token);
     const profile = await roomDependencies().repository.getById(claims.sub);
     if (!profile) throw new Error('PLAYER_NOT_FOUND');
-    return { playerId: claims.sub, deviceId: claims.deviceId };
+    const requestedOperation = isOperationId(options.operationId) ? options.operationId : 'operation-zero';
+    if (requestedOperation !== this.operationId || !isOperationUnlocked(requestedOperation, profile.campaign.completedOperations)) {
+      throw new Error('OPERATION_LOCKED');
+    }
+    return { playerId: claims.sub, deviceId: claims.deviceId, operationId: requestedOperation };
   }
 
   async onJoin(client: Client, _options: unknown, auth: PlayerAuth): Promise<void> {
@@ -85,9 +97,15 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
       if (event.type === 'extraction') {
         const idempotencyId = `${this.roomId}:${event.playerId}:${event.extractionNumber}`;
         void roomDependencies().economy.grantExtraction(event.playerId, event.cargo, idempotencyId)
-          .then(() => this.clients.find((client) => client.sessionId === event.playerSessionId)?.send('server-event', {
-            type: 'extraction', message: '화물 추출이 서버에 확정되었습니다.', payload: { ...event.cargo },
-          } satisfies ServerEventMessage))
+          .then(async () => {
+            if (event.operationComplete) {
+              await roomDependencies().economy.completeOperation(event.playerId, event.operationId, idempotencyId);
+            }
+            this.clients.find((client) => client.sessionId === event.playerSessionId)?.send('server-event', {
+              type: 'extraction', message: '화물 추출이 서버에 확정되었습니다.',
+              payload: { ...event.cargo, operationId: event.operationId, operationComplete: event.operationComplete },
+            } satisfies ServerEventMessage);
+          })
           .catch(() => this.clients.find((client) => client.sessionId === event.playerSessionId)?.send('server-event', {
             type: 'error', message: '추출 저장에 실패했습니다. 동일 세션 키로 재처리할 수 있습니다.',
           } satisfies ServerEventMessage));
@@ -97,7 +115,8 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
         } satisfies ServerEventMessage);
       } else if (event.type === 'boss-defeated') {
         this.broadcast('server-event', {
-          type: 'mission', message: event.message, payload: { bossDefeated: true },
+          type: 'mission', message: event.message,
+          payload: { bossDefeated: true, operationId: event.operationId },
         } satisfies ServerEventMessage);
       } else if (event.type === 'neural-link') {
         this.clients.find((client) => client.sessionId === event.playerSessionId)?.send('server-event', {
@@ -113,6 +132,9 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
   private syncState(): void {
     this.state.serverTime = Date.now();
     this.state.stormActive = this.simulation.stormActive;
+    this.state.operationId = this.simulation.operationId;
+    this.state.relaysDestroyed = this.simulation.relaysDestroyed;
+    this.state.bossDefeated = this.simulation.bossWasDefeated;
     syncMap(this.state.players, this.simulation.players, () => new PlayerState(), (target, source) => {
       target.playerId = source.playerId;
       target.displayName = source.displayName;

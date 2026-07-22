@@ -89,6 +89,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .operation-progress { height: 3px; overflow: hidden; background: #17251f; }
 .operation-progress i { display: block; width: 0; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 10px rgba(201,244,86,.4); transition: width .25s; }
 .operation-hud small { display: block; margin-top: 5px; color: #5f766d; font: 8px 'Share Tech Mono'; text-align: right; }
+.modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 18px; }
 
 .boss-hud { position: fixed; z-index: 13; top: 168px; left: 50%; width: min(520px, 56vw); padding: 12px 16px; transform: translateX(-50%); border: 1px solid rgba(255,66,111,.52); background: rgba(24,4,10,.86); text-align: center; box-shadow: 0 0 28px rgba(255,49,93,.12); pointer-events: none; }
 .boss-hud > span { display: block; color: #ff7a98; font: 8px 'Share Tech Mono'; letter-spacing: .2em; }

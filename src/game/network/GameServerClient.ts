@@ -6,10 +6,14 @@ import type { ReleaseChannel } from '../../../packages/shared/src/release';
 import { CLIENT_RELEASE, clientPlatform } from '../../release';
 import { gameEvents } from '../events';
 import type { ClientErrorReport } from '../telemetry/ClientTelemetry';
+import { isOperationId, type OperationId } from '../../../packages/shared/src/operations';
 
 export interface NetworkSnapshot {
   localSessionId: string;
   stormActive: boolean;
+  operationId: OperationId;
+  relaysDestroyed: number;
+  bossDefeated: boolean;
   players: Array<{
     id: string; playerId: string; displayName: string; x: number; y: number; aimAngle: number;
     hp: number; radiation: number; cargoScrap: number; cargoWater: number; cargoData: number;
@@ -63,7 +67,7 @@ export class GameServerClient {
     else void this.flushAnalytics();
   }
 
-  async connect(): Promise<void> {
+  async connect(operationId: OperationId = 'operation-zero'): Promise<void> {
     if (!this.endpoint) {
       gameEvents.emit('network-status', 'offline', '로컬 훈련 모드');
       return;
@@ -76,31 +80,7 @@ export class GameServerClient {
       });
       this.token = auth.token;
       gameEvents.emit('network-profile', auth.profile);
-      const client = new Client(this.endpoint);
-      this.room = await client.joinOrCreate('red_zone', { token: this.token });
-      this.connected = true;
-      gameEvents.emit('network-status', 'online', `ROOM ${this.room.roomId.slice(0, 6)}`);
-      this.room.onStateChange((state: unknown) => this.emitSnapshot(state));
-      this.room.onMessage<ServerEventMessage>('server-event', (event) => {
-        gameEvents.emit('feed', event.message, event.type === 'error');
-        if (event.type === 'extraction') {
-          gameEvents.emit('sfx', 'extract');
-          gameEvents.emit('haptic', 'success');
-          gameEvents.emit('server-extraction', event.payload ?? {});
-          void this.refreshProfile();
-        }
-        if (event.type === 'mission' && event.payload?.bossDefeated) gameEvents.emit('boss-defeated');
-        if (event.type === 'neural-link' && typeof event.payload?.operatorId === 'string' && typeof event.payload?.skillName === 'string') {
-          gameEvents.emit('neural-link-activated', event.payload.operatorId, event.payload.skillName);
-          gameEvents.emit('sfx', 'neural-link');
-          gameEvents.emit('haptic', 'success');
-        }
-      });
-      this.room.onLeave(() => {
-        this.connected = false;
-        gameEvents.emit('network-status', 'offline', '연결 종료 · 로컬 모드');
-      });
-      this.room.onError((_code, message) => gameEvents.emit('feed', message ?? '게임룸 통신 오류', true));
+      await this.joinOperation(operationId);
       await this.flushAnalytics();
       void this.track('session_start', {
         mode: 'online', serverVersion: this.releaseInfo?.version ?? 'unknown',
@@ -110,6 +90,14 @@ export class GameServerClient {
       this.connected = false;
       gameEvents.emit('network-status', 'offline', '서버 없음 · 로컬 모드');
     }
+  }
+
+  async switchOperation(operationId: OperationId): Promise<void> {
+    if (!this.endpoint || !this.token) return;
+    await this.room?.leave().catch(() => undefined);
+    this.connected = false;
+    gameEvents.emit('network-status', 'connecting', '다음 작전 연결 중');
+    await this.joinOperation(operationId);
   }
 
   sendInput(input: GameInputMessage): void {
@@ -229,6 +217,36 @@ export class GameServerClient {
     gameEvents.emit('network-profile', response.profile);
   }
 
+  private async joinOperation(operationId: OperationId): Promise<void> {
+    const client = new Client(this.endpoint);
+    this.room = await client.joinOrCreate('red_zone', { token: this.token, operationId });
+    const room = this.room;
+    this.connected = true;
+    gameEvents.emit('network-status', 'online', `ROOM ${room.roomId.slice(0, 6)} · ${operationId === 'operation-zero' ? 'OP-00' : 'OP-01'}`);
+    room.onStateChange((state: unknown) => this.emitSnapshot(state));
+    room.onMessage<ServerEventMessage>('server-event', (event) => {
+      gameEvents.emit('feed', event.message, event.type === 'error');
+      if (event.type === 'extraction') {
+        gameEvents.emit('sfx', 'extract');
+        gameEvents.emit('haptic', 'success');
+        gameEvents.emit('server-extraction', event.payload ?? {});
+        void this.refreshProfile();
+      }
+      if (event.type === 'mission' && event.payload?.bossDefeated) gameEvents.emit('boss-defeated');
+      if (event.type === 'neural-link' && typeof event.payload?.operatorId === 'string' && typeof event.payload?.skillName === 'string') {
+        gameEvents.emit('neural-link-activated', event.payload.operatorId, event.payload.skillName);
+        gameEvents.emit('sfx', 'neural-link');
+        gameEvents.emit('haptic', 'success');
+      }
+    });
+    room.onLeave(() => {
+      if (this.room !== room) return;
+      this.connected = false;
+      gameEvents.emit('network-status', 'offline', '연결 종료 · 로컬 모드');
+    });
+    room.onError((_code, message) => gameEvents.emit('feed', message ?? '게임룸 통신 오류', true));
+  }
+
   private enrichAnalytics(properties: FunnelProperties): FunnelProperties {
     const custom = Object.fromEntries(
       Object.entries(properties).filter(([key]) => !['version', 'channel', 'platform'].includes(key)),
@@ -284,6 +302,9 @@ export class GameServerClient {
   private emitSnapshot(rawState: unknown): void {
     const state = rawState as {
       stormActive: boolean;
+      operationId: OperationId;
+      relaysDestroyed: number;
+      bossDefeated: boolean;
       players: Map<string, NetworkSnapshot['players'][number]>;
       enemies: Map<string, NetworkSnapshot['enemies'][number]>;
       resources: Map<string, NetworkSnapshot['resources'][number]>;
@@ -296,6 +317,9 @@ export class GameServerClient {
     gameEvents.emit('network-snapshot', {
       localSessionId: this.room?.sessionId ?? '',
       stormActive: Boolean(state.stormActive),
+      operationId: isOperationId(state.operationId) ? state.operationId : 'operation-zero',
+      relaysDestroyed: Number(state.relaysDestroyed ?? 0),
+      bossDefeated: Boolean(state.bossDefeated),
       players: mapValues(state.players),
       enemies: mapValues(state.enemies),
       resources: mapValues(state.resources),

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { PlayerProfile } from '../../../packages/shared/src/protocol.js';
+import { isOperationId } from '../../../packages/shared/src/operations.js';
 
 export function createPlayerProfile(deviceId: string, now = new Date()): PlayerProfile {
   return {
@@ -18,6 +19,7 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
     pity: 0,
     accountLevel: 1,
     xp: 0,
+    campaign: { completedOperations: [] },
     commerce: { entitlements: [], subscriptionUntil: null, purchases: [] },
     lastSeenAt: now.toISOString(),
     createdAt: now.toISOString(),
@@ -25,6 +27,10 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
 }
 
 export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
+  profile.campaign ??= { completedOperations: [] };
+  profile.campaign.completedOperations = [...new Set(
+    (profile.campaign.completedOperations ?? []).filter(isOperationId),
+  )];
   profile.commerce ??= { entitlements: [], subscriptionUntil: null, purchases: [] };
   profile.commerce.entitlements ??= [];
   profile.commerce.subscriptionUntil ??= null;

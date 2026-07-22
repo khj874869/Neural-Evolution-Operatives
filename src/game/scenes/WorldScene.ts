@@ -6,7 +6,6 @@ import { GameState, type Resources } from '../state/GameState';
 import type { PlayerSettings } from '../settings';
 import { AdaptiveDirector, freshTelemetry, type CombatTelemetry } from '../systems/AdaptiveDirector';
 import { generateMission, type Mission } from '../systems/MissionGenerator';
-import { evaluateOperationZero, type OperationStage, type OperationStatus } from '../systems/OperationZero';
 import { createPersonaReply } from '../systems/PersonaEngine';
 import { parseTacticalCommand, type TacticalOrder } from '../systems/TacticalCommand';
 import { isWeaponId, projectileAngles, WEAPON_SPECS, weaponFromSlot, type WeaponId } from '../../../packages/shared/src/combat';
@@ -14,6 +13,10 @@ import type { EnemyKind } from '../../../packages/shared/src/protocol';
 import {
   addNeuralCharge, NEURAL_LINK_MAX, neuralLinkLeader, neuralLinkSkill,
 } from '../../../packages/shared/src/neuralLink';
+import {
+  evaluateOperation, operationDefinition,
+  type OperationDefinition, type OperationId, type OperationStage, type OperationStatus,
+} from '../../../packages/shared/src/operations';
 
 type EnemySprite = Phaser.Physics.Arcade.Sprite & { archetype?: EnemyKind };
 type ResourceSprite = Phaser.Physics.Arcade.Sprite & { resourceKind?: keyof Resources; value?: number };
@@ -26,7 +29,10 @@ const ENEMY_STATS: Record<EnemyKind, { texture: string; tint: number; hp: number
   stalker: { texture: 'enemy-stalker', tint: 0xb47cff, hp: 28, speed: 138, damage: 13, scale: 0.94 },
   breaker: { texture: 'enemy-breaker', tint: 0xff5147, hp: 92, speed: 48, damage: 19, scale: 1.08 },
   jammer: { texture: 'enemy-jammer', tint: 0x48d9ff, hp: 55, speed: 60, damage: 5, scale: 1.02 },
+  sapper: { texture: 'enemy-sapper', tint: 0xff9b54, hp: 64, speed: 72, damage: 9, scale: 1.02 },
+  relay: { texture: 'enemy-relay', tint: 0xe678ff, hp: 145, speed: 0, damage: 7, scale: 1.08 },
   warden: { texture: 'enemy-warden', tint: 0xff426f, hp: 520, speed: 46, damage: 24, scale: 1.08 },
+  harvester: { texture: 'enemy-harvester', tint: 0xff8b3d, hp: 760, speed: 42, damage: 27, scale: 1.1 },
 };
 const RESOURCE_TEXTURES: Record<keyof Resources, string> = {
   scrap: 'resource-scrap', water: 'resource-water', data: 'resource-data', cores: 'resource-cores',
@@ -64,12 +70,19 @@ export class WorldScene extends Phaser.Scene {
   private reducedMotion = false;
   private currentWeapon: WeaponId = 'carbine';
   private operationCollected = 0;
+  private operationDataCollected = 0;
+  private operationRelaysDestroyed = 0;
+  private operationRelaysSpawned = false;
   private operationBossSpawned = false;
   private operationBossDefeated = false;
   private operationExtracted = false;
   private operationComplete = false;
   private operationStage?: OperationStage;
-  private operationStatus: OperationStatus = evaluateOperationZero({ collected: 0, kills: 0, bossDefeated: false, extracted: false });
+  private operationId: OperationId = 'operation-zero';
+  private operationDefinition: OperationDefinition = operationDefinition('operation-zero');
+  private operationStatus: OperationStatus = evaluateOperation('operation-zero', {
+    collected: 0, dataCollected: 0, kills: 0, relaysDestroyed: 0, bossDefeated: false, extracted: false,
+  });
   private lastNetworkCargo = 0;
   private bossAbilityAt = 0;
   private bossIntroShown = false;
@@ -92,6 +105,11 @@ export class WorldScene extends Phaser.Scene {
     this.state = this.registry.get('state') as GameState;
     this.network = this.registry.get('network') as GameServerClient | undefined;
     this.reducedMotion = Boolean((this.registry.get('settings') as PlayerSettings | undefined)?.reducedMotion);
+    this.operationId = this.state.activeOperationId();
+    this.operationDefinition = operationDefinition(this.operationId);
+    this.operationStatus = evaluateOperation(this.operationId, {
+      collected: 0, dataCollected: 0, kills: 0, relaysDestroyed: 0, bossDefeated: false, extracted: false,
+    });
     this.mission = generateMission(this.state.snapshot().accountLevel, this.state.snapshot().resources);
     this.physics.world.setBounds(0, 0, WORLD_SIZE, WORLD_SIZE);
     this.drawWorld();
@@ -109,8 +127,11 @@ export class WorldScene extends Phaser.Scene {
 
     this.cameras.main.setBounds(0, 0, WORLD_SIZE, WORLD_SIZE).startFollow(this.player, true, 0.09, 0.09);
     this.cameras.main.setZoom(this.scale.width < 760 ? 0.83 : 1);
-    this.cameras.main.setBackgroundColor('#07100e');
-    this.stormOverlay = this.add.rectangle(0, 0, this.scale.width, this.scale.height, 0xb9b841, 0)
+    this.cameras.main.setBackgroundColor(this.operationDefinition.palette.ground);
+    this.stormOverlay = this.add.rectangle(
+      0, 0, this.scale.width, this.scale.height,
+      this.operationId === 'operation-ashfall' ? 0xff6f3c : 0xb9b841, 0,
+    )
       .setOrigin(0).setScrollFactor(0).setDepth(90).setBlendMode(Phaser.BlendModes.ADD);
     this.scale.on('resize', this.handleResize, this);
 
@@ -136,7 +157,8 @@ export class WorldScene extends Phaser.Scene {
       this.scale.off('resize', this.handleResize, this);
     });
 
-    this.emitFeed(`작전 ${this.mission.codename}: ${this.mission.description}`);
+    this.emitFeed(`${this.operationDefinition.zoneName} // 작전 ${this.operationDefinition.codename} 투입`);
+    this.emitFeed(`현장 임무 ${this.mission.codename}: ${this.mission.description}`);
     this.emitFeed('WASD/방향키 이동 · 마우스 조준/사격 · 중앙 추출 지점에서 E');
     this.startWave(0);
     this.selectWeapon('carbine');
@@ -157,36 +179,50 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private drawWorld(): void {
+    const palette = this.operationDefinition.palette;
     const ground = this.add.graphics();
-    ground.fillStyle(0x07100e).fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
-    ground.lineStyle(1, 0x173228, 0.42);
+    ground.fillStyle(palette.ground).fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+    ground.lineStyle(1, palette.grid, 0.42);
     for (let axis = 0; axis <= WORLD_SIZE; axis += 80) {
       ground.lineBetween(axis, 0, axis, WORLD_SIZE);
       ground.lineBetween(0, axis, WORLD_SIZE, axis);
     }
-    ground.lineStyle(2, 0x8bffba, 0.16);
+    ground.lineStyle(2, palette.accent, 0.16);
     ground.strokeCircle(EXTRACTION.x, EXTRACTION.y, 130);
     ground.setDepth(-5);
 
-    const seed = new Phaser.Math.RandomDataGenerator(['motherbrain']);
+    const seed = new Phaser.Math.RandomDataGenerator([this.operationDefinition.codename]);
     for (let index = 0; index < 92; index += 1) {
       const x = seed.between(90, WORLD_SIZE - 90);
       const y = seed.between(90, WORLD_SIZE - 90);
       if (Phaser.Math.Distance.Between(x, y, EXTRACTION.x, EXTRACTION.y) < 220) continue;
       const texture = index % 4 === 0 ? 'wreck' : 'ruin';
       this.add.image(x, y, texture)
-        .setTint(seed.pick([0x33443d, 0x3e423b, 0x2f463d, 0x4a3c35]))
+        .setTint(seed.pick([...palette.ruinTints]))
         .setAlpha(seed.realInRange(0.65, 0.94))
         .setRotation(seed.realInRange(-0.8, 0.8))
         .setScale(seed.realInRange(0.72, 1.18));
       if (index % 7 === 0) {
-        ground.lineStyle(2, 0xe2b84c, 0.12).strokeCircle(x, y, seed.between(45, 85));
+        ground.lineStyle(2, this.operationId === 'operation-ashfall' ? 0xff6f3c : 0xe2b84c, 0.12)
+          .strokeCircle(x, y, seed.between(45, 85));
       }
     }
-    this.extractionRing = this.add.circle(EXTRACTION.x, EXTRACTION.y, 64, 0x8bffba, 0.045)
-      .setStrokeStyle(2, 0x8bffba, 0.7).setDepth(1);
-    this.add.text(EXTRACTION.x, EXTRACTION.y - 88, 'SHELTER LIFT // EXTRACTION', {
-      color: '#8bffba', fontFamily: 'Share Tech Mono', fontSize: '11px',
+    if (this.operationId === 'operation-ashfall') {
+      for (let index = 0; index < 8; index += 1) {
+        const angle = index / 8 * Math.PI * 2;
+        const distance = 420 + (index % 2) * 230;
+        ground.lineStyle(5, 0xff6f3c, 0.12).lineBetween(
+          EXTRACTION.x + Math.cos(angle) * 170,
+          EXTRACTION.y + Math.sin(angle) * 170,
+          EXTRACTION.x + Math.cos(angle) * distance,
+          EXTRACTION.y + Math.sin(angle) * distance,
+        );
+      }
+    }
+    this.extractionRing = this.add.circle(EXTRACTION.x, EXTRACTION.y, 64, palette.accent, 0.045)
+      .setStrokeStyle(2, palette.accent, 0.7).setDepth(1);
+    this.add.text(EXTRACTION.x, EXTRACTION.y - 88, `${this.operationDefinition.zoneName} // EXTRACTION`, {
+      color: `#${palette.accent.toString(16).padStart(6, '0')}`, fontFamily: 'Share Tech Mono', fontSize: '11px',
     }).setOrigin(0.5);
   }
 
@@ -231,7 +267,9 @@ export class WorldScene extends Phaser.Scene {
   private spawnResourceCaches(): void {
     const seed = new Phaser.Math.RandomDataGenerator([String(Date.now())]);
     for (let index = 0; index < 28; index += 1) {
-      const kinds: Array<keyof Resources> = ['scrap', 'scrap', 'scrap', 'water', 'data'];
+      const kinds: Array<keyof Resources> = this.operationId === 'operation-ashfall'
+        ? ['scrap', 'scrap', 'water', 'data', 'data', 'data']
+        : ['scrap', 'scrap', 'scrap', 'water', 'data'];
       const kind = seed.pick(kinds);
       this.spawnResource(seed.between(80, WORLD_SIZE - 80), seed.between(80, WORLD_SIZE - 80), kind, seed.between(2, 7));
     }
@@ -262,6 +300,7 @@ export class WorldScene extends Phaser.Scene {
       const value = resource.value ?? 1;
       this.fieldCargo[kind] += value;
       this.operationCollected += value;
+      if (kind === 'data') this.operationDataCollected += value;
       resource.disableBody(true, true);
       this.impactBurst(resource.x, resource.y, 0xffffff, 6);
       gameEvents.emit('sfx', 'pickup');
@@ -451,19 +490,30 @@ export class WorldScene extends Phaser.Scene {
       let target: Phaser.Physics.Arcade.Sprite = this.player;
       if (this.order === 'DRAW_AGGRO' && this.companions[0]) target = this.companions[0];
       const distance = Phaser.Math.Distance.Between(enemy.x, enemy.y, target.x, target.y);
-      if (archetype === 'warden' && time > this.bossAbilityAt) {
-        this.bossAbilityAt = time + (enemy.getData('hp') < stats.hp * 0.5 ? 3_100 : 4_300);
-        this.triggerBossShockwave(enemy);
+      if ((archetype === 'warden' || archetype === 'harvester') && time > this.bossAbilityAt) {
+        this.bossAbilityAt = time + (enemy.getData('hp') < stats.hp * 0.5 ? 2_500 : 3_900);
+        if (archetype === 'harvester') this.triggerHarvesterPattern(enemy);
+        else this.triggerBossShockwave(enemy);
       }
-      const attackRange = archetype === 'warden' ? 125 : archetype === 'jammer' ? 180 : 30;
+      const attackRange = archetype === 'harvester' ? 165
+        : archetype === 'warden' ? 125
+          : archetype === 'relay' ? 240
+            : archetype === 'sapper' || archetype === 'jammer' ? 180 : 30;
       if (distance > attackRange) {
+        if (archetype === 'relay') {
+          enemy.setVelocity(0, 0);
+          return true;
+        }
         let offset = 0;
-        if (archetype === 'stalker') offset = Math.sin(time * 0.004 + enemy.x) * 0.9;
+        if (archetype === 'stalker' || archetype === 'sapper') offset = Math.sin(time * 0.004 + enemy.x) * 0.9;
         const angle = Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y) + offset;
-        const enraged = archetype === 'warden' && enemy.getData('hp') < stats.hp * 0.5 ? 1.35 : 1;
+        const enraged = (archetype === 'warden' || archetype === 'harvester')
+          && enemy.getData('hp') < stats.hp * 0.5 ? 1.35 : 1;
         enemy.setVelocity(Math.cos(angle) * stats.speed * enraged, Math.sin(angle) * stats.speed * enraged);
       } else if (time > (enemy.getData('attackAt') as number)) {
-        enemy.setData('attackAt', time + (archetype === 'warden' ? 1_350 : archetype === 'jammer' ? 1_450 : 820));
+        enemy.setData('attackAt', time + (archetype === 'harvester' ? 1_200
+          : archetype === 'warden' ? 1_350
+            : archetype === 'relay' || archetype === 'jammer' ? 1_450 : 820));
         if (target === this.player) {
           this.damagePlayer(stats.damage);
           if (archetype === 'jammer') {
@@ -471,10 +521,18 @@ export class WorldScene extends Phaser.Scene {
             this.impactBurst(this.player.x, this.player.y, stats.tint, 10);
             this.emitFeed('뉴럴 재머 피격 // 링크 게이지 -18%', true);
           }
+          if (archetype === 'relay') {
+            this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 12);
+            this.emitFeed('신경 중계기 EMP // 링크 게이지 -12%', true);
+          }
+          if (archetype === 'sapper') {
+            this.radiation = Phaser.Math.Clamp(this.radiation + 8, 0, 100);
+            this.emitFeed('산성 침식탄 피격 // 방사선 +8%', true);
+          }
         }
       }
       enemy.setRotation(Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y));
-      if (distance > 1250 && archetype !== 'warden') enemy.disableBody(true, true);
+      if (distance > 1250 && !['warden', 'harvester', 'relay'].includes(archetype)) enemy.disableBody(true, true);
       return true;
     });
     if (this.player.body?.velocity.lengthSq() === 0) this.telemetry.stationarySeconds += delta / 1000;
@@ -536,25 +594,78 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
+  private triggerHarvesterPattern(enemy: EnemySprite): void {
+    const pattern = Number(enemy.getData('abilityPattern') ?? 0);
+    enemy.setData('abilityPattern', pattern + 1);
+    if (pattern % 3 === 2) {
+      this.emitFeed('헤카톤 수확 포드 전개 // 증원 개체 낙하', true);
+      this.spawnEnemy('sapper', 230);
+      this.spawnEnemy('drone', 270);
+      gameEvents.emit('sfx', 'boss-ability');
+      return;
+    }
+    if (pattern % 2 === 0) {
+      const targetX = this.player.x;
+      const targetY = this.player.y;
+      const warning = this.add.circle(targetX, targetY, 106, 0xff7138, 0.06)
+        .setStrokeStyle(3, 0xffa45c, 0.96).setDepth(7);
+      this.emitFeed('헤카톤 산성 포격 조준 // 경고 지대 이탈', true);
+      gameEvents.emit('sfx', 'boss-ability');
+      this.time.delayedCall(this.reducedMotion ? 520 : 760, () => {
+        if (!warning.active) return;
+        const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, targetX, targetY);
+        warning.setFillStyle(0xff7138, 0.24).setScale(1.14);
+        this.impactBurst(targetX, targetY, 0xff8b3d, 26);
+        if (distance < 106 && enemy.active && this.player.active) {
+          this.radiation = Phaser.Math.Clamp(this.radiation + 14, 0, 100);
+          this.damagePlayer(28);
+        }
+        this.tweens.add({ targets: warning, alpha: 0, scale: 1.55, duration: 190, onComplete: () => warning.destroy() });
+      });
+      return;
+    }
+    const pulse = this.add.circle(enemy.x, enemy.y, 36, 0xe678ff, 0.08)
+      .setStrokeStyle(4, 0xe678ff, 0.92).setDepth(7);
+    this.emitFeed('헤카톤 EMP 맥동 충전 // 보스와 거리 확보', true);
+    gameEvents.emit('sfx', 'boss-ability');
+    this.tweens.add({ targets: pulse, scale: 8.5, alpha: 0.75, duration: this.reducedMotion ? 360 : 620 });
+    this.time.delayedCall(this.reducedMotion ? 380 : 650, () => {
+      if (!pulse.active) return;
+      if (enemy.active && Phaser.Math.Distance.Between(this.player.x, this.player.y, enemy.x, enemy.y) < 310) {
+        this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 30);
+        this.radiation = Phaser.Math.Clamp(this.radiation + 18, 0, 100);
+        this.damagePlayer(8);
+      }
+      this.tweens.add({ targets: pulse, alpha: 0, scale: 10, duration: 160, onComplete: () => pulse.destroy() });
+    });
+  }
+
   private startWave(delay: number): void {
     this.waveAt = delay;
     this.stormAt = 31_000;
   }
 
   private updateOperation(): void {
-    this.operationStatus = evaluateOperationZero({
+    this.operationStatus = evaluateOperation(this.operationId, {
       collected: this.operationCollected,
+      dataCollected: this.operationDataCollected,
       kills: this.missionKills,
+      relaysDestroyed: this.operationRelaysDestroyed,
       bossDefeated: this.operationBossDefeated,
       extracted: this.operationExtracted,
     });
     if (this.operationStage === this.operationStatus.stage) return;
     this.operationStage = this.operationStatus.stage;
     gameEvents.emit('operation-update', this.operationStatus);
-    this.emitFeed(`${this.operationStatus.code}: ${this.operationStatus.objective}`, this.operationStatus.stage === 'WARDEN');
+    this.emitFeed(`${this.operationStatus.code}: ${this.operationStatus.objective}`,
+      this.operationStatus.stage === 'WARDEN' || this.operationStatus.stage === 'RELAY');
+    if (this.operationStatus.stage === 'RELAY' && !this.operationRelaysSpawned && !this.networkConnected) {
+      this.operationRelaysSpawned = true;
+      this.spawnRelayNetwork();
+    }
     if (this.operationStatus.stage === 'WARDEN' && !this.operationBossSpawned && !this.networkConnected) {
       this.operationBossSpawned = true;
-      this.spawnEnemy('warden');
+      this.spawnEnemy(this.operationDefinition.bossKind);
     }
   }
 
@@ -569,9 +680,10 @@ export class WorldScene extends Phaser.Scene {
     }
   }
 
-  private spawnEnemy(archetype: EnemyKind): void {
+  private spawnEnemy(archetype: EnemyKind, forcedDistance?: number): void {
     const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
-    const distance = archetype === 'warden' ? 560 : Phaser.Math.Between(430, 680);
+    const isBoss = archetype === 'warden' || archetype === 'harvester';
+    const distance = forcedDistance ?? (isBoss ? 560 : Phaser.Math.Between(430, 680));
     const x = Phaser.Math.Clamp(this.player.x + Math.cos(angle) * distance, 24, WORLD_SIZE - 24);
     const y = Phaser.Math.Clamp(this.player.y + Math.sin(angle) * distance, 24, WORLD_SIZE - 24);
     const stats = ENEMY_STATS[archetype];
@@ -581,20 +693,39 @@ export class WorldScene extends Phaser.Scene {
       .setTint(stats.tint).setScale(stats.scale).setDepth(3).setAlpha(0);
     enemy.archetype = archetype;
     enemy.setData('hp', stats.hp).setData('attackAt', 0)
-      .setCircle(archetype === 'warden' ? 34 : archetype === 'breaker' ? 20 : 12,
-        archetype === 'warden' ? 14 : archetype === 'breaker' ? 8 : 4,
-        archetype === 'warden' ? 14 : archetype === 'breaker' ? 8 : 4);
+      .setCircle(isBoss ? 36 : archetype === 'relay' ? 24 : archetype === 'breaker' ? 20 : 12,
+        isBoss ? 14 : archetype === 'relay' ? 8 : archetype === 'breaker' ? 8 : 4,
+        isBoss ? 14 : archetype === 'relay' ? 8 : archetype === 'breaker' ? 8 : 4);
     this.tweens.add({ targets: enemy, alpha: 1, duration: this.reducedMotion ? 60 : 260 });
-    this.impactBurst(x, y, stats.tint, archetype === 'warden' ? 24 : archetype === 'breaker' ? 10 : 4);
-    if (archetype === 'warden') {
+    this.impactBurst(x, y, stats.tint, isBoss ? 24 : archetype === 'breaker' ? 10 : 4);
+    if (isBoss) {
       if (!this.bossIntroShown) {
         this.bossIntroShown = true;
-        gameEvents.emit('boss-intro');
+        gameEvents.emit('boss-intro', this.operationDefinition);
       }
       this.cameras.main.flash(300, 255, 34, 74, false);
       gameEvents.emit('sfx', 'boss');
       gameEvents.emit('haptic', 'warning');
     }
+  }
+
+  private spawnRelayNetwork(): void {
+    const positions = [
+      { x: 470, y: 520 },
+      { x: WORLD_SIZE - 500, y: 620 },
+      { x: WORLD_SIZE / 2 + 260, y: WORLD_SIZE - 470 },
+    ];
+    for (const position of positions) {
+      const stats = ENEMY_STATS.relay;
+      const enemy = this.enemies.get(position.x, position.y, stats.texture) as EnemySprite | null;
+      if (!enemy) continue;
+      enemy.setTexture(stats.texture).enableBody(true, position.x, position.y, true, true)
+        .setTint(stats.tint).setScale(stats.scale).setDepth(3);
+      enemy.archetype = 'relay';
+      enemy.setData('hp', stats.hp).setData('attackAt', 0).setCircle(24, 8, 8);
+      this.impactBurst(position.x, position.y, stats.tint, 16);
+    }
+    this.emitFeed('신경 중계기 3기 노출 // EMP 방출 범위를 경계하십시오.', true);
   }
 
   private firePlayerWeapon(fromX: number, fromY: number, toX: number, toY: number): void {
@@ -651,23 +782,33 @@ export class WorldScene extends Phaser.Scene {
     const y = enemy.y;
     const tint = ENEMY_STATS[archetype].tint;
     enemy.disableBody(true, true);
-    this.impactBurst(x, y, tint, archetype === 'warden' ? 34 : archetype === 'breaker' ? 18 : 10);
+    const isBoss = archetype === 'warden' || archetype === 'harvester';
+    this.impactBurst(x, y, tint, isBoss ? 34 : archetype === 'breaker' || archetype === 'relay' ? 18 : 10);
     gameEvents.emit('sfx', 'kill');
     gameEvents.emit('haptic', archetype === 'breaker' ? 'heavy' : 'light');
     this.missionKills += 1;
     this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 12);
     this.telemetry.kills += 1;
     this.state.recordKill();
-    if (archetype === 'warden') {
+    if (archetype === 'relay') {
+      this.operationRelaysDestroyed += 1;
+      this.spawnResource(x, y, 'data', 6);
+      this.emitFeed(`신경 중계기 파괴 // ${this.operationRelaysDestroyed}/3`);
+      gameEvents.emit('haptic', 'success');
+      return;
+    }
+    if (isBoss) {
       this.operationBossDefeated = true;
-      this.spawnResource(x - 14, y, 'cores', 2);
-      this.spawnResource(x + 14, y, 'data', 18);
-      this.emitFeed('감시자 케르베로스 파괴 // 뉴럴 코어를 확보하고 추출하십시오.');
+      const ashfall = archetype === 'harvester';
+      this.spawnResource(x - 14, y, 'cores', ashfall ? 3 : 2);
+      this.spawnResource(x + 14, y, 'data', ashfall ? 28 : 18);
+      this.emitFeed(`${this.operationDefinition.bossName} 파괴 // 작전 화물을 확보하고 추출하십시오.`);
       gameEvents.emit('sfx', 'boss-down');
       gameEvents.emit('haptic', 'success');
       return;
     }
-    const kind: keyof Resources = archetype === 'jammer' ? 'data' : Math.random() < 0.28 ? this.mission.targetResource : 'scrap';
+    const kind: keyof Resources = archetype === 'jammer' || archetype === 'sapper'
+      ? 'data' : Math.random() < 0.28 ? this.mission.targetResource : 'scrap';
     this.spawnResource(x, y, kind, archetype === 'breaker' ? 8 : Phaser.Math.Between(1, 4));
     if (Math.random() < 0.035) this.spawnResource(x + 12, y, 'cores', 1);
   }
@@ -732,15 +873,21 @@ export class WorldScene extends Phaser.Scene {
     if (this.operationComplete) return;
     this.operationComplete = true;
     this.operationExtracted = true;
-    if (!online) this.state.addResources({ cores: 3, data: 12 });
+    this.state.completeOperation(this.operationId);
+    if (!online) this.state.addResources(this.operationDefinition.rewards);
     this.updateOperation();
     gameEvents.emit('operation-complete', {
+      operationId: this.operationId,
+      codename: this.operationDefinition.codename,
+      title: this.operationDefinition.completionTitle,
+      narrative: this.operationDefinition.completionNarrative,
       kills: this.missionKills,
       collected: this.operationCollected,
       weapon: WEAPON_SPECS[this.currentWeapon].name,
       online,
-      bonusCores: online ? 0 : 3,
-      bonusData: online ? 0 : 12,
+      bonusCores: online ? 0 : this.operationDefinition.rewards.cores,
+      bonusData: online ? 0 : this.operationDefinition.rewards.data,
+      nextOperationId: this.state.activeOperationId(),
     });
     gameEvents.emit('state-changed');
   }
@@ -804,6 +951,7 @@ export class WorldScene extends Phaser.Scene {
       this.fieldCargo.scrap += 12;
       this.fieldCargo.data += 3;
       this.operationCollected += 15;
+      this.operationDataCollected += 3;
       this.impactBurst(this.player.x, this.player.y, skill.color, 24);
     }
 
@@ -836,7 +984,7 @@ export class WorldScene extends Phaser.Scene {
 
   private updateHud(): void {
     const boss = [...this.enemies.getChildren()].find((child) => (
-      (child as EnemySprite).active && (child as EnemySprite).archetype === 'warden'
+      (child as EnemySprite).active && (child as EnemySprite).archetype === this.operationDefinition.bossKind
     )) as EnemySprite | undefined;
     gameEvents.emit('hud-update', {
       hp: this.hp,
@@ -849,7 +997,11 @@ export class WorldScene extends Phaser.Scene {
       linkCharge: this.neuralLinkCharge,
       linkLeader: this.linkLeader,
       dashCooldownMs: this.dashCooldownMs,
-      boss: boss ? { hp: Number(boss.getData('hp') ?? 0), maxHp: ENEMY_STATS.warden.hp } : null,
+      boss: boss ? {
+        hp: Number(boss.getData('hp') ?? 0),
+        maxHp: ENEMY_STATS[this.operationDefinition.bossKind].hp,
+        name: this.operationDefinition.bossName,
+      } : null,
     });
   }
 
@@ -897,14 +1049,19 @@ export class WorldScene extends Phaser.Scene {
         scrap: own.cargoScrap, water: own.cargoWater, data: own.cargoData, cores: own.cargoCores,
       };
       const nextCargoTotal = Object.values(nextCargo).reduce((sum, value) => sum + value, 0);
-      if (nextCargoTotal > this.lastNetworkCargo) this.operationCollected += nextCargoTotal - this.lastNetworkCargo;
+      if (nextCargoTotal > this.lastNetworkCargo) {
+        this.operationCollected += nextCargoTotal - this.lastNetworkCargo;
+      }
+      if (nextCargo.data > this.fieldCargo.data) this.operationDataCollected += nextCargo.data - this.fieldCargo.data;
       this.lastNetworkCargo = nextCargoTotal;
       this.fieldCargo = nextCargo;
       this.networkSequence = Math.max(this.networkSequence, own.lastSequence);
       this.neuralLinkCharge = own.linkCharge;
       this.dashCooldownMs = Math.max(this.dashCooldownMs, own.dashCooldownMs);
     }
-    if (snapshot.enemies.some((enemy) => enemy.kind === 'warden')) this.operationBossSpawned = true;
+    this.operationRelaysDestroyed = snapshot.relaysDestroyed;
+    if (snapshot.bossDefeated) this.operationBossDefeated = true;
+    if (snapshot.enemies.some((enemy) => enemy.kind === this.operationDefinition.bossKind)) this.operationBossSpawned = true;
     this.syncNetworkEnemies(snapshot.enemies);
     this.syncNetworkResources(snapshot.resources);
     if (snapshot.stormActive && !this.stormActive) {
@@ -922,7 +1079,7 @@ export class WorldScene extends Phaser.Scene {
       if (incoming.has(id)) continue;
       this.impactBurst(sprite.x, sprite.y, ENEMY_STATS[sprite.archetype ?? 'raider'].tint, 8);
       gameEvents.emit('sfx', 'kill');
-      if (sprite.archetype === 'warden') this.handleBossDefeated();
+      if (sprite.archetype === this.operationDefinition.bossKind) this.handleBossDefeated();
       sprite.disableBody(true, true);
       this.serverEnemies.delete(id);
     }
@@ -932,9 +1089,9 @@ export class WorldScene extends Phaser.Scene {
         sprite = this.enemies.get(source.x, source.y, ENEMY_STATS[source.kind].texture) as EnemySprite | null ?? undefined;
         if (!sprite) continue;
         this.serverEnemies.set(source.id, sprite);
-        if (source.kind === 'warden' && !this.bossIntroShown) {
+        if (source.kind === this.operationDefinition.bossKind && !this.bossIntroShown) {
           this.bossIntroShown = true;
-          gameEvents.emit('boss-intro');
+          gameEvents.emit('boss-intro', this.operationDefinition);
           gameEvents.emit('sfx', 'boss');
           gameEvents.emit('haptic', 'warning');
         }

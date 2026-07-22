@@ -102,6 +102,32 @@ export class BootScene extends Phaser.Scene {
     graphics.generateTexture('enemy-jammer', 56, 56);
     graphics.clear();
 
+    // Sapper: ash-zone ranged unit with a pressurized acid tank and hooked legs.
+    graphics.fillStyle(0x000000, 0.36).fillEllipse(27, 39, 45, 18);
+    graphics.lineStyle(5, 0xffffff, 0.86)
+      .lineBetween(15, 30, 4, 47).lineBetween(39, 30, 50, 47);
+    graphics.fillStyle(0xffffff).fillRoundedRect(11, 14, 32, 27, 8);
+    graphics.fillStyle(0x07100e).fillRoundedRect(17, 19, 20, 17, 5);
+    graphics.lineStyle(4, 0xffffff).lineBetween(39, 20, 53, 9);
+    graphics.fillStyle(0xffffff).fillCircle(27, 27, 5);
+    graphics.generateTexture('enemy-sapper', 56, 56);
+    graphics.clear();
+
+    // Neural relay: stationary EMP pylon with three signal vanes.
+    graphics.fillStyle(0x000000, 0.38).fillEllipse(36, 61, 58, 22);
+    graphics.fillStyle(0xffffff).fillRoundedRect(21, 28, 30, 39, 8);
+    graphics.fillStyle(0x07100e).fillRoundedRect(27, 36, 18, 23, 5);
+    graphics.lineStyle(5, 0xffffff, 0.9)
+      .lineBetween(36, 29, 36, 4).lineBetween(27, 31, 9, 13).lineBetween(45, 31, 63, 13);
+    graphics.fillStyle(0xffffff)
+      .fillTriangle(31, 5, 41, 5, 36, 22)
+      .fillTriangle(5, 10, 14, 7, 20, 25)
+      .fillTriangle(67, 10, 58, 7, 52, 25);
+    graphics.lineStyle(3, 0xffffff, 0.7).strokeCircle(36, 47, 17);
+    graphics.fillStyle(0xffffff).fillCircle(36, 47, 7);
+    graphics.generateTexture('enemy-relay', 72, 72);
+    graphics.clear();
+
     // Warden boss: a wide command chassis with four siege limbs and a volatile neural core.
     graphics.fillStyle(0x000000, 0.42).fillEllipse(48, 63, 82, 36);
     graphics.lineStyle(9, 0xffffff, 0.88)
@@ -117,6 +143,23 @@ export class BootScene extends Phaser.Scene {
     graphics.fillStyle(0x07100e).fillCircle(48, 48, 5);
     graphics.fillStyle(0xffffff).fillTriangle(44, 5, 52, 5, 48, 22);
     graphics.generateTexture('enemy-warden', 96, 96);
+    graphics.clear();
+
+    // Harvester boss: asymmetric industrial body, twin mortar arms and a rotating intake core.
+    graphics.fillStyle(0x000000, 0.46).fillEllipse(56, 79, 98, 41);
+    graphics.lineStyle(10, 0xffffff, 0.84)
+      .lineBetween(28, 48, 8, 25).lineBetween(84, 48, 104, 25)
+      .lineBetween(31, 76, 9, 103).lineBetween(81, 76, 103, 103);
+    graphics.fillStyle(0xffffff)
+      .fillRoundedRect(3, 16, 28, 24, 8).fillRoundedRect(81, 16, 28, 24, 8)
+      .fillRoundedRect(5, 92, 29, 18, 7).fillRoundedRect(78, 92, 29, 18, 7);
+    graphics.fillStyle(0xffffff).fillRoundedRect(22, 31, 68, 64, 16);
+    graphics.fillStyle(0x07100e).fillRoundedRect(32, 42, 48, 42, 12);
+    graphics.lineStyle(5, 0xffffff, 0.76).strokeCircle(56, 63, 31).strokeCircle(56, 63, 21);
+    graphics.fillStyle(0xffffff).fillTriangle(56, 39, 75, 74, 37, 74);
+    graphics.fillStyle(0x07100e).fillCircle(56, 63, 8);
+    graphics.lineStyle(7, 0xffffff).lineBetween(30, 34, 18, 5).lineBetween(82, 34, 94, 5);
+    graphics.generateTexture('enemy-harvester', 112, 112);
     graphics.clear();
 
     graphics.fillStyle(0xffffff).fillRoundedRect(0, 2, 16, 4, 2);

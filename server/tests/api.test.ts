@@ -28,6 +28,7 @@ describe('game account API', () => {
     expect(auth.body.token).toBeTypeOf('string');
     const profile = await request(app).get('/api/profile').set('authorization', `Bearer ${auth.body.token}`).expect(200);
     expect(profile.body.profile.deviceId).toBe('web:test-device-0001');
+    expect(profile.body.profile.campaign).toEqual({ completedOperations: [] });
   });
 
   it('rejects economy calls without authentication', async () => {

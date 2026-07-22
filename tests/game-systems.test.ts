@@ -12,12 +12,16 @@ import { addNeuralCharge, neuralLinkLeader, neuralLinkSkill } from '../packages/
 import { normalizeReleaseChannel } from '../packages/shared/src/release';
 import { clientPlatform } from '../src/release';
 import { createClientErrorReport, sanitizeErrorMessage } from '../src/game/telemetry/ClientTelemetry';
+import {
+  activeOperationId, evaluateOperation, isOperationUnlocked,
+} from '../packages/shared/src/operations';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
   resources: { scrap: 0, water: 0, data: 0, cores: 0 },
   shelter: { command: 1, purifier: 1, workshop: 1, greenhouse: 0 },
   operators: [], squad: [], accountLevel: 1, xp: 0, pity: 0,
+  campaign: { completedOperations: [] },
   stats: { raids: 0, kills: 0, extractedScrap: 0 }, lastSeenAt,
 });
 
@@ -97,6 +101,20 @@ describe('operation zero progression', () => {
     expect(evaluateOperationZero({ collected: 8, kills: 10, bossDefeated: false, extracted: false }).stage).toBe('WARDEN');
     expect(evaluateOperationZero({ collected: 8, kills: 11, bossDefeated: true, extracted: false }).stage).toBe('EXTRACT');
     expect(evaluateOperationZero({ collected: 8, kills: 11, bossDefeated: true, extracted: true }).stage).toBe('COMPLETE');
+  });
+});
+
+describe('operation ashfall campaign', () => {
+  it('unlocks after operation zero and gates relays before the harvester', () => {
+    expect(activeOperationId([])).toBe('operation-zero');
+    expect(isOperationUnlocked('operation-ashfall', [])).toBe(false);
+    expect(activeOperationId(['operation-zero'])).toBe('operation-ashfall');
+    expect(evaluateOperation('operation-ashfall', {
+      collected: 20, dataCollected: 12, kills: 16, relaysDestroyed: 0, bossDefeated: false, extracted: false,
+    }).stage).toBe('RELAY');
+    expect(evaluateOperation('operation-ashfall', {
+      collected: 20, dataCollected: 12, kills: 16, relaysDestroyed: 3, bossDefeated: false, extracted: false,
+    })).toMatchObject({ stage: 'WARDEN', title: '신호포식자 헤카톤' });
   });
 });
 

@@ -39,6 +39,21 @@ describe('server authoritative economy', () => {
     expect(replay.replayed).toBe(true);
   });
 
+  it('unlocks campaign operations in order and grants each completion reward once', async () => {
+    const profile = await repository.getOrCreateGuest('test:campaign-device');
+    const economy = new EconomyService(repository);
+    await expect(economy.completeOperation(profile.playerId, 'operation-ashfall', 'room:locked'))
+      .rejects.toThrow('OPERATION_LOCKED');
+    const zero = await economy.completeOperation(profile.playerId, 'operation-zero', 'room:zero');
+    const zeroReplay = await economy.completeOperation(profile.playerId, 'operation-zero', 'room:zero-replay');
+    const ashfall = await economy.completeOperation(profile.playerId, 'operation-ashfall', 'room:ashfall');
+    expect(zero.profile.campaign.completedOperations).toEqual(['operation-zero']);
+    expect(zeroReplay.profile.resources.cores).toBe(13);
+    expect(ashfall.profile.campaign.completedOperations).toEqual(['operation-zero', 'operation-ashfall']);
+    expect(ashfall.profile.resources.cores).toBe(18);
+    expect(ashfall.profile.resources.data).toBe(81);
+  });
+
   it('persists exactly three unique owned squad operators', async () => {
     const profile = await repository.getOrCreateGuest('test:squad-device');
     const economy = new EconomyService(repository);

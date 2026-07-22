@@ -1,5 +1,8 @@
 import { getOperator, OPERATORS, type Rarity } from '../data/operators';
 import type { PlayerProfile } from '../../../packages/shared/src/protocol';
+import {
+  activeOperationId, isOperationId, type OperationId,
+} from '../../../packages/shared/src/operations';
 
 export interface Resources {
   scrap: number;
@@ -31,6 +34,7 @@ export interface SaveData {
   accountLevel: number;
   xp: number;
   pity: number;
+  campaign: { completedOperations: OperationId[] };
   stats: { raids: number; kills: number; extractedScrap: number };
   lastSeenAt: number;
 }
@@ -55,6 +59,7 @@ const initialSave = (): SaveData => ({
   accountLevel: 1,
   xp: 0,
   pity: 0,
+  campaign: { completedOperations: [] },
   stats: { raids: 0, kills: 0, extractedScrap: 0 },
   lastSeenAt: Date.now(),
 });
@@ -92,7 +97,7 @@ export class GameState {
       const value = localStorage.getItem(STORAGE_KEY);
       if (value) {
         const parsed = JSON.parse(value) as SaveData;
-        if (parsed.version === 1) return parsed;
+        if (parsed.version === 1) return normalizeSave(parsed);
       }
     } catch {
       // Corrupt or privacy-restricted storage falls back to a safe fresh save.
@@ -112,6 +117,9 @@ export class GameState {
     this.data.pity = profile.pity;
     this.data.accountLevel = profile.accountLevel;
     this.data.xp = profile.xp;
+    this.data.campaign = {
+      completedOperations: [...(profile.campaign?.completedOperations ?? this.data.campaign.completedOperations)],
+    };
     this.save();
   }
 
@@ -147,6 +155,17 @@ export class GameState {
     this.data.stats.raids += 1;
     this.data.stats.extractedScrap += scrap;
     this.addResources({ scrap });
+  }
+
+  activeOperationId(): OperationId {
+    return activeOperationId(this.data.campaign.completedOperations);
+  }
+
+  completeOperation(operationId: OperationId): boolean {
+    if (this.data.campaign.completedOperations.includes(operationId)) return false;
+    this.data.campaign.completedOperations.push(operationId);
+    this.save();
+    return true;
   }
 
   remember(operatorId: string, memory: string): void {
@@ -205,4 +224,13 @@ export class GameState {
       return owned ? [{ definition: getOperator(id), owned }] : [];
     });
   }
+}
+
+function normalizeSave(save: SaveData): SaveData {
+  const candidate = save as SaveData & { campaign?: { completedOperations?: unknown[] } };
+  const completedOperations = (candidate.campaign?.completedOperations ?? []).filter(isOperationId);
+  return {
+    ...save,
+    campaign: { completedOperations: [...new Set(completedOperations)] },
+  };
 }

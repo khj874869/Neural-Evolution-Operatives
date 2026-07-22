@@ -61,6 +61,20 @@ describe('authoritative red zone simulation', () => {
     expect(simulation.drainEvents().some((event) => event.type === 'feed' && event.message.includes('케르베로스'))).toBe(true);
   });
 
+  it('deploys ashfall relays before the harvester boss', () => {
+    const simulation = new RedZoneSimulation(() => 0.5, 'operation-ashfall');
+    const player = simulation.addPlayer('session-ash', 'player-ash', 'RELAY-CUTTER');
+    player.kills = 16;
+    player.cargo.data = 12;
+    simulation.tick(50);
+    expect([...simulation.enemies.values()].filter((enemy) => enemy.kind === 'relay')).toHaveLength(3);
+    expect([...simulation.enemies.values()].some((enemy) => enemy.kind === 'harvester')).toBe(false);
+    simulation.relaysDestroyed = 3;
+    simulation.tick(50);
+    expect([...simulation.enemies.values()].some((enemy) => enemy.kind === 'harvester')).toBe(true);
+    expect(simulation.drainEvents().some((event) => event.type === 'feed' && event.message.includes('헤카톤'))).toBe(true);
+  });
+
   it('uses the shared coil-gun damage in authoritative hit resolution', () => {
     const simulation = new RedZoneSimulation(() => 0.5);
     simulation.resources.clear();

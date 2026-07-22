@@ -1,6 +1,9 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import type { PlayerProfile, ResourceWallet } from '../../../packages/shared/src/protocol.js';
 import type { PlayerRepository } from '../persistence/PlayerRepository.js';
+import {
+  isOperationUnlocked, operationDefinition, type OperationId,
+} from '../../../packages/shared/src/operations.js';
 
 const OPERATOR_POOLS = {
   R: ['rook', 'patch'],
@@ -94,6 +97,28 @@ export class EconomyService {
         profile.resources[key] += amount;
       }
     });
+  }
+
+  async completeOperation(playerId: string, operationId: OperationId, sessionId: string) {
+    let completedNow = false;
+    const mutation = await this.repository.mutate(
+      playerId,
+      `operation:${operationId}:${sessionId}`,
+      'OPERATION_COMPLETE',
+      (profile) => {
+        profile.campaign ??= { completedOperations: [] };
+        if (!isOperationUnlocked(operationId, profile.campaign.completedOperations)) {
+          throw new EconomyError('OPERATION_LOCKED', 409);
+        }
+        if (profile.campaign.completedOperations.includes(operationId)) return;
+        const definition = operationDefinition(operationId);
+        profile.campaign.completedOperations.push(operationId);
+        profile.resources.cores += definition.rewards.cores;
+        profile.resources.data += definition.rewards.data;
+        completedNow = true;
+      },
+    );
+    return { ...mutation, completedNow };
   }
 }
 

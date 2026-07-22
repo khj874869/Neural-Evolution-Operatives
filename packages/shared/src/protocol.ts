@@ -1,8 +1,9 @@
 export type ResourceKind = 'scrap' | 'water' | 'data' | 'cores';
 import type { WeaponId } from './combat.js';
 import type { CommercePlatform, StoreProductId } from './commerce.js';
+import type { OperationId } from './operations.js';
 
-export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker' | 'jammer' | 'warden';
+export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker' | 'jammer' | 'sapper' | 'relay' | 'warden' | 'harvester';
 
 export interface ResourceWallet {
   scrap: number;
@@ -60,6 +61,9 @@ export interface PlayerProfile {
   pity: number;
   accountLevel: number;
   xp: number;
+  campaign: {
+    completedOperations: OperationId[];
+  };
   commerce: {
     entitlements: string[];
     subscriptionUntil: string | null;

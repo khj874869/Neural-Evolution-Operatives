@@ -4,6 +4,9 @@ import { isWeaponId, projectileAngles, WEAPON_SPECS } from '../../../packages/sh
 import {
   addNeuralCharge, NEURAL_LINK_MAX, neuralLinkLeader, neuralLinkSkill,
 } from '../../../packages/shared/src/neuralLink.js';
+import {
+  evaluateOperation, operationDefinition, type OperationId,
+} from '../../../packages/shared/src/operations.js';
 
 export const WORLD_SIZE = 2400;
 export const EXTRACTION_POINT = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
@@ -33,6 +36,8 @@ export interface SimEnemy {
   y: number;
   hp: number;
   attackCooldownMs: number;
+  abilityCooldownMs?: number;
+  abilityPattern?: number;
 }
 
 export interface SimResource {
@@ -45,9 +50,12 @@ export interface SimResource {
 
 export type SimulationEvent =
   | { type: 'feed'; playerSessionId?: string; message: string }
-  | { type: 'boss-defeated'; playerSessionId: string; message: string }
+  | { type: 'boss-defeated'; playerSessionId: string; operationId: OperationId; message: string }
   | { type: 'neural-link'; playerSessionId: string; operatorId: string; skillName: string; message: string }
-  | { type: 'extraction'; playerSessionId: string; playerId: string; cargo: ResourceWallet; extractionNumber: number }
+  | {
+    type: 'extraction'; playerSessionId: string; playerId: string; cargo: ResourceWallet;
+    extractionNumber: number; operationId: OperationId; operationComplete: boolean;
+  }
   | { type: 'death'; playerSessionId: string; message: string };
 
 interface InternalPlayer extends SimPlayer {
@@ -58,6 +66,7 @@ interface InternalPlayer extends SimPlayer {
   hits: number;
   extractionNumber: number;
   salvageCollected: number;
+  collected: ResourceWallet;
 }
 
 const ENEMY_STATS: Record<EnemyKind, { hp: number; speed: number; damage: number }> = {
@@ -66,7 +75,10 @@ const ENEMY_STATS: Record<EnemyKind, { hp: number; speed: number; damage: number
   stalker: { hp: 28, speed: 138, damage: 13 },
   breaker: { hp: 92, speed: 48, damage: 19 },
   jammer: { hp: 55, speed: 60, damage: 5 },
+  sapper: { hp: 64, speed: 72, damage: 9 },
+  relay: { hp: 145, speed: 0, damage: 7 },
   warden: { hp: 520, speed: 46, damage: 24 },
+  harvester: { hp: 760, speed: 42, damage: 27 },
 };
 
 const EMPTY_INPUT: GameInputMessage = {
@@ -85,8 +97,14 @@ export class RedZoneSimulation {
   private nextEntityId = 1;
   private readonly events: SimulationEvent[] = [];
   private bossSpawned = false;
+  private bossDefeated = false;
+  private relaysSpawned = false;
+  relaysDestroyed = 0;
 
-  constructor(private readonly random: () => number = Math.random) {
+  constructor(
+    private readonly random: () => number = Math.random,
+    readonly operationId: OperationId = 'operation-zero',
+  ) {
     for (let index = 0; index < 18; index += 1) this.spawnResourceCache();
   }
 
@@ -115,6 +133,7 @@ export class RedZoneSimulation {
       hits: 0,
       extractionNumber: 0,
       salvageCollected: 0,
+      collected: emptyWallet(),
     };
     this.players.set(sessionId, player);
     if (this.enemies.size === 0) this.spawnWave(4);
@@ -164,12 +183,19 @@ export class RedZoneSimulation {
     this.updateStorm();
     for (const player of this.players.values()) this.updatePlayer(player, safeDelta);
     for (const enemy of this.enemies.values()) this.updateEnemy(enemy, safeDelta);
-    if (!this.bossSpawned && [...this.players.values()].some((player) => (
-      player.kills >= 10 && Math.max(
+    const stages = [...this.players.values()].map((player) => evaluateOperation(this.operationId, {
+      collected: Math.max(
         player.salvageCollected,
         Object.values(player.cargo).reduce((sum, value) => sum + value, 0),
-      ) >= 8
-    ))) this.spawnBoss();
+      ),
+      dataCollected: Math.max(player.collected.data, player.cargo.data),
+      kills: player.kills,
+      relaysDestroyed: this.relaysDestroyed,
+      bossDefeated: this.bossDefeated,
+      extracted: false,
+    }).stage);
+    if (stages.includes('RELAY') && !this.relaysSpawned) this.spawnRelays();
+    if (stages.includes('WARDEN') && !this.bossSpawned) this.spawnBoss();
     if (this.players.size && this.waveElapsedMs >= 12_000) {
       this.waveElapsedMs = 0;
       const pressure = Math.min(10, 3 + Math.floor(this.elapsedMs / 45_000));
@@ -179,6 +205,10 @@ export class RedZoneSimulation {
 
   drainEvents(): SimulationEvent[] {
     return this.events.splice(0);
+  }
+
+  get bossWasDefeated(): boolean {
+    return this.bossDefeated;
   }
 
   private updatePlayer(player: InternalPlayer, deltaMs: number): void {
@@ -256,11 +286,17 @@ export class RedZoneSimulation {
     const dx = target.x - enemy.x;
     const dy = target.y - enemy.y;
     const distance = Math.hypot(dx, dy);
-    const attackRange = enemy.kind === 'warden' ? 125 : enemy.kind === 'jammer' ? 180 : 30;
+    if (enemy.kind === 'harvester') this.updateHarvesterAbility(enemy, target, deltaMs);
+    const attackRange = enemy.kind === 'harvester' ? 165
+      : enemy.kind === 'warden' ? 125
+        : enemy.kind === 'relay' ? 240
+          : enemy.kind === 'sapper' || enemy.kind === 'jammer' ? 180 : 30;
     if (distance > attackRange) {
+      if (enemy.kind === 'relay') return;
       let angle = Math.atan2(dy, dx);
-      if (enemy.kind === 'stalker') angle += Math.sin(this.elapsedMs * 0.004 + enemy.x) * 0.9;
-      const enraged = enemy.kind === 'warden' && enemy.hp < ENEMY_STATS.warden.hp * 0.5 ? 1.35 : 1;
+      if (enemy.kind === 'stalker' || enemy.kind === 'sapper') angle += Math.sin(this.elapsedMs * 0.004 + enemy.x) * 0.9;
+      const enraged = (enemy.kind === 'warden' || enemy.kind === 'harvester')
+        && enemy.hp < ENEMY_STATS[enemy.kind].hp * 0.5 ? 1.35 : 1;
       enemy.x += Math.cos(angle) * stats.speed * enraged * deltaMs / 1000;
       enemy.y += Math.sin(angle) * stats.speed * enraged * deltaMs / 1000;
     } else {
@@ -269,23 +305,57 @@ export class RedZoneSimulation {
         target.hp -= stats.damage * target.bonuses.damageTakenMultiplier;
         target.linkCharge = addNeuralCharge(target.linkCharge, 6);
         if (enemy.kind === 'jammer') target.linkCharge = Math.max(0, target.linkCharge - 18);
-        enemy.attackCooldownMs = enemy.kind === 'warden' ? 1_350 : enemy.kind === 'jammer' ? 1_450 : 820;
+        if (enemy.kind === 'relay') target.linkCharge = Math.max(0, target.linkCharge - 12);
+        if (enemy.kind === 'sapper') target.radiation = clamp(target.radiation + 8, 0, 100);
+        enemy.attackCooldownMs = enemy.kind === 'harvester' ? 1_200
+          : enemy.kind === 'warden' ? 1_350
+            : enemy.kind === 'relay' || enemy.kind === 'jammer' ? 1_450 : 820;
       }
     }
+  }
+
+  private updateHarvesterAbility(enemy: SimEnemy, target: InternalPlayer, deltaMs: number): void {
+    enemy.abilityCooldownMs = (enemy.abilityCooldownMs ?? 2_400) - deltaMs;
+    if (enemy.abilityCooldownMs > 0) return;
+    const pattern = enemy.abilityPattern ?? 0;
+    if (pattern % 2 === 0) {
+      if (Math.hypot(target.x - enemy.x, target.y - enemy.y) <= 380) {
+        target.linkCharge = Math.max(0, target.linkCharge - 28);
+        target.radiation = clamp(target.radiation + 16, 0, 100);
+        target.hp -= 8 * target.bonuses.damageTakenMultiplier;
+      }
+      this.events.push({ type: 'feed', message: '헤카톤 EMP 맥동 // 링크 차단 및 방사선 상승' });
+    } else {
+      this.spawnEnemyNear(target, this.random() < 0.5 ? 'sapper' : 'stalker', 210);
+      this.spawnEnemyNear(target, 'drone', 250);
+      this.events.push({ type: 'feed', message: '헤카톤 수확 포드 전개 // 증원 개체 낙하' });
+    }
+    enemy.abilityPattern = pattern + 1;
+    const enraged = enemy.hp < ENEMY_STATS.harvester.hp * 0.5;
+    enemy.abilityCooldownMs = enraged ? 2_300 : 3_600;
   }
 
   private defeatEnemy(player: InternalPlayer, enemy: SimEnemy): void {
     this.enemies.delete(enemy.id);
     player.kills += 1;
     player.linkCharge = addNeuralCharge(player.linkCharge, 12);
-    if (enemy.kind === 'warden') {
+    if (enemy.kind === 'relay') {
+      this.relaysDestroyed += 1;
+      const dataId = `resource-${this.nextEntityId++}`;
+      this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x, y: enemy.y, value: 6 });
+      this.events.push({ type: 'feed', message: `신경 중계기 파괴 // ${this.relaysDestroyed}/3` });
+      return;
+    }
+    if (enemy.kind === 'warden' || enemy.kind === 'harvester') {
+      this.bossDefeated = true;
       const coreId = `resource-${this.nextEntityId++}`;
       const dataId = `resource-${this.nextEntityId++}`;
-      this.resources.set(coreId, { id: coreId, kind: 'cores', x: enemy.x - 14, y: enemy.y, value: 2 });
-      this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x + 14, y: enemy.y, value: 18 });
+      const ashfall = enemy.kind === 'harvester';
+      this.resources.set(coreId, { id: coreId, kind: 'cores', x: enemy.x - 14, y: enemy.y, value: ashfall ? 3 : 2 });
+      this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x + 14, y: enemy.y, value: ashfall ? 28 : 18 });
       this.events.push({
-        type: 'boss-defeated', playerSessionId: player.id,
-        message: '감시자 케르베로스 파괴 // 뉴럴 코어를 확보하고 즉시 추출하십시오.',
+        type: 'boss-defeated', playerSessionId: player.id, operationId: this.operationId,
+        message: `${operationDefinition(this.operationId).bossName} 파괴 // 작전 화물을 확보하고 즉시 추출하십시오.`,
       });
       return;
     }
@@ -306,6 +376,7 @@ export class RedZoneSimulation {
       if (Math.hypot(resource.x - player.x, resource.y - player.y) > player.bonuses.pickupRadius) continue;
       player.cargo[resource.kind] += resource.value;
       player.salvageCollected += resource.value;
+      player.collected[resource.kind] += resource.value;
       this.resources.delete(resource.id);
     }
   }
@@ -339,6 +410,8 @@ export class RedZoneSimulation {
       player.cargo.scrap += 12;
       player.cargo.data += 3;
       player.salvageCollected += 15;
+      player.collected.scrap += 12;
+      player.collected.data += 3;
     }
 
     this.events.push({
@@ -361,6 +434,8 @@ export class RedZoneSimulation {
       playerId: player.playerId,
       cargo,
       extractionNumber: player.extractionNumber,
+      operationId: this.operationId,
+      operationComplete: this.bossDefeated,
     });
   }
 
@@ -386,7 +461,9 @@ export class RedZoneSimulation {
     for (let index = 0; index < count; index += 1) {
       const roll = this.random();
       const highLink = [...this.players.values()].some((player) => player.linkCharge >= 60);
-      const kind: EnemyKind = highLink && roll < 0.2 ? 'jammer'
+      const ashfall = this.operationId === 'operation-ashfall';
+      const kind: EnemyKind = ashfall && roll < 0.18 ? 'sapper'
+        : highLink && roll < 0.2 ? 'jammer'
         : campers && roll < 0.38 ? 'stalker'
           : roll < 0.38 ? 'drone' : roll < 0.72 ? 'raider' : roll < 0.88 ? 'stalker' : roll < 0.96 ? 'jammer' : 'breaker';
       const center = [...this.players.values()][index % Math.max(1, this.players.size)] ?? { x: EXTRACTION_POINT.x, y: EXTRACTION_POINT.y };
@@ -407,12 +484,42 @@ export class RedZoneSimulation {
     const player = [...this.players.values()][0];
     if (!player) return;
     this.bossSpawned = true;
+    const definition = operationDefinition(this.operationId);
     const id = `enemy-${this.nextEntityId++}`;
     this.enemies.set(id, {
-      id, kind: 'warden', x: clamp(player.x + 560, 80, WORLD_SIZE - 80),
-      y: clamp(player.y - 220, 80, WORLD_SIZE - 80), hp: ENEMY_STATS.warden.hp, attackCooldownMs: 900,
+      id, kind: definition.bossKind, x: clamp(player.x + 560, 80, WORLD_SIZE - 80),
+      y: clamp(player.y - 220, 80, WORLD_SIZE - 80), hp: ENEMY_STATS[definition.bossKind].hp,
+      attackCooldownMs: 900, abilityCooldownMs: 2_400, abilityPattern: 0,
     });
-    this.events.push({ type: 'feed', message: '경고: 마더브레인 중장 지휘 개체 「케르베로스」가 전장에 진입합니다.' });
+    this.events.push({ type: 'feed', message: `경고: ${definition.bossClass} 「${definition.bossName}」가 전장에 진입합니다.` });
+  }
+
+  private spawnRelays(): void {
+    this.relaysSpawned = true;
+    const positions = [
+      { x: 470, y: 520 },
+      { x: WORLD_SIZE - 500, y: 620 },
+      { x: WORLD_SIZE / 2 + 260, y: WORLD_SIZE - 470 },
+    ];
+    for (const position of positions) {
+      const id = `enemy-${this.nextEntityId++}`;
+      this.enemies.set(id, {
+        id, kind: 'relay', x: position.x, y: position.y,
+        hp: ENEMY_STATS.relay.hp, attackCooldownMs: 500,
+      });
+    }
+    this.events.push({ type: 'feed', message: '신경 중계기 3기 노출 // EMP 방출 범위를 경계하십시오.' });
+  }
+
+  private spawnEnemyNear(target: InternalPlayer, kind: EnemyKind, distance: number): void {
+    const angle = this.random() * Math.PI * 2;
+    const id = `enemy-${this.nextEntityId++}`;
+    this.enemies.set(id, {
+      id, kind,
+      x: clamp(target.x + Math.cos(angle) * distance, 20, WORLD_SIZE - 20),
+      y: clamp(target.y + Math.sin(angle) * distance, 20, WORLD_SIZE - 20),
+      hp: ENEMY_STATS[kind].hp, attackCooldownMs: 300,
+    });
   }
 
   private spawnResourceCache(): void {

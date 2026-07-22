@@ -10,7 +10,9 @@ import type { Mission } from './game/systems/MissionGenerator';
 import type { PlayerProfile } from '../packages/shared/src/protocol';
 import { describeSquadBonuses } from '../packages/shared/src/squad';
 import { SoundEngine, type GameSfx } from './game/systems/SoundEngine';
-import type { OperationStatus } from './game/systems/OperationZero';
+import {
+  operationDefinition, type OperationDefinition, type OperationId, type OperationStatus,
+} from '../packages/shared/src/operations';
 import { WEAPON_SPECS, type WeaponId } from '../packages/shared/src/combat';
 import {
   RECRUIT_ODDS,
@@ -68,6 +70,7 @@ const operationCount = byId<HTMLElement>('operationCount');
 const bossHud = byId<HTMLElement>('bossHud');
 const bossHpBar = byId<HTMLElement>('bossHpBar');
 const bossHpText = byId<HTMLElement>('bossHpText');
+const bossHudName = byId<HTMLElement>('bossHudName');
 const eventFeed = byId<HTMLDivElement>('eventFeed');
 const modalBackdrop = byId<HTMLDivElement>('modalBackdrop');
 const modalContent = byId<HTMLDivElement>('modalContent');
@@ -87,6 +90,9 @@ const neuralCutinSkill = byId<HTMLElement>('neuralCutinSkill');
 const neuralCutinName = byId<HTMLElement>('neuralCutinName');
 const neuralCutinLine = byId<HTMLElement>('neuralCutinLine');
 const bossIntro = byId<HTMLElement>('bossIntro');
+const bossIntroName = byId<HTMLElement>('bossIntroName');
+const bossIntroClass = byId<HTMLElement>('bossIntroClass');
+const bossIntroDirective = byId<HTMLElement>('bossIntroDirective');
 const dodgeButton = byId<HTMLButtonElement>('dodgeButton');
 let currentModal: 'shelter' | 'roster' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
 let rosterSelection: string | null = null;
@@ -158,8 +164,11 @@ function showNeuralCutin(operatorId: string, skillName: string): void {
   }, settings.reducedMotion ? 850 : 2200);
 }
 
-function showBossIntro(): void {
+function showBossIntro(definition: OperationDefinition = operationDefinition('operation-zero')): void {
   window.clearTimeout(bossIntroTimer);
+  bossIntroName.textContent = definition.bossName;
+  bossIntroClass.textContent = definition.bossClass;
+  bossIntroDirective.textContent = definition.bossDirective;
   bossIntro.setAttribute('aria-hidden', 'false');
   bossIntro.classList.remove('active');
   void bossIntro.offsetWidth;
@@ -704,16 +713,18 @@ function renderGameOver(cargo: Record<string, number>): void {
 }
 
 function renderOperationDebrief(result: {
+  operationId: OperationId; codename: string; title: string; narrative: string;
   kills: number; collected: number; weapon: string; online: boolean; bonusCores: number; bonusData: number;
+  nextOperationId: OperationId;
 }): void {
   currentModal = 'operation-complete';
   pauseForModal();
   modalContent.innerHTML = `
     <section class="debrief">
-      <span class="eyebrow">OPERATION ZERO // MISSION COMPLETE</span>
+      <span class="eyebrow">OPERATION ${escapeHtml(result.codename)} // MISSION COMPLETE</span>
       <div class="debrief-mark">S</div>
-      <h2>첫 번째 생존자</h2>
-      <p>감시자 케르베로스가 파괴되고 쉘터로 향하는 안전 회랑이 열렸습니다.</p>
+      <h2>${escapeHtml(result.title)}</h2>
+      <p>${escapeHtml(result.narrative)}</p>
       <div class="debrief-stats">
         <div><span>제거</span><b>${result.kills}</b></div>
         <div><span>회수</span><b>${result.collected}</b></div>
@@ -721,11 +732,32 @@ function renderOperationDebrief(result: {
         <div><span>판정</span><b>${result.online ? 'SERVER' : 'LOCAL'}</b></div>
       </div>
       <div class="debrief-reward"><span>작전 보너스</span><b>${result.online ? '보스 전리품 서버 확정' : `뉴럴 코어 +${result.bonusCores} · 데이터 +${result.bonusData}`}</b></div>
-      <button class="primary" id="finishOperation">쉘터로 귀환</button>
+      <div class="modal-actions">
+        <button class="secondary" id="finishOperation">쉘터로 귀환</button>
+        ${result.nextOperationId !== result.operationId ? '<button class="primary" id="nextOperation">다음 작전 즉시 투입</button>' : ''}
+      </div>
     </section>`;
   modalContent.querySelector<HTMLButtonElement>('#finishOperation')?.addEventListener('click', () => {
     closeModal();
     renderShelter();
+  });
+  modalContent.querySelector<HTMLButtonElement>('#nextOperation')?.addEventListener('click', async () => {
+    const button = modalContent.querySelector<HTMLButtonElement>('#nextOperation');
+    if (button) {
+      button.disabled = true;
+      button.textContent = '작전 연결 중…';
+    }
+    try {
+      await network.switchOperation(result.nextOperationId);
+      closeModal();
+      game.scene.getScene('WorldScene').scene.restart();
+    } catch {
+      if (button) {
+        button.disabled = false;
+        button.textContent = '다시 연결';
+      }
+      showToast('다음 작전 연결에 실패했습니다. 쉘터에서 다시 시도하십시오.');
+    }
   });
 }
 
@@ -804,11 +836,14 @@ gameEvents.on('boss-intro', showBossIntro);
 gameEvents.on('state-changed', renderPersistentHud);
 gameEvents.on('game-over', renderGameOver);
 gameEvents.on('operation-complete', (result: {
+  operationId: OperationId; codename: string; title: string; narrative: string;
   kills: number; collected: number; weapon: string; online: boolean; bonusCores: number; bonusData: number;
+  nextOperationId: OperationId;
 }) => {
   renderOperationDebrief(result);
   void network.track('operation_complete', {
-    kills: result.kills, collected: result.collected, weapon: result.weapon, online: result.online,
+    operationId: result.operationId, kills: result.kills, collected: result.collected,
+    weapon: result.weapon, online: result.online,
   });
 });
 gameEvents.on('weapon-selected', (weapon: WeaponId) => {
@@ -855,7 +890,7 @@ gameEvents.on('hud-update', (hud: {
   linkCharge: number;
   linkLeader: string;
   dashCooldownMs: number;
-  boss: { hp: number; maxHp: number } | null;
+  boss: { hp: number; maxHp: number; name: string } | null;
 }) => {
   hpText.textContent = `${Math.ceil(hud.hp)}%`;
   hpBar.style.width = `${hud.hp}%`;
@@ -867,6 +902,7 @@ gameEvents.on('hud-update', (hud: {
   operationObjective.textContent = hud.operation.objective;
   operationProgress.style.width = `${Math.min(100, hud.operation.target <= 0 ? 0 : hud.operation.current / hud.operation.target * 100)}%`;
   operationCount.textContent = hud.operation.stage === 'WARDEN' ? 'BOSS SIGNAL LOCKED'
+    : hud.operation.stage === 'RELAY' ? 'DESTROY NEURAL RELAYS'
     : hud.operation.stage === 'EXTRACT' ? 'RETURN TO SHELTER LIFT'
       : `${Math.min(hud.operation.current, hud.operation.target)} / ${hud.operation.target}`;
   const charge = Math.max(0, Math.min(100, Math.floor(hud.linkCharge)));
@@ -884,6 +920,7 @@ gameEvents.on('hud-update', (hud: {
   }
   bossHud.classList.toggle('hidden', !hud.boss);
   if (hud.boss) {
+    bossHudName.textContent = hud.boss.name;
     bossHpBar.style.width = `${Math.max(0, hud.boss.hp / hud.boss.maxHp * 100)}%`;
     bossHpText.textContent = `${Math.ceil(hud.boss.hp)} / ${hud.boss.maxHp}`;
   }
@@ -896,7 +933,7 @@ if (state.offlineReward.elapsedMinutes >= 2) {
 }
 if (!settings.consentReviewed) window.setTimeout(() => renderPrivacyCenter(), 320);
 else if (!settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 450);
-void network.connect();
+void network.connect(state.activeOperationId());
 
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {

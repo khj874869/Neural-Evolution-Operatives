@@ -35,7 +35,7 @@ export function createGameServer(config: ServerConfig): GameServerBundle {
     beforeListen: () => repository.initialize(),
     express: (app) => configureHttpApp(app, { config, repository, economy, tokens, commerce }),
   });
-  gameServer.define('red_zone', RedZoneRoom);
+  gameServer.define('red_zone', RedZoneRoom).filterBy(['operationId']);
   gameServer.onShutdown(() => repository.shutdown());
   return { gameServer, repository };
 }

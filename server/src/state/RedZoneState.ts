@@ -45,6 +45,9 @@ export class RedZoneState extends Schema {
   enemies = new MapSchema<EnemyState>();
   resources = new MapSchema<ResourceState>();
   stormActive = false;
+  operationId = 'operation-zero';
+  relaysDestroyed = 0;
+  bossDefeated = false;
   serverTime = 0;
 }
 defineTypes(RedZoneState, {
@@ -52,5 +55,8 @@ defineTypes(RedZoneState, {
   enemies: { map: EnemyState },
   resources: { map: ResourceState },
   stormActive: 'boolean',
+  operationId: 'string',
+  relaysDestroyed: 'uint8',
+  bossDefeated: 'boolean',
   serverTime: 'number',
 });
