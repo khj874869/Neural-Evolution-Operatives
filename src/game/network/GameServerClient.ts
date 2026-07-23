@@ -1,5 +1,7 @@
 import { Client, type Room } from '@colyseus/sdk';
-import type { EnemyKind, GameInputMessage, GuestAuthResponse, PlayerProfile, ServerEventMessage } from '../../../packages/shared/src/protocol';
+import type {
+  EnemyKind, GameInputMessage, GuestAuthResponse, PersonaChatResponse, PlayerProfile, ServerEventMessage,
+} from '../../../packages/shared/src/protocol';
 import { limitFunnelProperties, type FunnelEventName, type FunnelProperties } from '../../../packages/shared/src/analytics';
 import type { CommercePlatform, StoreProduct, StoreProductId } from '../../../packages/shared/src/commerce';
 import type { ReleaseChannel } from '../../../packages/shared/src/release';
@@ -36,6 +38,8 @@ export interface ServerReleaseInfo {
   channel: ReleaseChannel;
   commit: string;
   commerceAvailable: boolean;
+  aiAvailable: boolean;
+  aiDailyTurnLimit: number;
   serverTime: string;
 }
 
@@ -181,6 +185,38 @@ export class GameServerClient {
     });
     gameEvents.emit('network-profile', response.profile);
     if (this.connected) this.room?.send('sync-loadout');
+    return response.profile;
+  }
+
+  async setAiConsent(consent: boolean): Promise<PlayerProfile> {
+    const response = await this.authorized<{ profile: PlayerProfile }>('/api/profile/ai-consent', {
+      method: 'PUT', body: JSON.stringify({ consent }),
+    });
+    gameEvents.emit('network-profile', response.profile);
+    return response.profile;
+  }
+
+  async personaChat(
+    operatorId: string,
+    message: string,
+    useExternalAi: boolean,
+    requestId = crypto.randomUUID(),
+  ): Promise<PersonaChatResponse> {
+    const response = await this.authorized<PersonaChatResponse>('/api/persona/chat', {
+      method: 'POST',
+      headers: { 'idempotency-key': requestId },
+      body: JSON.stringify({ operatorId, message, useExternalAi }),
+    });
+    gameEvents.emit('network-profile', response.profile);
+    return response;
+  }
+
+  async clearPersonaMemories(operatorId: string): Promise<PlayerProfile> {
+    const response = await this.authorized<{ profile: PlayerProfile }>(
+      `/api/persona/${encodeURIComponent(operatorId)}/memories`,
+      { method: 'DELETE' },
+    );
+    gameEvents.emit('network-profile', response.profile);
     return response.profile;
   }
 

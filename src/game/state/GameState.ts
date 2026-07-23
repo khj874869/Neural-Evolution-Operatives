@@ -6,6 +6,7 @@ import {
 import {
   GEAR_DEFINITIONS, MAX_EQUIPPED_GEAR, normalizeGearState, type GearId,
 } from '../../../packages/shared/src/gear';
+import { operatorMemoryLimit } from '../../../packages/shared/src/persona';
 
 export interface Resources {
   scrap: number;
@@ -177,8 +178,16 @@ export class GameState {
   remember(operatorId: string, memory: string): void {
     const owned = this.data.operators.find((operator) => operator.id === operatorId);
     if (!owned) return;
-    owned.memories = [memory, ...owned.memories.filter((item) => item !== memory)].slice(0, 8);
+    const limit = operatorMemoryLimit(getOperator(operatorId).rarity);
+    owned.memories = [memory, ...owned.memories.filter((item) => item !== memory)].slice(0, limit);
     owned.bond = Math.min(100, owned.bond + 1);
+    this.save();
+  }
+
+  clearMemories(operatorId: string): void {
+    const owned = this.data.operators.find((operator) => operator.id === operatorId);
+    if (!owned) return;
+    owned.memories = [];
     this.save();
   }
 

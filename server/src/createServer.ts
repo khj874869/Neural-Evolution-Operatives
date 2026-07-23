@@ -12,6 +12,10 @@ import type { PlayerRepository } from './persistence/PlayerRepository.js';
 import { configureRoomDependencies } from './rooms/dependencies.js';
 import { RedZoneRoom } from './rooms/RedZoneRoom.js';
 import { CommerceService } from './commerce/CommerceService.js';
+import {
+  DisabledPersonaProvider, OpenAIResponsesPersonaProvider,
+} from './ai/OpenAIResponsesPersonaProvider.js';
+import { PersonaService } from './ai/PersonaService.js';
 
 export interface GameServerBundle {
   gameServer: Server;
@@ -25,6 +29,15 @@ export function createGameServer(config: ServerConfig): GameServerBundle {
   const tokens = new TokenService(config.jwtSecret);
   const economy = new EconomyService(repository);
   const commerce = new CommerceService(repository);
+  const personaProvider = config.aiApiKey
+    ? new OpenAIResponsesPersonaProvider(
+      config.aiApiKey,
+      config.aiModel,
+      config.aiTimeoutMs,
+      config.aiModerationEnabled,
+    )
+    : new DisabledPersonaProvider();
+  const persona = new PersonaService(repository, personaProvider, config.aiDailyTurnLimit);
   configureRoomDependencies({ tokens, repository, economy });
 
   const gameServer = new Server({
@@ -33,7 +46,9 @@ export function createGameServer(config: ServerConfig): GameServerBundle {
     driver: config.redisUrl ? new RedisDriver(config.redisUrl) : undefined,
     greet: config.nodeEnv !== 'test',
     beforeListen: () => repository.initialize(),
-    express: (app) => configureHttpApp(app, { config, repository, economy, tokens, commerce }),
+    express: (app) => configureHttpApp(app, {
+      config, repository, economy, tokens, commerce, persona,
+    }),
   });
   gameServer.define('red_zone', RedZoneRoom).filterBy(['operationId']);
   gameServer.onShutdown(() => repository.shutdown());

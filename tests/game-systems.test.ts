@@ -25,6 +25,9 @@ import {
 import {
   initialRenderTier, PerformanceGovernor,
 } from '../src/game/systems/PerformanceGovernor';
+import {
+  createDeepTalkFallback, getOperatorPersona, operatorMemoryLimit,
+} from '../packages/shared/src/persona';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -111,17 +114,33 @@ describe('player settings', () => {
     });
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(sanitizeSettings({ uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true })).toMatchObject({
-      version: 3, uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true,
+      version: 4, uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true, aiConsent: false,
     });
   });
 
-  it('migrates a v2 device profile into automatic graphics quality', () => {
-    const values = new Map([['neo-settings-v2', JSON.stringify({ version: 2, sound: false, uiScale: 'large' })]]);
+  it('migrates a v3 device profile into opt-in AI settings', () => {
+    const values = new Map([['neo-settings-v3', JSON.stringify({
+      version: 3, sound: false, uiScale: 'large', graphicsQuality: 'balanced',
+    })]]);
     const storage = {
       getItem: (key: string) => values.get(key) ?? null,
       setItem: (key: string, value: string) => { values.set(key, value); },
     };
-    expect(loadSettings(storage)).toMatchObject({ version: 3, sound: false, uiScale: 'large', graphicsQuality: 'auto' });
+    expect(loadSettings(storage)).toMatchObject({
+      version: 4, sound: false, uiScale: 'large', graphicsQuality: 'balanced', aiConsent: false,
+    });
+  });
+});
+
+describe('deep talk persona core', () => {
+  it('keeps personality-specific offline replies and rarity memory limits deterministic', () => {
+    const aegis = getOperatorPersona('aegis-07');
+    const ratchet = getOperatorPersona('ratchet');
+    expect(createDeepTalkFallback(aegis, '오늘 작전을 기억해?', 0)).toContain('기록');
+    expect(createDeepTalkFallback(ratchet, '오늘 작전을 기억해?', 0)).toContain('살아남');
+    expect(operatorMemoryLimit('SSR')).toBe(8);
+    expect(operatorMemoryLimit('SR')).toBe(5);
+    expect(operatorMemoryLimit('R')).toBe(3);
   });
 });
 

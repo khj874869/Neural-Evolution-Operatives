@@ -11,6 +11,7 @@ import { FUNNEL_EVENTS } from '../../../packages/shared/src/analytics.js';
 import { RECRUIT_ODDS, STORE_PRODUCT_IDS, STORE_PRODUCTS } from '../../../packages/shared/src/commerce.js';
 import { APP_VERSION } from '../../../packages/shared/src/release.js';
 import { GEAR_IDS } from '../../../packages/shared/src/gear.js';
+import { PersonaError, PersonaService } from '../ai/PersonaService.js';
 
 export interface ApiDependencies {
   config: ServerConfig;
@@ -18,6 +19,7 @@ export interface ApiDependencies {
   economy: EconomyService;
   tokens: TokenService;
   commerce?: CommerceService;
+  persona?: PersonaService;
 }
 
 const deviceSchema = z.object({
@@ -46,9 +48,17 @@ const analyticsSchema = z.object({
   ).refine((value) => Object.keys(value).length <= 12, 'Too many analytics properties').default({}),
 });
 const deleteAccountSchema = z.object({ confirmation: z.literal('DELETE') });
+const aiConsentSchema = z.object({ consent: z.boolean() });
+const personaChatSchema = z.object({
+  operatorId: z.string().min(1).max(32).regex(/^[a-z0-9-]+$/),
+  message: z.string().trim().min(1).max(280),
+  useExternalAi: z.boolean().default(false),
+});
+const operatorIdSchema = z.string().min(1).max(32).regex(/^[a-z0-9-]+$/);
 
 export function configureHttpApp(app: express.Application, deps: ApiDependencies): void {
   const commerce = deps.commerce ?? new CommerceService(deps.repository);
+  const persona = deps.persona ?? new PersonaService(deps.repository);
   app.disable('x-powered-by');
   app.use(cors({ origin: deps.config.corsOrigin.split(',').map((origin) => origin.trim()), credentials: false }));
   app.use((_request, response, next) => {
@@ -85,6 +95,8 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
       channel: deps.config.releaseChannel,
       commit: deps.config.commitSha,
       commerceAvailable: commerce.checkoutAvailable,
+      aiAvailable: persona.externalAiAvailable,
+      aiDailyTurnLimit: persona.dailyTurnLimit,
       serverTime: new Date().toISOString(),
     });
   });
@@ -111,7 +123,9 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
       dataUse: {
         required: ['인증 식별자', '게임 진행도', '구매 검증 기록'],
         optional: ['동의한 경우의 진행·오류 분석 이벤트'],
-        ai: '현재 대화와 페르소나 응답은 규칙 기반으로 기기에서 처리됩니다.',
+        ai: profile.ai.consentedAt
+          ? '동의한 딥 토크 원문은 응답 생성 동안 외부 AI 제공자에게 전송될 수 있으며, 게임 서버에는 요약 기억과 마지막 응답이 저장됩니다.'
+          : '외부 AI 전송 동의가 꺼져 있어 대화는 기기 및 게임 서버의 규칙 기반 페르소나로 처리됩니다.',
       },
     });
   });
@@ -176,6 +190,38 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     response.json(result);
   });
 
+  app.put('/api/profile/ai-consent', requirePlayer(deps.tokens), async (request, response) => {
+    const body = aiConsentSchema.parse(request.body);
+    const profile = await persona.setConsent(
+      response.locals.playerId as string,
+      body.consent,
+      idempotencyKey(request),
+    );
+    response.json({ profile });
+  });
+
+  app.post('/api/persona/chat', requirePlayer(deps.tokens), async (request, response) => {
+    const body = personaChatSchema.parse(request.body);
+    const result = await persona.chat(
+      response.locals.playerId as string,
+      body.operatorId,
+      body.message,
+      body.useExternalAi,
+      idempotencyKey(request),
+    );
+    response.json(result);
+  });
+
+  app.delete('/api/persona/:operatorId/memories', requirePlayer(deps.tokens), async (request, response) => {
+    const operatorId = operatorIdSchema.parse(request.params.operatorId);
+    const profile = await persona.clearMemories(
+      response.locals.playerId as string,
+      operatorId,
+      idempotencyKey(request),
+    );
+    response.json({ profile });
+  });
+
   app.get('/api/store/catalog', (_request, response) => {
     response.json({
       products: STORE_PRODUCTS,
@@ -211,6 +257,7 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     if (error instanceof z.ZodError) return response.status(400).json({ error: 'INVALID_REQUEST', issues: error.issues });
     if (error instanceof EconomyError) return response.status(error.status).json({ error: error.message });
     if (error instanceof CommerceError) return response.status(error.status).json({ error: error.message });
+    if (error instanceof PersonaError) return response.status(error.status).json({ error: error.message });
     if (error instanceof Error && error.message === 'PLAYER_NOT_FOUND') return response.status(404).json({ error: error.message });
     console.error({ requestId: response.locals.requestId, error });
     return response.status(500).json({ error: 'INTERNAL_SERVER_ERROR', requestId: response.locals.requestId });

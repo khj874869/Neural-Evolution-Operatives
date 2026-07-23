@@ -9,6 +9,24 @@ const authResponse = await fetch(`${endpoint}/api/auth/guest`, {
 });
 if (!authResponse.ok) throw new Error(`Guest auth failed: ${authResponse.status}`);
 const auth = await authResponse.json();
+const personaResponse = await fetch(`${endpoint}/api/persona/chat`, {
+  method: 'POST',
+  headers: {
+    authorization: `Bearer ${auth.token}`,
+    'content-type': 'application/json',
+    'idempotency-key': `smoke-talk:${deviceId}`,
+  },
+  body: JSON.stringify({
+    operatorId: 'aegis-07',
+    message: '작전 준비 상태를 보고해 줘.',
+    useExternalAi: false,
+  }),
+});
+if (!personaResponse.ok) throw new Error(`Persona chat failed: ${personaResponse.status}`);
+const persona = await personaResponse.json();
+if (persona.exchange?.source !== 'rules' || !persona.profile?.operators?.[0]?.memories?.length) {
+  throw new Error('Persona fallback or authoritative memory persistence failed');
+}
 const craftResponse = await fetch(`${endpoint}/api/economy/gear/craft`, {
   method: 'POST',
   headers: {
@@ -61,6 +79,8 @@ if (!await restored) throw new Error('Session id changed after reconnection');
 
 console.log(JSON.stringify({
   status: 'ok', roomId: room.roomId, sessionRestored: true,
+  personaSource: persona.exchange.source,
+  personaMemorySaved: true,
   equippedGear: crafted.profile.gear.equipped, ...snapshot,
 }));
 await room.leave();

@@ -22,6 +22,12 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
     accountLevel: 1,
     xp: 0,
     campaign: { completedOperations: [] },
+    ai: {
+      consentedAt: null,
+      dailyUsageDate: now.toISOString().slice(0, 10),
+      dailyTurnsUsed: 0,
+      lastExchange: null,
+    },
     commerce: { entitlements: [], subscriptionUntil: null, purchases: [] },
     lastSeenAt: now.toISOString(),
     createdAt: now.toISOString(),
@@ -31,6 +37,7 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
 export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
   const candidate = profile as PlayerProfile & {
     gear?: { owned?: unknown[]; equipped?: unknown[] };
+    ai?: Partial<PlayerProfile['ai']>;
   };
   profile.campaign ??= { completedOperations: [] };
   profile.campaign.completedOperations = [...new Set(
@@ -46,5 +53,34 @@ export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
     currency: purchase.currency || 'UNKNOWN',
   }));
   profile.gear = normalizeGearState(candidate.gear?.owned, candidate.gear?.equipped);
+  const today = new Date().toISOString().slice(0, 10);
+  profile.ai = {
+    consentedAt: typeof candidate.ai?.consentedAt === 'string' ? candidate.ai.consentedAt : null,
+    dailyUsageDate: typeof candidate.ai?.dailyUsageDate === 'string' ? candidate.ai.dailyUsageDate : today,
+    dailyTurnsUsed: Number.isInteger(candidate.ai?.dailyTurnsUsed) && Number(candidate.ai?.dailyTurnsUsed) >= 0
+      ? Math.min(10_000, Number(candidate.ai?.dailyTurnsUsed)) : 0,
+    lastExchange: normalizeLastExchange(candidate.ai?.lastExchange),
+  };
   return profile;
+}
+
+function normalizeLastExchange(value: unknown): PlayerProfile['ai']['lastExchange'] {
+  if (!value || typeof value !== 'object') return null;
+  const source = value as Record<string, unknown>;
+  if (
+    typeof source.requestId !== 'string'
+    || typeof source.operatorId !== 'string'
+    || typeof source.reply !== 'string'
+    || typeof source.memory !== 'string'
+    || (source.source !== 'ai' && source.source !== 'rules')
+    || typeof source.createdAt !== 'string'
+  ) return null;
+  return {
+    requestId: source.requestId.slice(0, 128),
+    operatorId: source.operatorId.slice(0, 32),
+    reply: source.reply.slice(0, 400),
+    memory: source.memory.slice(0, 160),
+    source: source.source,
+    createdAt: source.createdAt,
+  } as PlayerProfile['ai']['lastExchange'];
 }

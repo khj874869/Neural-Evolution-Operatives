@@ -29,6 +29,7 @@ import {
 import {
   initialRenderTier, type PerformanceSample,
 } from './game/systems/PerformanceGovernor';
+import { createDeepTalkFallback, operatorMemoryLimit } from '../packages/shared/src/persona';
 
 declare global {
   interface Window {
@@ -105,10 +106,17 @@ const bossIntroName = byId<HTMLElement>('bossIntroName');
 const bossIntroClass = byId<HTMLElement>('bossIntroClass');
 const bossIntroDirective = byId<HTMLElement>('bossIntroDirective');
 const dodgeButton = byId<HTMLButtonElement>('dodgeButton');
-let currentModal: 'shelter' | 'roster' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
+let currentModal: 'shelter' | 'roster' | 'deep-talk' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
 let latestProfile: PlayerProfile | null = null;
+let syncingAiConsent = false;
+const talkHistory = new Map<string, Array<{
+  role: 'player' | 'operator';
+  text: string;
+  source?: 'ai' | 'rules';
+}>>();
+const talkUsage = new Map<string, { used: number; limit: number }>();
 let currentLinkLeader = '';
 let cutinTimer = 0;
 let bossIntroTimer = 0;
@@ -127,14 +135,15 @@ const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>>
   Engineer: [{ label: '화력', value: 62 }, { label: '회수', value: 94 }, { label: '지원', value: 78 }],
 };
 const tutorialSteps = [
-  { code: '01 // MOVE', icon: '⌖', title: '레드 존 이동', body: 'PC는 WASD 또는 방향키, 모바일은 왼쪽 방향 패드로 이동합니다. 멈춰 있으면 적응형 AI가 우회 병력을 투입합니다.' },
-  { code: '02 // DODGE', icon: '➤', title: '긴급 회피', body: 'PC는 Space, 모바일은 DODGE로 1.8초마다 빠르게 이탈합니다. 게임패드는 B 버튼을 사용합니다.' },
-  { code: '03 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 게임패드는 오른쪽 스틱과 A/RT를 사용합니다.' },
-  { code: '04 // LOADOUT', icon: '⌁', title: '실시간 무장 전환', body: '카빈은 균형형, 파쇄포는 근거리 산탄, 코일건은 장거리 고화력 무장입니다. PC는 숫자 1·2·3, 모바일은 하단 무장 버튼으로 바꿉니다.' },
-  { code: '05 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.' },
-  { code: '06 // NEURAL LINK', icon: '◉', title: '분대 리미트 브레이크', body: '교전으로 링크 게이지를 100% 충전한 뒤 PC는 Q, 모바일은 리더 초상화 버튼을 누르세요. 분대 1번 리더의 역할별 필살기가 발동합니다.' },
-  { code: '07 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E, 모바일은 EXTRACT를 누르세요. 사망하면 현장 화물을 모두 잃습니다.' },
-  { code: '08 // FABRICATE', icon: '▣', title: '추출 자원을 전력으로', body: '안전하게 추출한 뒤 쉘터의 전술 장비 제작에서 영구 장비를 만드세요. 최대 2개를 장착해 다음 탐사의 생존·화력·회수 능력을 바꿀 수 있습니다.' },
+  { code: '01 // MOVE', icon: '⌖', title: '레드 존 이동', body: 'PC는 WASD 또는 방향키, 모바일은 왼쪽 방향 패드로 이동합니다. 멈춰 있으면 적응형 AI가 우회 병력을 투입합니다.', keys: ['W', 'A', 'S', 'D'] },
+  { code: '02 // DODGE', icon: '➤', title: '긴급 회피', body: 'PC는 Space, 모바일은 DODGE로 1.8초마다 빠르게 이탈합니다. 게임패드는 B 버튼을 사용합니다.', keys: ['SPACE', 'DODGE'] },
+  { code: '03 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 게임패드는 오른쪽 스틱과 A/RT를 사용합니다.', keys: ['CLICK', 'FIRE'] },
+  { code: '04 // LOADOUT', icon: '⌁', title: '실시간 무장 전환', body: '카빈은 균형형, 파쇄포는 근거리 산탄, 코일건은 장거리 고화력 무장입니다. PC는 숫자 1·2·3, 모바일은 하단 무장 버튼으로 바꿉니다.', keys: ['1', '2', '3'] },
+  { code: '05 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.', keys: ['TACTICAL://'] },
+  { code: '06 // NEURAL LINK', icon: '◉', title: '분대 리미트 브레이크', body: '교전으로 링크 게이지를 100% 충전한 뒤 PC는 Q, 모바일은 리더 초상화 버튼을 누르세요. 분대 1번 리더의 역할별 필살기가 발동합니다.', keys: ['Q', '100%'] },
+  { code: '07 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E, 모바일은 EXTRACT를 누르세요. 사망하면 현장 화물을 모두 잃습니다.', keys: ['E', 'EXTRACT'] },
+  { code: '08 // FABRICATE', icon: '▣', title: '추출 자원을 전력으로', body: '안전하게 추출한 뒤 쉘터의 전술 장비 제작에서 영구 장비를 만드세요. 최대 2개를 장착해 다음 탐사의 생존·화력·회수 능력을 바꿀 수 있습니다.', keys: ['SHELTER', 'GEAR'] },
+  { code: '09 // DEEP TALK', icon: '◌', title: '기억하는 오퍼레이터', body: '오퍼레이터 화면에서 딥 토크를 열면 캐릭터별 대화와 장기 기억을 확인할 수 있습니다. 외부 AI는 별도 동의가 있을 때만 사용되며 언제든 기억을 삭제할 수 있습니다.', keys: ['OPERATIVES', 'DEEP TALK'] },
 ] as const;
 
 function renderPersistentHud(): void {
@@ -244,14 +253,29 @@ function applySettings(): void {
   gameEvents.emit('settings-changed', settings);
 }
 
+async function syncAiConsent(): Promise<void> {
+  if (!network.connected || syncingAiConsent) return;
+  const serverConsent = Boolean(latestProfile?.ai?.consentedAt);
+  if (serverConsent === settings.aiConsent) return;
+  syncingAiConsent = true;
+  try {
+    await network.setAiConsent(settings.aiConsent);
+  } catch {
+    showToast('AI 동의 상태를 서버와 동기화하지 못했습니다.');
+  } finally {
+    syncingAiConsent = false;
+  }
+}
+
 function renderSettings(): void {
   currentModal = 'settings';
   pauseForModal();
-  const toggles: Array<{ key: 'sound' | 'haptics' | 'reducedMotion' | 'analyticsConsent'; label: string; description: string }> = [
+  const toggles: Array<{ key: 'sound' | 'haptics' | 'reducedMotion' | 'analyticsConsent' | 'aiConsent'; label: string; description: string }> = [
     { key: 'sound', label: '전투 사운드', description: '사격, 타격, 환경 경보와 UI 합성음을 재생합니다.' },
     { key: 'haptics', label: '모바일 진동', description: '사격, 피격, 획득과 추출 순간에 촉각 피드백을 제공합니다.' },
     { key: 'reducedMotion', label: '모션 감소', description: '화면 흔들림과 전투 파티클 수를 줄여 멀미와 발열을 완화합니다.' },
     { key: 'analyticsConsent', label: '선택 분석 데이터', description: '개인 대화 내용 없이 진행·오류 이벤트만 전송합니다. 언제든 끌 수 있습니다.' },
+    { key: 'aiConsent', label: '외부 AI 딥 토크', description: '직접 입력한 대화만 서버 중계를 통해 외부 AI에 전송합니다. 원문은 분석 이벤트에 사용하지 않습니다.' },
   ];
   modalContent.innerHTML = `
     <span class="eyebrow">SYSTEM CONFIG // DEVICE PROFILE</span>
@@ -278,9 +302,10 @@ function renderSettings(): void {
     </div>`;
   modalContent.querySelectorAll<HTMLButtonElement>('[data-setting]').forEach((button) => {
     button.addEventListener('click', () => {
-      const key = button.dataset.setting as 'sound' | 'haptics' | 'reducedMotion' | 'analyticsConsent';
+      const key = button.dataset.setting as 'sound' | 'haptics' | 'reducedMotion' | 'analyticsConsent' | 'aiConsent';
       settings = { ...settings, [key]: !settings[key] };
       applySettings();
+      if (key === 'aiConsent') void syncAiConsent();
       if (settings.sound) sound.play('ui');
       renderSettings();
     });
@@ -321,9 +346,11 @@ function renderPrivacyCenter(): void {
     <div class="privacy-grid">
       <article><b>필수 게임 데이터</b><p>게스트 식별자, 재화, 쉘터, 오퍼레이터, 편성과 구매 검증 기록을 계정 유지와 부정 지급 방지에 사용합니다.</p></article>
       <article><b>선택 분석 데이터</b><p>동의한 경우 튜토리얼·작전·보급소 진행과 익명화된 오류 종류만 기록합니다. 설정에서 즉시 철회할 수 있습니다.</p></article>
-      <article><b>AI 처리 범위</b><p>현재 전술 명령과 캐릭터 응답은 안전한 규칙 엔진으로 기기에서 처리됩니다. 외부 LLM·음성 API로 대화를 전송하지 않습니다.</p></article>
+      <article><b>AI 처리 범위</b><p>전술 명령은 기기에서 처리합니다. 딥 토크는 별도 동의 시 입력 원문과 선택 오퍼레이터의 최근 요약 기억만 서버 중계로 외부 AI에 전송하며, 키는 앱에 포함하지 않습니다.</p></article>
     </div>
-    <div class="consent-panel">선택 분석 데이터: <b>${settings.analyticsConsent ? '허용됨' : '사용 안 함'}</b><br />결제 영수증은 재화 중복 지급 방지를 위해 계정 삭제 후에도 거래 식별자만 분리 보존될 수 있습니다.</div>
+    <div class="consent-panel">선택 분석 데이터: <b>${settings.analyticsConsent ? '허용됨' : '사용 안 함'}</b><br />
+      외부 AI 딥 토크: <b>${settings.aiConsent ? '허용됨' : '규칙 기반만 사용'}</b><br />
+      대화 원문은 분석 로그에 넣지 않으며, 저장된 요약 기억은 오퍼레이터 화면에서 개별 삭제할 수 있습니다. 결제 영수증은 재화 중복 지급 방지를 위해 계정 삭제 후에도 거래 식별자만 분리 보존될 수 있습니다.</div>
     ${!settings.consentReviewed ? `<div class="privacy-actions"><button id="essentialOnly">필수 데이터만 사용</button><button class="primary" id="allowAnalytics">선택 분석 허용</button></div>` : `
       <div class="privacy-actions">
         <button id="toggleAnalytics">선택 분석 ${settings.analyticsConsent ? '끄기' : '켜기'}</button>
@@ -388,6 +415,7 @@ function renderAlphaInfo(): void {
     ...network.getDiagnostics(),
     performance: { qualityMode: settings.graphicsQuality, ...performanceStatus },
     analyticsConsent: settings.analyticsConsent,
+    aiConsent: settings.aiConsent,
     commerceEnabled: CLIENT_RELEASE.commerceEnabled,
     generatedAt: new Date().toISOString(),
   };
@@ -437,7 +465,9 @@ function downloadJson(filename: string, value: unknown): void {
 }
 
 function clearLocalAccount(): void {
-  for (const key of ['neo-save-v1', 'neo-settings-v1', 'neo-settings-v2', 'neo-device-id']) localStorage.removeItem(key);
+  for (const key of [
+    'neo-save-v1', 'neo-settings-v1', 'neo-settings-v2', 'neo-settings-v3', 'neo-settings-v4', 'neo-device-id',
+  ]) localStorage.removeItem(key);
 }
 
 function renderTutorial(step: number): void {
@@ -452,12 +482,7 @@ function renderTutorial(step: number): void {
       <div class="tutorial-icon">${tutorial.icon}</div>
       <h2>${tutorial.title}</h2>
       <p>${tutorial.body}</p>
-      <div class="tutorial-keys">${safeStep === 0 ? '<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>'
-        : safeStep === 1 ? '<kbd>SPACE</kbd><kbd>DODGE</kbd>'
-          : safeStep === 2 ? '<kbd>CLICK</kbd><kbd>FIRE</kbd>'
-            : safeStep === 3 ? '<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd>'
-              : safeStep === 4 ? '<kbd>TACTICAL://</kbd>'
-                : safeStep === 5 ? '<kbd>Q</kbd><kbd>100%</kbd>' : '<kbd>E</kbd><kbd>EXTRACT</kbd>'}</div>
+      <div class="tutorial-keys">${tutorial.keys.map((key) => `<kbd>${key}</kbd>`).join('')}</div>
       <div class="tutorial-actions">
         <button id="skipTutorial">건너뛰기</button>
         <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? '작전 투입' : '다음 단계'}</button>
@@ -615,6 +640,7 @@ function renderRoster(): void {
             <div><span>${metric.label}</span><i><b style="width:${metric.value}%"></b></i><em>${metric.value}</em></div>`).join('')}</div>
           <div class="bond-meter"><span>RELATIONSHIP SYNC</span><i><b style="width:${selectedOwned.bond}%"></b></i></div>
           <div class="memory-log"><b>최근 장기 기억</b><span>${escapeHtml(selectedOwned.memories[0] ?? '아직 형성된 장기 기억이 없습니다.')}</span></div>
+          <button class="deep-talk-button" data-deep-talk="${selected.id}">DEEP TALK // 대화 링크</button>
           <button class="squad-toggle ${selectedInSquad ? 'assigned' : ''}" data-toggle-squad="${selected.id}">${selectedInSquad ? '분대에서 해제' : '분대에 배치'}</button>
         </div>
       </section>
@@ -650,6 +676,10 @@ function renderRoster(): void {
       rosterSelection = button.dataset.operatorId ?? rosterSelection;
       renderRoster();
     });
+  });
+  modalContent.querySelector<HTMLButtonElement>('[data-deep-talk]')?.addEventListener('click', (event) => {
+    const operatorId = (event.currentTarget as HTMLButtonElement).dataset.deepTalk;
+    if (operatorId) renderDeepTalk(operatorId);
   });
   modalContent.querySelector<HTMLButtonElement>('[data-toggle-squad]')?.addEventListener('click', (event) => {
     const operatorId = (event.currentTarget as HTMLButtonElement).dataset.toggleSquad;
@@ -692,6 +722,130 @@ function renderRoster(): void {
     } catch {
       showToast('서버가 모집 요청을 거부했습니다. 코어와 연결 상태를 확인하세요.');
     }
+  });
+}
+
+function renderDeepTalk(operatorId: string): void {
+  currentModal = 'deep-talk';
+  pauseForModal();
+  rosterSelection = operatorId;
+  const operator = getOperator(operatorId);
+  const owned = state.snapshot().operators.find((candidate) => candidate.id === operatorId);
+  if (!owned) {
+    renderRoster();
+    return;
+  }
+  const diagnostics = network.getDiagnostics();
+  const externalAvailable = Boolean(diagnostics.server?.aiAvailable);
+  const remoteReady = Boolean(network.connected && settings.aiConsent && externalAvailable);
+  const history = talkHistory.get(operatorId) ?? [];
+  const usage = talkUsage.get(operatorId);
+  const memoryLimit = operatorMemoryLimit(operator.rarity);
+  const transcript = history.length
+    ? history.map((line) => `<div class="talk-line ${line.role}">
+        <span>${line.role === 'player' ? 'SURVIVOR' : operator.callsign}${line.source ? ` // ${line.source.toUpperCase()}` : ''}</span>
+        <p>${escapeHtml(line.text)}</p>
+      </div>`).join('')
+    : `<div class="talk-line operator"><span>${operator.callsign} // LINK READY</span><p>${escapeHtml(operator.combatLine)}</p></div>`;
+  const memoryItems = owned.memories.length
+    ? owned.memories.map((memory) => `<li>${escapeHtml(memory)}</li>`).join('')
+    : '<li class="empty">아직 형성된 장기 기억이 없습니다.</li>';
+
+  modalContent.innerHTML = `
+    <span class="eyebrow">PERSONA LINK // PRIVATE SHELTER CHANNEL</span>
+    <div class="deep-talk-layout" style="--operator-color:#${operator.color.toString(16).padStart(6, '0')}">
+      <aside class="deep-talk-portrait">
+        <img src="${operator.portrait}" alt="${operator.name} 전신 일러스트" />
+        <div><span>${operator.rarity} // ${operator.role}</span><strong>${operator.callsign}</strong><small>${operator.name}</small></div>
+      </aside>
+      <section class="deep-talk-console">
+        <header>
+          <div><h2>딥 토크</h2><p>${escapeHtml(operator.speechStyle)}</p></div>
+          <span class="ai-link-state ${remoteReady ? 'online' : ''}">${remoteReady ? '● EXTERNAL AI LINK' : '○ LOCAL PERSONA CORE'}</span>
+        </header>
+        <div class="talk-transcript" aria-live="polite">${transcript}</div>
+        ${externalAvailable && !settings.aiConsent ? `<div class="ai-consent-callout">
+          <p>외부 AI 대화는 선택 사항입니다. 켜면 입력 원문과 최근 요약 기억만 응답 생성 중 서버 중계로 전송됩니다.</p>
+          <button id="enableAiTalk">동의하고 AI 링크 사용</button>
+        </div>` : ''}
+        <form class="deep-talk-form" id="deepTalkForm">
+          <label for="deepTalkInput">SHELTER:// ${operator.callsign}</label>
+          <div><input id="deepTalkInput" maxlength="280" autocomplete="off" placeholder="${operator.name}에게 이야기하기" />
+          <button class="primary" type="submit">전송</button></div>
+          <small>${remoteReady
+            ? `일일 AI 링크 ${usage?.used ?? latestProfile?.ai.dailyTurnsUsed ?? 0} / ${usage?.limit ?? diagnostics.server?.aiDailyTurnLimit ?? 12}`
+            : '규칙 기반 코어는 네트워크나 API 키 없이도 동작합니다.'}</small>
+        </form>
+        <div class="persona-memory-bank">
+          <div><span>LONG-TERM MEMORY</span><b>${owned.memories.length} / ${memoryLimit}</b></div>
+          <ul>${memoryItems}</ul>
+          <div class="memory-actions"><button id="backToRoster">오퍼레이터로 돌아가기</button>
+          <button class="danger" id="clearPersonaMemory" ${owned.memories.length ? '' : 'disabled'}>기억 삭제</button></div>
+        </div>
+      </section>
+    </div>`;
+
+  modalContent.querySelector<HTMLButtonElement>('#enableAiTalk')?.addEventListener('click', async () => {
+    settings = { ...settings, aiConsent: true };
+    applySettings();
+    await syncAiConsent();
+    renderDeepTalk(operatorId);
+  });
+  modalContent.querySelector<HTMLButtonElement>('#backToRoster')?.addEventListener('click', renderRoster);
+  modalContent.querySelector<HTMLButtonElement>('#clearPersonaMemory')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    button.disabled = true;
+    try {
+      if (network.connected) await network.clearPersonaMemories(operatorId);
+      else state.clearMemories(operatorId);
+      talkHistory.delete(operatorId);
+      renderDeepTalk(operatorId);
+      showToast(`${operator.name}의 저장 기억을 삭제했습니다.`);
+    } catch {
+      button.disabled = false;
+      showToast('기억을 삭제하지 못했습니다. 연결 상태를 확인하세요.');
+    }
+  });
+  modalContent.querySelector<HTMLFormElement>('#deepTalkForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const input = modalContent.querySelector<HTMLInputElement>('#deepTalkInput');
+    const message = input?.value.trim() ?? '';
+    if (!message) return;
+    const lines = talkHistory.get(operatorId) ?? [];
+    lines.push({ role: 'player', text: message });
+    talkHistory.set(operatorId, lines.slice(-12));
+    renderDeepTalk(operatorId);
+
+    let reply: string;
+    let source: 'ai' | 'rules' = 'rules';
+    try {
+      if (network.connected) {
+        if (settings.aiConsent) await syncAiConsent();
+        const result = await network.personaChat(operatorId, message, settings.aiConsent);
+        reply = result.exchange.reply;
+        source = result.exchange.source;
+        talkUsage.set(operatorId, result.usage);
+      } else {
+        reply = createDeepTalkFallback(operator, message, Date.now());
+        state.remember(operatorId, `${operator.name}와 “${message.slice(0, 72)}”에 관해 쉘터에서 대화했다.`);
+      }
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      if (code === 'SERVER_422') {
+        reply = '이 신호에는 안전상 응답할 수 없습니다. 다른 이야기로 링크를 다시 맞춰 주세요.';
+        showToast('안전 필터가 대화를 차단했습니다. 이 입력은 기억에 저장하지 않았습니다.');
+      } else {
+        reply = createDeepTalkFallback(operator, message, Date.now());
+        state.remember(operatorId, `${operator.name}와 “${message.slice(0, 72)}”에 관해 쉘터에서 대화했다.`);
+        showToast(code === 'SERVER_429'
+          ? '대화 요청이 많아 로컬 코어로 응답했습니다.'
+          : '서버 링크가 불안정해 로컬 코어로 응답했습니다.');
+      }
+    }
+    const next = talkHistory.get(operatorId) ?? [];
+    next.push({ role: 'operator', text: reply, source });
+    talkHistory.set(operatorId, next.slice(-12));
+    if (currentModal === 'deep-talk' && rosterSelection === operatorId) renderDeepTalk(operatorId);
   });
 }
 
@@ -956,7 +1110,9 @@ gameEvents.on('network-profile', (profile: PlayerProfile) => {
   renderPersistentHud();
   if (currentModal === 'shelter') renderShelter();
   if (currentModal === 'roster') renderRoster();
+  if (currentModal === 'deep-talk' && rosterSelection) renderDeepTalk(rosterSelection);
   if (currentModal === 'store') void renderStore();
+  void syncAiConsent();
 });
 gameEvents.on('network-status', (status: 'online' | 'offline' | 'connecting' | 'reconnecting', label: string) => {
   serverStatus.className = `server-status ${status}`;

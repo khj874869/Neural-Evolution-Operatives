@@ -40,6 +40,26 @@ export interface GuestAuthResponse {
   profile: PlayerProfile;
 }
 
+export type PersonaReplySource = 'ai' | 'rules';
+
+export interface PersonaExchange {
+  requestId: string;
+  operatorId: string;
+  reply: string;
+  memory: string;
+  source: PersonaReplySource;
+  createdAt: string;
+}
+
+export interface PersonaChatResponse {
+  profile: PlayerProfile;
+  exchange: PersonaExchange;
+  usage: {
+    used: number;
+    limit: number;
+  };
+}
+
 export interface PlayerProfile {
   version: 1;
   playerId: string;
@@ -68,6 +88,12 @@ export interface PlayerProfile {
   xp: number;
   campaign: {
     completedOperations: OperationId[];
+  };
+  ai: {
+    consentedAt: string | null;
+    dailyUsageDate: string;
+    dailyTurnsUsed: number;
+    lastExchange: PersonaExchange | null;
   };
   commerce: {
     entitlements: string[];

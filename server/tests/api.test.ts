@@ -10,6 +10,7 @@ const config: ServerConfig = {
   host: '127.0.0.1', port: 2567, corsOrigin: 'http://localhost:5173',
   jwtSecret: 'test-secret-that-is-long-enough-for-tests', nodeEnv: 'test',
   releaseChannel: 'alpha', commitSha: 'abcdef0',
+  aiModel: 'gpt-5.6-terra', aiDailyTurnLimit: 12, aiTimeoutMs: 8_000, aiModerationEnabled: true,
 };
 
 describe('game account API', () => {
@@ -30,6 +31,7 @@ describe('game account API', () => {
     expect(profile.body.profile.deviceId).toBe('web:test-device-0001');
     expect(profile.body.profile.campaign).toEqual({ completedOperations: [] });
     expect(profile.body.profile.gear).toEqual({ owned: [], equipped: [] });
+    expect(profile.body.profile.ai).toMatchObject({ consentedAt: null, dailyTurnsUsed: 0, lastExchange: null });
   });
 
   it('rejects economy calls without authentication', async () => {
@@ -39,13 +41,14 @@ describe('game account API', () => {
   it('exposes health without leaking secrets', async () => {
     const health = await request(app).get('/health').expect(200);
     expect(health.body).toEqual({
-      status: 'ok', service: 'neural-evolution-game-server', version: '1.1.0', channel: 'alpha', storage: 'memory',
+      status: 'ok', service: 'neural-evolution-game-server', version: '1.2.0', channel: 'alpha', storage: 'memory',
     });
     expect(health.headers['x-request-id']).toBeTypeOf('string');
-    await request(app).get('/ready').expect(200, { status: 'ready', version: '1.1.0', channel: 'alpha' });
+    await request(app).get('/ready').expect(200, { status: 'ready', version: '1.2.0', channel: 'alpha' });
     const release = await request(app).get('/api/release').expect(200);
     expect(release.body).toMatchObject({
-      version: '1.1.0', channel: 'alpha', commit: 'abcdef0', commerceAvailable: false,
+      version: '1.2.0', channel: 'alpha', commit: 'abcdef0',
+      commerceAvailable: false, aiAvailable: false, aiDailyTurnLimit: 12,
     });
     expect(new Date(release.body.serverTime).getTime()).not.toBeNaN();
     vi.spyOn(repository, 'healthCheck').mockRejectedValueOnce(new Error('storage unavailable'));
@@ -104,6 +107,35 @@ describe('game account API', () => {
       .set('authorization', `Bearer ${auth.body.token}`)
       .send({ platform: 'google', productId: 'core_cache_s', receipt: 'unverified-receipt' })
       .expect(503, { error: 'PLATFORM_BILLING_NOT_CONFIGURED' });
+  });
+
+  it('provides consent-controlled persona chat and deletable long-term memories', async () => {
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:persona-device-0001' }).expect(200);
+    const authorization = `Bearer ${auth.body.token}`;
+    const local = await request(app).post('/api/persona/chat')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'persona:chat:0001')
+      .send({ operatorId: 'aegis-07', message: '첫 작전 기억나?', useExternalAi: false })
+      .expect(200);
+    expect(local.body.exchange).toMatchObject({ operatorId: 'aegis-07', source: 'rules' });
+    expect(local.body.profile.operators[0].memories[0]).toContain('첫 작전');
+
+    const consented = await request(app).put('/api/profile/ai-consent')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'persona:consent:01')
+      .send({ consent: true })
+      .expect(200);
+    expect(consented.body.profile.ai.consentedAt).toBeTypeOf('string');
+
+    const cleared = await request(app).delete('/api/persona/aegis-07/memories')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'persona:memory:01')
+      .expect(200);
+    expect(cleared.body.profile.operators[0].memories).toEqual([]);
+    await request(app).post('/api/persona/chat')
+      .set('authorization', authorization)
+      .send({ operatorId: 'morrow', message: '보유하지 않은 링크', useExternalAi: false })
+      .expect(409, { error: 'OPERATOR_NOT_OWNED' });
   });
 
   it('exports account data and deletes the authenticated guest profile', async () => {

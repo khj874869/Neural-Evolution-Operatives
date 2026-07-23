@@ -14,6 +14,7 @@ describe('real game room transport', () => {
       host: '127.0.0.1', port, corsOrigin: 'http://localhost:5173',
       jwtSecret: 'integration-secret-that-is-long-enough', nodeEnv: 'test',
       releaseChannel: 'alpha', commitSha: 'abcdef0',
+      aiModel: 'gpt-5.6-terra', aiDailyTurnLimit: 12, aiTimeoutMs: 8_000, aiModerationEnabled: true,
     };
     server = createGameServer(config).gameServer;
     await server.listen(port, '127.0.0.1');

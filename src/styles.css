@@ -214,8 +214,50 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .memory-log { display: grid; gap: 4px; margin: 16px 0; padding-top: 13px; border-top: 1px solid rgba(255,255,255,.07); }
 .memory-log b { color: #a9bdb4; font-size: 10px; }
 .memory-log span { color: #6f867d; font: 10px/1.55 'Share Tech Mono'; }
+.deep-talk-button { margin-bottom: 7px; padding: 11px; border: 1px solid var(--cyan); color: var(--cyan); background: rgba(71,215,194,.045); font: 700 10px 'Share Tech Mono'; }
+.deep-talk-button:hover { color: #06100d; background: var(--cyan); }
 .squad-toggle { margin-top: auto; padding: 11px; border: 1px solid var(--lime); color: var(--lime); background: rgba(201,244,86,.04); font: 700 10px 'Share Tech Mono'; }
 .squad-toggle.assigned { border-color: rgba(255,93,93,.46); color: #ff8d86; background: rgba(255,93,93,.035); }
+
+.deep-talk-layout { display: grid; grid-template-columns: minmax(250px, .72fr) minmax(0, 1.55fr); min-height: 620px; margin-top: 18px; border: 1px solid color-mix(in srgb, var(--operator-color) 35%, transparent); background: #050d0b; }
+.deep-talk-portrait { position: relative; min-height: 620px; overflow: hidden; border-right: 1px solid rgba(255,255,255,.08); background: radial-gradient(circle at 50% 34%, color-mix(in srgb, var(--operator-color) 14%, transparent), transparent 55%), linear-gradient(180deg, #0b1915, #040a08); }
+.deep-talk-portrait::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, transparent 48%, rgba(3,8,7,.92) 92%), repeating-linear-gradient(0deg, transparent 0 4px, rgba(255,255,255,.012) 5px); }
+.deep-talk-portrait img { position: absolute; width: 112%; height: 96%; left: -6%; bottom: 0; object-fit: contain; object-position: center bottom; filter: drop-shadow(0 18px 32px #000); }
+.deep-talk-portrait > div { position: absolute; z-index: 2; left: 20px; right: 20px; bottom: 22px; display: grid; }
+.deep-talk-portrait span { color: var(--operator-color); font: 9px 'Share Tech Mono'; letter-spacing: .12em; }
+.deep-talk-portrait strong { margin-top: 5px; color: #fff; font: 28px 'Black Ops One'; letter-spacing: .05em; }
+.deep-talk-portrait small { color: #9ab0a6; font: 11px 'Share Tech Mono'; }
+.deep-talk-console { min-width: 0; padding: 20px; }
+.deep-talk-console > header { display: flex; align-items: start; justify-content: space-between; gap: 18px; padding-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.deep-talk-console > header h2 { margin: 0; }
+.deep-talk-console > header p { max-width: 520px; margin: 5px 0 0; color: #71887e; font-size: 10px; line-height: 1.55; }
+.ai-link-state { flex: 0 0 auto; padding: 7px 9px; border: 1px solid rgba(255,215,106,.28); color: #e5b65b; background: rgba(229,182,91,.035); font: 8px 'Share Tech Mono'; }
+.ai-link-state.online { border-color: rgba(71,215,194,.4); color: var(--cyan); background: rgba(71,215,194,.04); }
+.talk-transcript { display: flex; flex-direction: column; gap: 8px; height: 210px; overflow: auto; margin: 14px 0; padding: 12px; border: 1px solid rgba(255,255,255,.07); background: #030806; }
+.talk-line { max-width: 84%; padding: 10px 12px; border-left: 2px solid var(--operator-color); background: color-mix(in srgb, var(--operator-color) 5%, #07100d); }
+.talk-line.player { align-self: flex-end; border-right: 2px solid var(--lime); border-left: 0; background: rgba(201,244,86,.035); }
+.talk-line span { color: #607970; font: 7px 'Share Tech Mono'; letter-spacing: .08em; }
+.talk-line p { margin: 5px 0 0; color: #dbe9e2; font-size: 11px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.ai-consent-callout { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; margin: 0 0 10px; padding: 10px 12px; border: 1px solid rgba(71,215,194,.2); background: rgba(71,215,194,.03); }
+.ai-consent-callout p { margin: 0; color: #769087; font-size: 9px; line-height: 1.5; }
+.ai-consent-callout button { padding: 8px 10px; border: 1px solid var(--cyan); color: var(--cyan); background: transparent; font: 8px 'Share Tech Mono'; }
+.deep-talk-form { display: grid; gap: 6px; }
+.deep-talk-form label { color: var(--operator-color); font: 8px 'Share Tech Mono'; }
+.deep-talk-form > div { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
+.deep-talk-form input { min-width: 0; padding: 12px; border: 1px solid rgba(255,255,255,.13); outline: 0; color: #effbf5; background: #07100d; font: 10px 'Share Tech Mono'; }
+.deep-talk-form input:focus { border-color: var(--operator-color); }
+.deep-talk-form button { width: 88px; border: 0; color: #07100d; background: var(--operator-color); font: 9px 'Share Tech Mono'; }
+.deep-talk-form small { color: #526961; font: 8px 'Share Tech Mono'; }
+.persona-memory-bank { margin-top: 15px; padding-top: 13px; border-top: 1px solid rgba(255,255,255,.08); }
+.persona-memory-bank > div:first-child { display: flex; justify-content: space-between; color: #71887f; font: 8px 'Share Tech Mono'; }
+.persona-memory-bank > div:first-child b { color: var(--operator-color); }
+.persona-memory-bank ul { max-height: 92px; overflow: auto; margin: 9px 0; padding: 0; list-style: none; }
+.persona-memory-bank li { padding: 6px 8px; border-left: 1px solid rgba(255,255,255,.1); color: #72877f; font: 8px/1.45 'Share Tech Mono'; }
+.persona-memory-bank li.empty { color: #4d625a; }
+.memory-actions { display: grid; grid-template-columns: 1fr auto; gap: 7px; }
+.memory-actions button { padding: 8px 10px; border: 1px solid var(--line); color: #9db1a8; background: #0a1512; font: 8px 'Share Tech Mono'; }
+.memory-actions button.danger { border-color: rgba(255,93,93,.34); color: #ff8d86; }
+.memory-actions button:disabled { opacity: .35; }
 
 .roster-control { padding: 16px; border: 1px solid var(--line); background: rgba(7, 18, 16, .72); }
 .formation-heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 10px; }
@@ -331,7 +373,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .alpha-actions { flex-wrap: wrap; }
 
 .tutorial-card { max-width: 680px; margin: 0 auto; padding: 16px 10px 4px; text-align: center; }
-.tutorial-progress { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin: 0 0 28px; }
+.tutorial-progress { display: grid; grid-template-columns: repeat(9, 1fr); gap: 6px; margin: 0 0 28px; }
 .tutorial-progress i { height: 3px; background: #1d2e28; }
 .tutorial-progress i.active { background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 9px rgba(201,244,86,.25); }
 .tutorial-icon { display: grid; place-items: center; width: 110px; height: 110px; margin: 28px auto 18px; border: 1px solid rgba(201,244,86,.34); border-radius: 50%; color: var(--lime); background: radial-gradient(circle, rgba(201,244,86,.12), transparent 68%); box-shadow: 0 0 40px rgba(71,215,194,.08); font: 46px 'Black Ops One'; }
@@ -417,6 +459,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   .odds-disclosure { grid-template-columns: 1fr; }
   .modal { padding: 20px; }
   .roster-layout { grid-template-columns: 1fr; }
+  .deep-talk-layout { grid-template-columns: minmax(190px, .58fr) minmax(0, 1.42fr); }
+  .deep-talk-portrait { min-height: 580px; }
   .operator-showcase { grid-template-columns: minmax(180px, .8fr) 1.2fr; }
   .operator-tile-grid { max-height: none; }
   .tutorial-card { padding-inline: 0; }
@@ -434,6 +478,14 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 
 @media (max-width: 560px) {
   .operator-showcase { grid-template-columns: 1fr; }
+  .deep-talk-layout { grid-template-columns: 1fr; }
+  .deep-talk-portrait { min-height: 380px; border-right: 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .deep-talk-portrait img { height: 105%; }
+  .deep-talk-console { padding: 14px; }
+  .deep-talk-console > header { align-items: stretch; flex-direction: column; }
+  .ai-link-state { align-self: flex-start; }
+  .talk-transcript { height: 240px; }
+  .ai-consent-callout { grid-template-columns: 1fr; }
   .showcase-visual { min-height: 430px; }
   .operator-dossier { min-height: 410px; }
   .roster-control { padding: 11px; }

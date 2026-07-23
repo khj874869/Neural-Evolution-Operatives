@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 
 export const RELEASE_CHANNELS = ['development', 'alpha', 'beta', 'production'] as const;
 export type ReleaseChannel = typeof RELEASE_CHANNELS[number];
