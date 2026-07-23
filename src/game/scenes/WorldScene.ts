@@ -23,6 +23,9 @@ import {
 } from '../../../packages/shared/src/world';
 import { calculateCombatBonuses } from '../../../packages/shared/src/gear';
 import type { SquadBonuses } from '../../../packages/shared/src/squad';
+import {
+  PerformanceGovernor, type PerformanceSample,
+} from '../systems/PerformanceGovernor';
 
 type EnemySprite = Phaser.Physics.Arcade.Sprite & { archetype?: EnemyKind };
 type ResourceSprite = Phaser.Physics.Arcade.Sprite & { resourceKind?: keyof Resources; value?: number };
@@ -50,6 +53,9 @@ export class WorldScene extends Phaser.Scene {
   private bullets!: Phaser.Physics.Arcade.Group;
   private resources!: Phaser.Physics.Arcade.Group;
   private obstacles!: Phaser.Physics.Arcade.StaticGroup;
+  private transientEffects!: Phaser.GameObjects.Group;
+  private performance!: PerformanceGovernor;
+  private lastHudAt = -Infinity;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
   private keys!: Record<'W' | 'A' | 'S' | 'D' | 'E' | 'Q' | 'SPACE' | 'ONE' | 'TWO' | 'THREE', Phaser.Input.Keyboard.Key>;
   private director = new AdaptiveDirector();
@@ -70,6 +76,7 @@ export class WorldScene extends Phaser.Scene {
   private extractionRing!: Phaser.GameObjects.Arc;
   private network?: GameServerClient;
   private networkConnected = false;
+  private networkSessionId = '';
   private networkSequence = 0;
   private lastNetworkInputAt = 0;
   private reducedMotion = false;
@@ -111,7 +118,13 @@ export class WorldScene extends Phaser.Scene {
   create(): void {
     this.state = this.registry.get('state') as GameState;
     this.network = this.registry.get('network') as GameServerClient | undefined;
-    this.reducedMotion = Boolean((this.registry.get('settings') as PlayerSettings | undefined)?.reducedMotion);
+    const settings = this.registry.get('settings') as PlayerSettings | undefined;
+    this.reducedMotion = Boolean(settings?.reducedMotion);
+    this.performance = new PerformanceGovernor(
+      settings?.graphicsQuality ?? 'auto',
+      navigator.maxTouchPoints > 0 || this.scale.width < 820,
+    );
+    this.emitPerformance({ tier: this.performance.tier, fps: 0, changed: false });
     this.operationId = this.state.activeOperationId();
     this.operationDefinition = operationDefinition(this.operationId);
     this.cover = worldObstacles(this.operationId);
@@ -126,6 +139,7 @@ export class WorldScene extends Phaser.Scene {
     this.enemies = this.physics.add.group({ maxSize: 80 });
     this.bullets = this.physics.add.group({ maxSize: 140 });
     this.resources = this.physics.add.group({ maxSize: 90 });
+    this.transientEffects = this.add.group({ classType: Phaser.GameObjects.Image, maxSize: 96 });
     this.player = this.physics.add.sprite(EXTRACTION_POINT.x, EXTRACTION_POINT.y + 130, 'player').setTint(0x9cffbb).setDepth(5);
     this.player.setCollideWorldBounds(true).setCircle(PLAYER_COLLISION_RADIUS, 6, 6);
 
@@ -153,6 +167,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('boss-defeated', this.handleBossDefeated, this);
     gameEvents.on('server-extraction', this.handleServerExtraction, this);
     gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
+    gameEvents.on('network-status', this.handleNetworkStatus, this);
     gameEvents.on('neural-link-request', this.requestNeuralLink, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
@@ -164,6 +179,7 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.off('boss-defeated', this.handleBossDefeated, this);
       gameEvents.off('server-extraction', this.handleServerExtraction, this);
       gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
+      gameEvents.off('network-status', this.handleNetworkStatus, this);
       gameEvents.off('neural-link-request', this.requestNeuralLink, this);
       this.scale.off('resize', this.handleResize, this);
     });
@@ -174,11 +190,13 @@ export class WorldScene extends Phaser.Scene {
     this.startWave(0);
     this.selectWeapon('carbine');
     this.updateOperation();
-    this.updateHud();
+    this.updateHud(true);
   }
 
   update(time: number, delta: number): void {
     if (!this.player.active || this.hp <= 0) return;
+    const performance = this.performance.sample(delta);
+    if (performance) this.emitPerformance(performance);
     this.updatePlayer(time, delta);
     this.collectNearbyResources();
     this.updateCompanions(time);
@@ -797,9 +815,18 @@ export class WorldScene extends Phaser.Scene {
     bullet.enableBody(true, fromX, fromY, true, true)
       .setTint(tint).setDepth(4).setData('companion', companion).setData('damage', damage)
       .setRotation(angle).setScale(companion ? 0.72 : this.currentWeapon === 'rail' ? 1.18 : 0.92);
-    const muzzle = this.add.image(fromX + Math.cos(angle) * 18, fromY + Math.sin(angle) * 18, 'muzzle')
-      .setTint(tint).setRotation(angle).setDepth(5).setBlendMode(Phaser.BlendModes.ADD);
-    this.tweens.add({ targets: muzzle, alpha: 0, scaleX: 1.8, duration: 65, onComplete: () => muzzle.destroy() });
+    const muzzle = this.acquireEffect(
+      fromX + Math.cos(angle) * 18,
+      fromY + Math.sin(angle) * 18,
+      'muzzle',
+    );
+    if (muzzle) {
+      muzzle.setTint(tint).setRotation(angle).setDepth(5).setBlendMode(Phaser.BlendModes.ADD);
+      this.tweens.add({
+        targets: muzzle, alpha: 0, scaleX: 1.8, duration: 65,
+        onComplete: () => this.releaseEffect(muzzle),
+      });
+    }
     this.physics.moveTo(bullet, toX, toY, speed);
     if (feedback) {
       gameEvents.emit('sfx', companion ? 'companion-fire' : 'fire');
@@ -1048,7 +1075,10 @@ export class WorldScene extends Phaser.Scene {
     this.combatBonuses = calculateCombatBonuses(snapshot.squad, snapshot.gear.equipped);
   }
 
-  private updateHud(): void {
+  private updateHud(force = false): void {
+    const now = this.time.now;
+    if (!force && now - this.lastHudAt < this.performance.profile.hudIntervalMs) return;
+    this.lastHudAt = now;
     const boss = [...this.enemies.getChildren()].find((child) => (
       (child as EnemySprite).active && (child as EnemySprite).archetype === this.operationDefinition.bossKind
     )) as EnemySprite | undefined;
@@ -1089,15 +1119,25 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private handleNetworkSnapshot(snapshot: NetworkSnapshot): void {
-    if (!this.networkConnected) {
+    const sessionChanged = Boolean(this.networkSessionId && this.networkSessionId !== snapshot.localSessionId);
+    if (!this.networkConnected || sessionChanged) {
       this.networkConnected = true;
       this.enemies.clear(true, true);
       this.resources.clear(true, true);
       this.serverEnemies.clear();
       this.serverResources.clear();
       this.fieldCargo = { scrap: 0, water: 0, data: 0, cores: 0 };
-      this.emitFeed('서버 권위형 전투 판정으로 전환되었습니다.');
+      this.lastNetworkCargo = 0;
+      this.operationCollected = 0;
+      this.operationDataCollected = 0;
+      this.operationRelaysDestroyed = 0;
+      this.operationBossSpawned = false;
+      this.operationBossDefeated = false;
+      this.emitFeed(sessionChanged
+        ? '새 서버 세션 동기화 // 미확정 현장 진행을 초기화했습니다.'
+        : '서버 권위형 전투 판정으로 전환되었습니다.');
     }
+    this.networkSessionId = snapshot.localSessionId;
     const own = snapshot.players.find((player) => player.id === snapshot.localSessionId);
     if (own) {
       if (own.hp < this.hp) {
@@ -1137,6 +1177,14 @@ export class WorldScene extends Phaser.Scene {
     this.stormActive = snapshot.stormActive;
     this.stormOverlay.setAlpha(snapshot.stormActive ? 0.11 : 0);
     this.updateHud();
+  }
+
+  private handleNetworkStatus(status: 'online' | 'offline' | 'connecting' | 'reconnecting'): void {
+    if (status !== 'offline' || !this.networkConnected) return;
+    this.networkConnected = false;
+    this.serverEnemies.clear();
+    this.serverResources.clear();
+    this.emitFeed('서버 링크 만료 // 현재 전장을 로컬 훈련 판정으로 전환합니다.', true);
   }
 
   private syncNetworkEnemies(enemies: NetworkSnapshot['enemies']): void {
@@ -1200,12 +1248,14 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private impactBurst(x: number, y: number, tint: number, requestedCount: number): void {
-    const count = this.reducedMotion ? Math.min(3, requestedCount) : requestedCount;
+    const scaledCount = Math.max(1, Math.ceil(requestedCount * this.performance.profile.particleScale));
+    const count = this.reducedMotion ? Math.min(3, scaledCount) : scaledCount;
     for (let index = 0; index < count; index += 1) {
       const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
       const distance = Phaser.Math.Between(16, this.reducedMotion ? 25 : 48);
-      const spark = this.add.image(x, y, 'spark')
-        .setTint(tint)
+      const spark = this.acquireEffect(x, y, 'spark');
+      if (!spark) break;
+      spark.setTint(tint)
         .setRotation(angle)
         .setScale(Phaser.Math.FloatBetween(0.45, 1.15))
         .setDepth(8)
@@ -1218,13 +1268,39 @@ export class WorldScene extends Phaser.Scene {
         scaleX: 0.1,
         duration: this.reducedMotion ? 90 : Phaser.Math.Between(150, 260),
         ease: 'Cubic.Out',
-        onComplete: () => spark.destroy(),
+        onComplete: () => this.releaseEffect(spark),
       });
     }
   }
 
   private handleSettingsChanged(settings: PlayerSettings): void {
     this.reducedMotion = settings.reducedMotion;
+    const tier = this.performance.setMode(
+      settings.graphicsQuality,
+      navigator.maxTouchPoints > 0 || this.scale.width < 820,
+    );
+    this.emitPerformance({ tier, fps: 0, changed: true });
+  }
+
+  private acquireEffect(x: number, y: number, texture: string): Phaser.GameObjects.Image | null {
+    const effect = this.transientEffects.get(x, y, texture) as Phaser.GameObjects.Image | null;
+    if (!effect) return null;
+    this.tweens.killTweensOf(effect);
+    return effect.setActive(true).setVisible(true).setTexture(texture).setPosition(x, y)
+      .clearTint().setAlpha(1).setScale(1).setRotation(0);
+  }
+
+  private releaseEffect(effect: Phaser.GameObjects.Image): void {
+    this.tweens.killTweensOf(effect);
+    effect.setActive(false).setVisible(false);
+    this.transientEffects.killAndHide(effect);
+  }
+
+  private emitPerformance(sample: PerformanceSample): void {
+    gameEvents.emit('performance-sample', sample);
+    if (sample.changed && sample.fps > 0) {
+      this.emitFeed(`자동 그래픽 조정 // ${sample.tier.toUpperCase()} · ${sample.fps} FPS`);
+    }
   }
 
   private handleBossDefeated(): void {

@@ -25,6 +25,7 @@ if (!crafted.profile?.gear?.owned?.includes('sealed-filter')) {
 }
 const client = new Client(endpoint);
 const room = await client.joinOrCreate('red_zone', { token: auth.token });
+room.onMessage('server-event', () => undefined);
 
 const snapshot = await new Promise((resolve, reject) => {
   const timeout = setTimeout(() => reject(new Error('State synchronization timeout')), 5_000);
@@ -42,7 +43,24 @@ const snapshot = await new Promise((resolve, reject) => {
   });
 });
 
+const sessionId = room.sessionId;
+room.reconnection.minUptime = 0;
+room.reconnection.delay = 10;
+room.reconnection.minDelay = 10;
+room.reconnection.maxDelay = 20;
+room.reconnection.maxRetries = 3;
+const restored = new Promise((resolve, reject) => {
+  const timeout = setTimeout(() => reject(new Error('Session reconnection timeout')), 5_000);
+  room.onReconnect.once(() => {
+    clearTimeout(timeout);
+    resolve(room.sessionId === sessionId);
+  });
+});
+void room.leave(false);
+if (!await restored) throw new Error('Session id changed after reconnection');
+
 console.log(JSON.stringify({
-  status: 'ok', roomId: room.roomId, equippedGear: crafted.profile.gear.equipped, ...snapshot,
+  status: 'ok', roomId: room.roomId, sessionRestored: true,
+  equippedGear: crafted.profile.gear.equipped, ...snapshot,
 }));
 await room.leave();

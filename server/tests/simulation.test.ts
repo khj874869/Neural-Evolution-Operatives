@@ -18,6 +18,21 @@ describe('authoritative red zone simulation', () => {
     expect(player.lastSequence).toBe(1);
   });
 
+  it('neutralizes held movement and fire while a reconnecting player is suspended', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    simulation.enemies.clear();
+    const player = simulation.addPlayer('session-drop', 'player-drop', 'LINK-DROP');
+    simulation.applyInput('session-drop', {
+      sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'carbine',
+    });
+    simulation.tick(100);
+    const suspendedAt = player.x;
+    expect(simulation.suspendPlayer('session-drop')).toBe(true);
+    simulation.tick(500);
+    expect(player.x).toBe(suspendedAt);
+    expect(player.lastSequence).toBe(1);
+  });
+
   it('creates one extraction event and clears field cargo', () => {
     const simulation = new RedZoneSimulation(() => 0.5);
     simulation.resources.clear();

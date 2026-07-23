@@ -102,6 +102,21 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
     );
   }
 
+  async onDrop(client: Client): Promise<void> {
+    this.simulation.suspendPlayer(client.sessionId);
+    try {
+      await this.allowReconnection(client, 20);
+    } catch {
+      // onLeave performs final cleanup when the 20-second reservation expires.
+    }
+  }
+
+  onReconnect(client: Client): void {
+    client.send('server-event', {
+      type: 'feed', message: '세션 복구 승인 // 기존 현장 화물과 전투 상태를 유지합니다.',
+    } satisfies ServerEventMessage);
+  }
+
   onLeave(client: Client): void {
     this.simulation.removePlayer(client.sessionId);
     this.state.players.delete(client.sessionId);

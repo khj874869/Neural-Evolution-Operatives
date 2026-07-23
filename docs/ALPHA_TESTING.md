@@ -20,9 +20,10 @@ curl -fsS https://SERVER/health
 curl -fsS https://SERVER/ready
 npm run smoke:server -- https://SERVER
 npm run smoke:alpha -- https://SERVER 8 10000
+npm run smoke:soak -- https://SERVER 16 120000
 ```
 
-`/health`는 프로세스 생존, `/ready`는 저장소 연결 상태를 판정합니다. 알파 부하 스모크는 기본 8개 클라이언트의 인증·게임룸 입장·상태 수신을 동시에 검사합니다.
+`/health`는 프로세스 생존, `/ready`는 저장소 연결 상태를 판정합니다. 기본 스모크는 장비 제작과 동일 세션 재접속까지 확인하고, 알파 부하 스모크는 기본 8개 클라이언트의 인증·게임룸 입장·상태 수신을 동시에 검사합니다. 소크 테스트는 최대 128클라이언트와 1시간까지 설정할 수 있으며 준비 상태 실패, 비정상 종료와 스냅샷 최대 간격을 함께 집계합니다.
 
 ## Android 빌드
 

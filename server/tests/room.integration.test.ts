@@ -32,6 +32,7 @@ describe('real game room transport', () => {
     const auth = await authResponse.json() as { token: string };
     const client = new Client(endpoint);
     const room = await client.joinOrCreate('red_zone', { token: auth.token });
+    room.onMessage('server-event', () => undefined);
     const snapshot = await new Promise<{ players: number; enemies: number }>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('state timeout')), 4_000);
       room.onStateChange((state: { players: Map<string, unknown>; enemies: Map<string, unknown> }) => {
@@ -43,6 +44,25 @@ describe('real game room transport', () => {
     });
     expect(snapshot.players).toBe(1);
     expect(snapshot.enemies).toBeGreaterThan(0);
+    const sessionId = room.sessionId;
+    room.reconnection.minUptime = 0;
+    room.reconnection.delay = 10;
+    room.reconnection.minDelay = 10;
+    room.reconnection.maxDelay = 20;
+    room.reconnection.maxRetries = 3;
+    const reconnected = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('reconnection timeout')), 4_000);
+      room.onReconnect.once(() => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+    void room.leave(false);
+    await reconnected;
+    expect(room.sessionId).toBe(sessionId);
+    room.send('input', {
+      sequence: 2, moveX: 0, moveY: 1, aimAngle: 1, fire: false, extract: false, weapon: 'carbine',
+    });
     await room.leave();
   });
 });

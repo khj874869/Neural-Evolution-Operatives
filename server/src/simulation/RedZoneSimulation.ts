@@ -158,6 +158,13 @@ export class RedZoneSimulation {
     this.players.delete(sessionId);
   }
 
+  suspendPlayer(sessionId: string): boolean {
+    const player = this.players.get(sessionId);
+    if (!player) return false;
+    player.input = { ...EMPTY_INPUT, sequence: player.lastSequence, aimAngle: player.aimAngle };
+    return true;
+  }
+
   getPlayerId(sessionId: string): string | undefined {
     return this.players.get(sessionId)?.playerId;
   }

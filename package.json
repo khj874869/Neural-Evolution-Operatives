@@ -12,6 +12,7 @@
     "start:server": "node dist-server/server/src/index.js",
     "smoke:server": "node server/scripts/smoke.mjs",
     "smoke:alpha": "node server/scripts/alpha-load.mjs",
+    "smoke:soak": "node server/scripts/soak.mjs",
     "mobile:add:android": "npm run build && cap add android",
     "mobile:sync": "npm run build && cap sync android",
     "mobile:open": "cap open android",

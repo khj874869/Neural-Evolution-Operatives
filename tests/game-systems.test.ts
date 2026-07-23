@@ -5,7 +5,7 @@ import { AdaptiveDirector, freshTelemetry } from '../src/game/systems/AdaptiveDi
 import { generateMission } from '../src/game/systems/MissionGenerator';
 import { parseTacticalCommand } from '../src/game/systems/TacticalCommand';
 import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/src/squad';
-import { DEFAULT_SETTINGS, sanitizeSettings } from '../src/game/settings';
+import { DEFAULT_SETTINGS, loadSettings, sanitizeSettings } from '../src/game/settings';
 import { projectileAngles, WEAPON_SPECS, weaponFromSlot } from '../packages/shared/src/combat';
 import { evaluateOperationZero } from '../src/game/systems/OperationZero';
 import { addNeuralCharge, neuralLinkLeader, neuralLinkSkill } from '../packages/shared/src/neuralLink';
@@ -22,6 +22,9 @@ import {
 import {
   calculateCombatBonuses, describeGearBonuses, normalizeGearState,
 } from '../packages/shared/src/gear';
+import {
+  initialRenderTier, PerformanceGovernor,
+} from '../src/game/systems/PerformanceGovernor';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -108,8 +111,41 @@ describe('player settings', () => {
     });
     expect(sanitizeSettings(null)).toEqual(DEFAULT_SETTINGS);
     expect(sanitizeSettings({ uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true })).toMatchObject({
-      version: 2, uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true,
+      version: 3, uiScale: 'large', colorVision: 'deuteranopia', analyticsConsent: true,
     });
+  });
+
+  it('migrates a v2 device profile into automatic graphics quality', () => {
+    const values = new Map([['neo-settings-v2', JSON.stringify({ version: 2, sound: false, uiScale: 'large' })]]);
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
+    expect(loadSettings(storage)).toMatchObject({ version: 3, sound: false, uiScale: 'large', graphicsQuality: 'auto' });
+  });
+});
+
+describe('adaptive mobile performance', () => {
+  it('starts mobile auto mode conservatively and lowers sustained slow frames', () => {
+    expect(initialRenderTier('auto', true)).toBe('balanced');
+    const governor = new PerformanceGovernor('auto', false);
+    const runWindow = (fps: number) => {
+      let sample = null;
+      for (let frame = 0; frame < fps * 2 + 1; frame += 1) sample ??= governor.sample(1_000 / fps);
+      return sample;
+    };
+    expect(governor.tier).toBe('high');
+    runWindow(30);
+    expect(runWindow(30)).toMatchObject({ tier: 'balanced', changed: true });
+    runWindow(30);
+    expect(runWindow(30)).toMatchObject({ tier: 'low', changed: true });
+  });
+
+  it('keeps a manually selected quality tier fixed', () => {
+    const governor = new PerformanceGovernor('low');
+    for (let frame = 0; frame < 500; frame += 1) governor.sample(16.67);
+    expect(governor.tier).toBe('low');
+    expect(governor.profile.particleScale).toBeLessThan(0.5);
   });
 });
 

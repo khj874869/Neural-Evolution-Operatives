@@ -45,6 +45,9 @@ export interface AlphaDiagnostics {
   platform: 'android' | 'ios' | 'web';
   endpointConfigured: boolean;
   connected: boolean;
+  recovering: boolean;
+  reconnects: number;
+  lastReconnectAt: string | null;
   server: ServerReleaseInfo | null;
 }
 
@@ -56,6 +59,11 @@ export class GameServerClient {
   private readonly analyticsQueue: Array<{ event: FunnelEventName; properties: FunnelProperties }> = [];
   private readonly recentErrorFingerprints = new Map<string, number>();
   private releaseInfo: ServerReleaseInfo | null = null;
+  private operationId: OperationId = 'operation-zero';
+  private lifecycleEpoch = 0;
+  private recoveryPromise?: Promise<void>;
+  private reconnects = 0;
+  private lastReconnectAt: string | null = null;
   connected = false;
 
   constructor(endpoint = import.meta.env.VITE_GAME_SERVER_URL || (import.meta.env.DEV ? 'http://localhost:2567' : '')) {
@@ -69,6 +77,8 @@ export class GameServerClient {
   }
 
   async connect(operationId: OperationId = 'operation-zero'): Promise<void> {
+    const epoch = ++this.lifecycleEpoch;
+    this.operationId = operationId;
     if (!this.endpoint) {
       gameEvents.emit('network-status', 'offline', '로컬 훈련 모드');
       return;
@@ -81,24 +91,46 @@ export class GameServerClient {
       });
       this.token = auth.token;
       gameEvents.emit('network-profile', auth.profile);
-      await this.joinOperation(operationId);
+      await this.joinOperation(operationId, epoch);
       await this.flushAnalytics();
       void this.track('session_start', {
         mode: 'online', serverVersion: this.releaseInfo?.version ?? 'unknown',
       });
       void this.claimOffline();
     } catch {
+      if (epoch !== this.lifecycleEpoch) return;
       this.connected = false;
-      gameEvents.emit('network-status', 'offline', '서버 없음 · 로컬 모드');
+      if (this.token) {
+        gameEvents.emit('network-status', 'reconnecting', '작전 세션 복구 준비 중');
+        void this.beginFreshRecovery(operationId, epoch);
+      } else {
+        gameEvents.emit('network-status', 'offline', '서버 없음 · 로컬 모드');
+      }
     }
   }
 
   async switchOperation(operationId: OperationId): Promise<void> {
     if (!this.endpoint || !this.token) return;
-    await this.room?.leave().catch(() => undefined);
+    const epoch = ++this.lifecycleEpoch;
+    this.operationId = operationId;
+    const previousRoom = this.room;
+    this.room = undefined;
     this.connected = false;
+    await previousRoom?.leave().catch(() => undefined);
     gameEvents.emit('network-status', 'connecting', '다음 작전 연결 중');
-    await this.joinOperation(operationId);
+    await this.joinOperation(operationId, epoch);
+  }
+
+  async resumeConnection(): Promise<void> {
+    if (!this.endpoint || this.connected || this.recoveryPromise || this.room) return;
+    if (!this.token) {
+      await this.connect(this.operationId);
+      return;
+    }
+    const epoch = ++this.lifecycleEpoch;
+    this.room = undefined;
+    gameEvents.emit('network-status', 'connecting', '네트워크 복귀 // 세션 확인 중');
+    await this.beginFreshRecovery(this.operationId, epoch);
   }
 
   sendInput(input: GameInputMessage): void {
@@ -177,7 +209,10 @@ export class GameServerClient {
     await this.authorized('/api/account', {
       method: 'DELETE', body: JSON.stringify({ confirmation: 'DELETE' }),
     });
-    await this.room?.leave().catch(() => undefined);
+    ++this.lifecycleEpoch;
+    const previousRoom = this.room;
+    this.room = undefined;
+    await previousRoom?.leave().catch(() => undefined);
     this.connected = false;
     this.token = undefined;
   }
@@ -217,6 +252,9 @@ export class GameServerClient {
       platform: clientPlatform(),
       endpointConfigured: Boolean(this.endpoint),
       connected: this.connected,
+      recovering: Boolean(this.recoveryPromise || this.room?.reconnection.isReconnecting),
+      reconnects: this.reconnects,
+      lastReconnectAt: this.lastReconnectAt,
       server: this.releaseInfo ? { ...this.releaseInfo } : null,
     };
   }
@@ -236,10 +274,20 @@ export class GameServerClient {
     gameEvents.emit('network-profile', response.profile);
   }
 
-  private async joinOperation(operationId: OperationId): Promise<void> {
+  private async joinOperation(operationId: OperationId, epoch: number): Promise<void> {
     const client = new Client(this.endpoint);
-    this.room = await client.joinOrCreate('red_zone', { token: this.token, operationId });
-    const room = this.room;
+    const room = await client.joinOrCreate('red_zone', { token: this.token, operationId });
+    if (epoch !== this.lifecycleEpoch) {
+      await room.leave().catch(() => undefined);
+      throw new Error('STALE_CONNECTION');
+    }
+    room.reconnection.minUptime = 500;
+    room.reconnection.delay = 200;
+    room.reconnection.minDelay = 200;
+    room.reconnection.maxDelay = 3_000;
+    room.reconnection.maxRetries = 8;
+    room.reconnection.maxEnqueuedMessages = 4;
+    this.room = room;
     this.connected = true;
     gameEvents.emit('network-status', 'online', `ROOM ${room.roomId.slice(0, 6)} · ${operationId === 'operation-zero' ? 'OP-00' : 'OP-01'}`);
     room.onStateChange((state: unknown) => this.emitSnapshot(state));
@@ -258,12 +306,63 @@ export class GameServerClient {
         gameEvents.emit('haptic', 'success');
       }
     });
-    room.onLeave(() => {
-      if (this.room !== room) return;
+    room.onDrop(() => {
+      if (this.room !== room || epoch !== this.lifecycleEpoch) return;
       this.connected = false;
-      gameEvents.emit('network-status', 'offline', '연결 종료 · 로컬 모드');
+      gameEvents.emit('network-status', 'reconnecting', `ROOM ${room.roomId.slice(0, 6)} · 링크 복구 중`);
     });
-    room.onError((_code, message) => gameEvents.emit('feed', message ?? '게임룸 통신 오류', true));
+    room.onReconnect(() => {
+      if (this.room !== room || epoch !== this.lifecycleEpoch) return;
+      this.connected = true;
+      this.reconnects += 1;
+      this.lastReconnectAt = new Date().toISOString();
+      gameEvents.emit('network-status', 'online', `ROOM ${room.roomId.slice(0, 6)} · SESSION RESTORED`);
+      gameEvents.emit('feed', '뉴럴 링크 복구 완료 // 현장 상태를 유지했습니다.');
+      void this.refreshProfile();
+    });
+    room.onLeave(() => {
+      if (this.room !== room || epoch !== this.lifecycleEpoch) return;
+      this.connected = false;
+      this.room = undefined;
+      gameEvents.emit('network-status', 'reconnecting', '기존 링크 만료 · 새 세션 복구 중');
+      void this.beginFreshRecovery(operationId, epoch);
+    });
+    room.onError((_code, message) => {
+      if (!room.reconnection.isReconnecting) gameEvents.emit('feed', message ?? '게임룸 통신 오류', true);
+    });
+  }
+
+  private beginFreshRecovery(operationId: OperationId, epoch: number): Promise<void> {
+    if (this.recoveryPromise) return this.recoveryPromise;
+    const recovery = this.recoverFreshSession(operationId, epoch).finally(() => {
+      if (this.recoveryPromise === recovery) this.recoveryPromise = undefined;
+    });
+    this.recoveryPromise = recovery;
+    return recovery;
+  }
+
+  private async recoverFreshSession(operationId: OperationId, epoch: number): Promise<void> {
+    const delays = [500, 1_000, 2_000, 4_000, 8_000];
+    for (let attempt = 0; attempt < delays.length; attempt += 1) {
+      await wait(delays[attempt]);
+      if (epoch !== this.lifecycleEpoch || this.connected) return;
+      try {
+        await this.joinOperation(operationId, epoch);
+        this.reconnects += 1;
+        this.lastReconnectAt = new Date().toISOString();
+        gameEvents.emit('feed', '새 작전 세션 연결 완료 // 서버 프로필을 다시 동기화합니다.');
+        await this.refreshProfile();
+        await this.flushAnalytics();
+        return;
+      } catch {
+        if (epoch !== this.lifecycleEpoch) return;
+        gameEvents.emit('network-status', 'reconnecting', `세션 복구 ${attempt + 1}/${delays.length}`);
+      }
+    }
+    if (epoch !== this.lifecycleEpoch) return;
+    this.connected = false;
+    gameEvents.emit('network-status', 'offline', '복구 시간 초과 · 로컬 훈련 전환');
+    gameEvents.emit('feed', '서버 연결을 복구하지 못해 현재 전장을 로컬 판정으로 전환합니다.', true);
   }
 
   private enrichAnalytics(properties: FunnelProperties): FunnelProperties {
@@ -359,4 +458,8 @@ function plain<T extends object>(value: T): T {
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) result[key] = (value as Record<string, unknown>)[key];
   return result as T;
+}
+
+function wait(durationMs: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, durationMs));
 }

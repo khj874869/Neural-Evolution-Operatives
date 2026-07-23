@@ -26,6 +26,9 @@ import { installGlobalErrorReporting } from './game/telemetry/ClientTelemetry';
 import {
   describeGearBonuses, GEAR_DEFINITIONS, GEAR_IDS, MAX_EQUIPPED_GEAR, type GearId,
 } from '../packages/shared/src/gear';
+import {
+  initialRenderTier, type PerformanceSample,
+} from './game/systems/PerformanceGovernor';
 
 declare global {
   interface Window {
@@ -43,6 +46,11 @@ const mobileInput: MobileInputState = {
 };
 const network = new GameServerClient();
 let settings = loadSettings();
+let performanceStatus: PerformanceSample = {
+  tier: initialRenderTier(settings.graphicsQuality, navigator.maxTouchPoints > 0 || window.innerWidth < 820),
+  fps: 0,
+  changed: false,
+};
 const sound = new SoundEngine();
 sound.setEnabled(settings.sound);
 const game = new Phaser.Game(gameConfig);
@@ -260,6 +268,9 @@ function renderSettings(): void {
     <div class="setting-choice"><span><b>색상 식별 모드</b><small>위험·아군·상호작용 색 대비를 변경합니다.</small></span><div>
       ${(['standard', 'deuteranopia', 'high-contrast'] as const).map((value) => `<button data-color-vision="${value}" class="${settings.colorVision === value ? 'selected' : ''}">${value === 'standard' ? '기본' : value === 'deuteranopia' ? '적록 보정' : '고대비'}</button>`).join('')}
     </div></div>
+    <div class="setting-choice quality-choice"><span><b>그래픽 품질</b><small>자동 모드는 실제 프레임을 측정해 파티클과 HUD 갱신량을 조절합니다. 현재 ${performanceStatus.tier.toUpperCase()}${performanceStatus.fps ? ` · ${performanceStatus.fps} FPS` : ''}</small></span><div>
+      ${(['auto', 'high', 'balanced', 'low'] as const).map((value) => `<button data-graphics-quality="${value}" class="${settings.graphicsQuality === value ? 'selected' : ''}">${value === 'auto' ? '자동' : value === 'high' ? '높음' : value === 'balanced' ? '균형' : '낮음'}</button>`).join('')}
+    </div></div>
     <div class="settings-actions">
       <button id="replayTutorial">튜토리얼 다시 보기</button>
       <button id="openPrivacy">개인정보·AI 안내</button>
@@ -284,6 +295,13 @@ function renderSettings(): void {
   modalContent.querySelectorAll<HTMLButtonElement>('[data-color-vision]').forEach((button) => {
     button.addEventListener('click', () => {
       settings = { ...settings, colorVision: button.dataset.colorVision as typeof settings.colorVision };
+      applySettings();
+      renderSettings();
+    });
+  });
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-graphics-quality]').forEach((button) => {
+    button.addEventListener('click', () => {
+      settings = { ...settings, graphicsQuality: button.dataset.graphicsQuality as typeof settings.graphicsQuality };
       applySettings();
       renderSettings();
     });
@@ -368,6 +386,7 @@ function renderAlphaInfo(): void {
   pauseForModal();
   const diagnostics = {
     ...network.getDiagnostics(),
+    performance: { qualityMode: settings.graphicsQuality, ...performanceStatus },
     analyticsConsent: settings.analyticsConsent,
     commerceEnabled: CLIENT_RELEASE.commerceEnabled,
     generatedAt: new Date().toISOString(),
@@ -939,9 +958,12 @@ gameEvents.on('network-profile', (profile: PlayerProfile) => {
   if (currentModal === 'roster') renderRoster();
   if (currentModal === 'store') void renderStore();
 });
-gameEvents.on('network-status', (status: 'online' | 'offline' | 'connecting', label: string) => {
+gameEvents.on('network-status', (status: 'online' | 'offline' | 'connecting' | 'reconnecting', label: string) => {
   serverStatus.className = `server-status ${status}`;
   serverStatus.textContent = `● ${label}`;
+});
+gameEvents.on('performance-sample', (sample: PerformanceSample) => {
+  performanceStatus = sample;
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -949,8 +971,10 @@ document.addEventListener('visibilitychange', () => {
     game.loop.sleep();
   } else {
     game.loop.wake();
+    void network.resumeConnection();
   }
 });
+window.addEventListener('online', () => { void network.resumeConnection(); });
 installGlobalErrorReporting((error) => network.reportClientError(error));
 gameEvents.on('hud-update', (hud: {
   hp: number;
