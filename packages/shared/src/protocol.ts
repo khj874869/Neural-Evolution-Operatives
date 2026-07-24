@@ -3,6 +3,7 @@ import type { WeaponId } from './combat.js';
 import type { CommercePlatform, StoreProductId } from './commerce.js';
 import type { OperationId } from './operations.js';
 import type { GearId } from './gear.js';
+import type { ContractState } from './contracts.js';
 
 export type EnemyKind = 'drone' | 'raider' | 'stalker' | 'breaker' | 'jammer' | 'sapper' | 'relay' | 'warden' | 'harvester';
 
@@ -95,6 +96,7 @@ export interface PlayerProfile {
     dailyTurnsUsed: number;
     lastExchange: PersonaExchange | null;
   };
+  contracts: ContractState;
   commerce: {
     entitlements: string[];
     subscriptionUntil: string | null;

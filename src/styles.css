@@ -162,6 +162,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .command-dock { position: fixed; z-index: 20; inset: auto 0 0 0; height: 68px; display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-width: 1px 0 0; }
 .command-dock > button, #commandForm button { border: 1px solid var(--line); background: #0c1714; height: 40px; padding: 0 15px; color: #a8bcb4; font: 11px 'Share Tech Mono'; }
 .command-dock > button:hover, #commandForm button:hover { color: var(--lime); border-color: var(--lime); }
+.contracts-button { position: relative; }
+.contracts-button em { position: absolute; right: -5px; top: -7px; display: grid; place-items: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 10px; color: #06100d; background: var(--lime); box-shadow: 0 0 12px rgba(201,244,86,.45); font: 8px 'Share Tech Mono'; }
 #commandForm { display: flex; align-items: center; flex: 1; height: 40px; border: 1px solid var(--line); background: rgba(0,0,0,.38); }
 .prompt { padding-left: 13px; color: var(--cyan); font: 11px 'Share Tech Mono'; white-space: nowrap; }
 #commandInput { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: transparent; color: #e5fff0; padding: 0 10px; font: 12px 'Share Tech Mono'; }
@@ -373,7 +375,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .alpha-actions { flex-wrap: wrap; }
 
 .tutorial-card { max-width: 680px; margin: 0 auto; padding: 16px 10px 4px; text-align: center; }
-.tutorial-progress { display: grid; grid-template-columns: repeat(9, 1fr); gap: 6px; margin: 0 0 28px; }
+.tutorial-progress { display: grid; grid-template-columns: repeat(10, 1fr); gap: 6px; margin: 0 0 28px; }
 .tutorial-progress i { height: 3px; background: #1d2e28; }
 .tutorial-progress i.active { background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 9px rgba(201,244,86,.25); }
 .tutorial-icon { display: grid; place-items: center; width: 110px; height: 110px; margin: 28px auto 18px; border: 1px solid rgba(201,244,86,.34); border-radius: 50%; color: var(--lime); background: radial-gradient(circle, rgba(201,244,86,.12), transparent 68%); box-shadow: 0 0 40px rgba(71,215,194,.08); font: 46px 'Black Ops One'; }
@@ -412,6 +414,39 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
 .dodge, .extract { width: 48px; height: 48px; border-radius: 50%; font: 8px 'Share Tech Mono'; }
 .dodge:disabled { opacity: .42; }
 .extract { border-color: rgba(71,215,194,.58) !important; color: var(--cyan) !important; }
+
+.contract-loading { min-height: 280px; display: grid; place-content: center; text-align: center; }
+.contract-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
+.contract-heading h2 { margin: 5px 0 4px; }
+.contract-heading p { margin: 0; color: #718a80; font-size: 11px; }
+.streak-core { display: grid; min-width: 180px; padding: 13px 16px; border: 1px solid rgba(201,244,86,.34); background: linear-gradient(135deg, rgba(201,244,86,.09), rgba(6,17,14,.82)); text-align: right; }
+.streak-core span { color: #83988f; font: 8px 'Share Tech Mono'; letter-spacing: .12em; }
+.streak-core b { color: var(--lime); font: 30px 'Black Ops One'; line-height: 1; }
+.streak-core small { margin-top: 5px; color: #6f887e; font: 8px 'Share Tech Mono'; }
+.contract-ready-banner { margin: 16px 0 0; padding: 10px 12px; border: 1px solid rgba(201,244,86,.35); color: var(--lime); background: rgba(201,244,86,.055); font: 9px 'Share Tech Mono'; letter-spacing: .06em; }
+.contract-section { margin-top: 20px; }
+.contract-section > header { display: flex; align-items: end; justify-content: space-between; margin-bottom: 9px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,.08); }
+.contract-section > header span { color: var(--cyan); font: 8px 'Share Tech Mono'; letter-spacing: .12em; }
+.contract-section > header h3 { margin: 3px 0 0; color: #ecf8f2; font-size: 15px; }
+.contract-section > header small { color: #62796f; font: 8px 'Share Tech Mono'; }
+.contract-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.contract-grid.weekly { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.contract-card { display: flex; min-height: 215px; flex-direction: column; padding: 14px; border: 1px solid rgba(255,255,255,.09); background: linear-gradient(160deg, rgba(13,31,25,.88), rgba(5,13,11,.94)); }
+.contract-card.complete { border-color: rgba(201,244,86,.48); box-shadow: inset 0 0 30px rgba(201,244,86,.045); }
+.contract-card.claimed { opacity: .62; }
+.contract-card-head { display: flex; justify-content: space-between; gap: 8px; color: #59736a; font: 7px 'Share Tech Mono'; letter-spacing: .06em; }
+.contract-card-head em { color: var(--cyan); font-style: normal; }
+.contract-card.complete .contract-card-head em { color: var(--lime); }
+.contract-card h3 { margin: 12px 0 6px; color: #ecf7f2; font: 15px 'Black Ops One'; letter-spacing: .03em; }
+.contract-card p { min-height: 32px; margin: 0; color: #789087; font-size: 10px; line-height: 1.5; }
+.contract-progress { height: 4px; margin: 15px 0 10px; overflow: hidden; background: #172720; }
+.contract-progress i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan), var(--lime)); box-shadow: 0 0 8px rgba(201,244,86,.28); }
+.contract-reward { display: flex; justify-content: space-between; gap: 8px; margin-top: auto; color: #60786e; font: 8px 'Share Tech Mono'; }
+.contract-reward b { color: #dcece4; font-weight: normal; }
+.contract-card button { min-height: 34px; margin-top: 10px; border: 0; color: #07100e; background: var(--lime); font: 8px 'Share Tech Mono'; }
+.contract-card button:disabled { color: #587067; background: #17251f; }
+.contract-card.claimed button:disabled { color: #79a08f; background: rgba(71,215,194,.08); }
+.contract-fairness { margin: 16px 0 0; color: #526b61; font: 8px/1.5 'Share Tech Mono'; text-align: center; }
 
 .fabrication-panel { margin-top: 18px; padding: 18px; border: 1px solid rgba(71,215,194,.2); background: linear-gradient(135deg, rgba(71,215,194,.035), rgba(4,12,10,.88)); }
 .fabrication-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
@@ -453,6 +488,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   #settingsButton span { display: none; }
   #commandInput { font-size: 10px; }
   .card-grid { grid-template-columns: 1fr; }
+  .contract-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gear-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .store-grid { grid-template-columns: 1fr; }
   .store-card { min-height: 260px; }
@@ -495,6 +531,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--lime); outl
   .fabrication-heading { align-items: flex-start; flex-direction: column; gap: 8px; }
   .fabrication-heading > div:last-child { justify-items: start; max-width: none; text-align: left; }
   .gear-grid { grid-template-columns: 1fr; }
+  .contract-heading { align-items: stretch; flex-direction: column; }
+  .streak-core { min-width: 0; text-align: left; }
+  .contract-section > header { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .contract-grid, .contract-grid.weekly { grid-template-columns: 1fr; }
   .settings-actions { flex-direction: column; }
   .settings-actions button { width: 100%; }
   .debrief-stats { grid-template-columns: repeat(2, 1fr); }

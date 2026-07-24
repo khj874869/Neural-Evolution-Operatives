@@ -12,6 +12,7 @@ import { RECRUIT_ODDS, STORE_PRODUCT_IDS, STORE_PRODUCTS } from '../../../packag
 import { APP_VERSION } from '../../../packages/shared/src/release.js';
 import { GEAR_IDS } from '../../../packages/shared/src/gear.js';
 import { PersonaError, PersonaService } from '../ai/PersonaService.js';
+import { CONTRACT_IDS } from '../../../packages/shared/src/contracts.js';
 
 export interface ApiDependencies {
   config: ServerConfig;
@@ -55,6 +56,7 @@ const personaChatSchema = z.object({
   useExternalAi: z.boolean().default(false),
 });
 const operatorIdSchema = z.string().min(1).max(32).regex(/^[a-z0-9-]+$/);
+const contractIdSchema = z.enum(CONTRACT_IDS);
 
 export function configureHttpApp(app: express.Application, deps: ApiDependencies): void {
   const commerce = deps.commerce ?? new CommerceService(deps.repository);
@@ -185,6 +187,21 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     const result = await deps.economy.setGearLoadout(
       response.locals.playerId as string,
       body.equipped,
+      idempotencyKey(request),
+    );
+    response.json(result);
+  });
+
+  app.get('/api/contracts', requirePlayer(deps.tokens), async (_request, response) => {
+    const board = await deps.economy.getContractBoard(response.locals.playerId as string);
+    response.json({ board, serverTime: new Date().toISOString() });
+  });
+
+  app.post('/api/contracts/:contractId/claim', requirePlayer(deps.tokens), async (request, response) => {
+    const contractId = contractIdSchema.parse(request.params.contractId);
+    const result = await deps.economy.claimContract(
+      response.locals.playerId as string,
+      contractId,
       idempotencyKey(request),
     );
     response.json(result);

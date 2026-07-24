@@ -7,6 +7,10 @@ import {
   GEAR_DEFINITIONS, MAX_EQUIPPED_GEAR, normalizeGearState, type GearId,
 } from '../../../packages/shared/src/gear';
 import { operatorMemoryLimit } from '../../../packages/shared/src/persona';
+import {
+  advanceContracts, buildContractBoard, claimContract, createContractState, normalizeContractState,
+  type ContractBoard, type ContractId, type ContractReward, type ContractState,
+} from '../../../packages/shared/src/contracts';
 
 export interface Resources {
   scrap: number;
@@ -40,6 +44,7 @@ export interface SaveData {
   xp: number;
   pity: number;
   campaign: { completedOperations: OperationId[] };
+  contracts: ContractState;
   stats: { raids: number; kills: number; extractedScrap: number };
   lastSeenAt: number;
 }
@@ -66,6 +71,7 @@ const initialSave = (): SaveData => ({
   xp: 0,
   pity: 0,
   campaign: { completedOperations: [] },
+  contracts: createContractState(),
   stats: { raids: 0, kills: 0, extractedScrap: 0 },
   lastSeenAt: Date.now(),
 });
@@ -127,6 +133,7 @@ export class GameState {
     this.data.campaign = {
       completedOperations: [...(profile.campaign?.completedOperations ?? this.data.campaign.completedOperations)],
     };
+    this.data.contracts = normalizeContractState(profile.contracts);
     this.save();
   }
 
@@ -148,6 +155,7 @@ export class GameState {
 
   recordKill(): void {
     this.data.stats.kills += 1;
+    advanceContracts(this.data.contracts, { kills: 1 });
     this.data.xp += 3;
     const required = this.data.accountLevel * 120;
     if (this.data.xp >= required) {
@@ -158,10 +166,18 @@ export class GameState {
     this.save();
   }
 
-  recordExtraction(scrap: number): void {
+  recordExtraction(cargo: Resources): void {
     this.data.stats.raids += 1;
-    this.data.stats.extractedScrap += scrap;
-    this.addResources({ scrap });
+    this.data.stats.extractedScrap += cargo.scrap;
+    for (const key of ['scrap', 'water', 'data', 'cores'] as const) {
+      this.data.resources[key] += Math.max(0, Math.floor(cargo[key]));
+    }
+    advanceContracts(this.data.contracts, {
+      extractions: 1,
+      scrapExtracted: cargo.scrap,
+      dataExtracted: cargo.data,
+    });
+    this.save();
   }
 
   activeOperationId(): OperationId {
@@ -169,10 +185,38 @@ export class GameState {
   }
 
   completeOperation(operationId: OperationId): boolean {
-    if (this.data.campaign.completedOperations.includes(operationId)) return false;
+    advanceContracts(this.data.contracts, { operationsCompleted: 1 });
+    if (this.data.campaign.completedOperations.includes(operationId)) {
+      this.save();
+      return false;
+    }
     this.data.campaign.completedOperations.push(operationId);
     this.save();
     return true;
+  }
+
+  contractBoard(now = new Date()): ContractBoard {
+    this.data.contracts = normalizeContractState(this.data.contracts, now);
+    this.save();
+    return buildContractBoard(this.data.contracts, now);
+  }
+
+  claimContract(contractId: ContractId, now = new Date()): {
+    board: ContractBoard;
+    reward: ContractReward;
+    streakBonus: ContractReward | null;
+  } | null {
+    this.data.contracts = normalizeContractState(this.data.contracts, now);
+    try {
+      const result = claimContract(this.data.contracts, contractId, now);
+      for (const key of ['scrap', 'water', 'data', 'cores'] as const) {
+        this.data.resources[key] += result.reward[key] + (result.streakBonus?.[key] ?? 0);
+      }
+      this.save();
+      return { ...result, board: buildContractBoard(this.data.contracts, now) };
+    } catch {
+      return null;
+    }
   }
 
   remember(operatorId: string, memory: string): void {
@@ -270,11 +314,13 @@ function normalizeSave(save: SaveData): SaveData {
   const candidate = save as SaveData & {
     campaign?: { completedOperations?: unknown[] };
     gear?: { owned?: unknown[]; equipped?: unknown[] };
+    contracts?: unknown;
   };
   const completedOperations = (candidate.campaign?.completedOperations ?? []).filter(isOperationId);
   return {
     ...save,
     campaign: { completedOperations: [...new Set(completedOperations)] },
     gear: normalizeGearState(candidate.gear?.owned, candidate.gear?.equipped),
+    contracts: normalizeContractState(candidate.contracts),
   };
 }

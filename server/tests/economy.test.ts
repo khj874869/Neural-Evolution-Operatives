@@ -39,6 +39,39 @@ describe('server authoritative economy', () => {
     expect(replay.replayed).toBe(true);
   });
 
+  it('tracks and claims rotating contracts without duplicating rewards', async () => {
+    const profile = await repository.getOrCreateGuest('test:contracts-device');
+    const fixedNow = new Date('2026-07-21T00:00:00.000Z');
+    const economy = new EconomyService(repository, () => 0.5, () => fixedNow);
+    for (let extraction = 1; extraction <= 5; extraction += 1) {
+      await economy.grantExtraction(
+        profile.playerId,
+        { scrap: 60, water: 0, data: 12, cores: 0 },
+        `contract-room:${extraction}`,
+        { kills: 25, operationComplete: true },
+      );
+    }
+    const board = await economy.getContractBoard(profile.playerId);
+    expect(board.daily).toHaveLength(3);
+    expect(board.weekly).toHaveLength(2);
+    expect([...board.daily, ...board.weekly].every((contract) => contract.completed)).toBe(true);
+
+    const before = await repository.getById(profile.playerId);
+    const claimed = await economy.claimContract(profile.playerId, board.daily[0].id, 'contract:claim:0001');
+    const replay = await economy.claimContract(profile.playerId, board.daily[0].id, 'contract:claim:0001');
+    expect(claimed.profile.contracts.streak).toBe(1);
+    expect(claimed.board.daily.find((contract) => contract.id === board.daily[0].id)?.claimed).toBe(true);
+    expect(claimed.profile.resources.scrap - before!.resources.scrap).toBe(claimed.reward!.scrap);
+    expect(claimed.profile.resources.water - before!.resources.water).toBe(claimed.reward!.water);
+    expect(claimed.profile.resources.data - before!.resources.data).toBe(claimed.reward!.data);
+    expect(claimed.profile.resources.cores - before!.resources.cores).toBe(claimed.reward!.cores);
+    expect(replay.replayed).toBe(true);
+    expect(replay.profile.resources).toEqual(claimed.profile.resources);
+    await expect(economy.claimContract(
+      profile.playerId, board.daily[0].id, 'contract:claim:duplicate',
+    )).rejects.toThrow('CONTRACT_ALREADY_CLAIMED');
+  });
+
   it('unlocks campaign operations in order and grants each completion reward once', async () => {
     const profile = await repository.getOrCreateGuest('test:campaign-device');
     const economy = new EconomyService(repository);

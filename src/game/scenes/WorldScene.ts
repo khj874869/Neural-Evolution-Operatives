@@ -936,8 +936,7 @@ export class WorldScene extends Phaser.Scene {
     this.extractRequested = false;
     if (distance < 72 && hasCargo && requested) {
       const cargo = { ...this.fieldCargo };
-      this.state.recordExtraction(cargo.scrap);
-      this.state.addResources({ water: cargo.water, data: cargo.data, cores: cargo.cores });
+      this.state.recordExtraction(cargo);
       this.fieldCargo = { scrap: 0, water: 0, data: 0, cores: 0 };
       this.impactBurst(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 0xc9f456, 22);
       gameEvents.emit('sfx', 'extract');

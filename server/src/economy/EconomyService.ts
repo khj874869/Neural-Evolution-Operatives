@@ -7,6 +7,10 @@ import {
 import {
   GEAR_DEFINITIONS, MAX_EQUIPPED_GEAR, type GearId,
 } from '../../../packages/shared/src/gear.js';
+import {
+  advanceContracts, buildContractBoard, claimContract, CONTRACT_DEFINITIONS, normalizeContractState,
+  type ContractBoard, type ContractId, type ContractReward,
+} from '../../../packages/shared/src/contracts.js';
 
 const OPERATOR_POOLS = {
   R: ['rook', 'patch'],
@@ -20,6 +24,7 @@ export class EconomyService {
   constructor(
     private readonly repository: PlayerRepository,
     private readonly random: () => number = () => randomInt(0, 1_000_000) / 1_000_000,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   async upgradeShelter(playerId: string, module: ShelterModule, idempotencyKey: string = randomUUID()) {
@@ -123,14 +128,59 @@ export class EconomyService {
     return { ...mutation, reward };
   }
 
-  async grantExtraction(playerId: string, cargo: ResourceWallet, sessionId: string) {
+  async grantExtraction(
+    playerId: string,
+    cargo: ResourceWallet,
+    sessionId: string,
+    metrics: { kills?: number; operationComplete?: boolean } = {},
+  ) {
+    const now = this.now();
     return this.repository.mutate(playerId, `extract:${sessionId}`, 'RED_ZONE_EXTRACTION', (profile) => {
       for (const key of ['scrap', 'water', 'data', 'cores'] as const) {
         const amount = Math.floor(cargo[key]);
         if (!Number.isFinite(amount) || amount < 0 || amount > 10_000) throw new EconomyError('INVALID_CARGO', 400);
         profile.resources[key] += amount;
       }
+      profile.contracts = normalizeContractState(profile.contracts, now);
+      advanceContracts(profile.contracts, {
+        extractions: 1,
+        scrapExtracted: cargo.scrap,
+        dataExtracted: cargo.data,
+        kills: metrics.kills ?? 0,
+        operationsCompleted: metrics.operationComplete ? 1 : 0,
+      }, now);
     });
+  }
+
+  async getContractBoard(playerId: string): Promise<ContractBoard> {
+    const profile = await this.repository.getById(playerId);
+    if (!profile) throw new EconomyError('PLAYER_NOT_FOUND', 404);
+    const now = this.now();
+    return buildContractBoard(normalizeContractState(profile.contracts, now), now);
+  }
+
+  async claimContract(playerId: string, contractId: ContractId, idempotencyKey: string = randomUUID()) {
+    let reward: ContractReward | undefined;
+    let streakBonus: ContractReward | null = null;
+    const now = this.now();
+    const mutation = await this.repository.mutate(playerId, idempotencyKey, 'CONTRACT_CLAIM', (profile) => {
+      profile.contracts = normalizeContractState(profile.contracts, now);
+      try {
+        const claimed = claimContract(profile.contracts, contractId, now);
+        reward = claimed.reward;
+        streakBonus = claimed.streakBonus;
+        addReward(profile.resources, claimed.reward);
+        if (claimed.streakBonus) addReward(profile.resources, claimed.streakBonus);
+      } catch (error) {
+        throw new EconomyError(error instanceof Error ? error.message : 'CONTRACT_CLAIM_FAILED', 409);
+      }
+    });
+    return {
+      ...mutation,
+      reward: reward ?? { ...CONTRACT_DEFINITIONS[contractId].reward },
+      streakBonus,
+      board: buildContractBoard(mutation.profile.contracts, now),
+    };
   }
 
   async completeOperation(playerId: string, operationId: OperationId, sessionId: string) {
@@ -160,4 +210,8 @@ export class EconomyError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
   }
+}
+
+function addReward(wallet: ResourceWallet, reward: ContractReward): void {
+  for (const key of ['scrap', 'water', 'data', 'cores'] as const) wallet[key] += reward[key];
 }

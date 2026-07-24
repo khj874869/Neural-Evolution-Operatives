@@ -2,6 +2,8 @@ export const FUNNEL_EVENTS = [
   'session_start',
   'tutorial_complete',
   'operation_complete',
+  'contract_view',
+  'contract_claim',
   'store_view',
   'checkout_intent',
   'purchase_complete',

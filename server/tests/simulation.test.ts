@@ -45,10 +45,33 @@ describe('authoritative red zone simulation', () => {
     });
     simulation.tick(50);
     const extraction = simulation.drainEvents().find((event) => event.type === 'extraction');
-    expect(extraction).toMatchObject({ type: 'extraction', cargo: { scrap: 15 } });
+    expect(extraction).toMatchObject({ type: 'extraction', cargo: { scrap: 15 }, kills: 0 });
     expect(player.cargo.scrap).toBe(0);
     simulation.tick(50);
     expect(simulation.drainEvents().some((event) => event.type === 'extraction')).toBe(false);
+  });
+
+  it('reports only newly earned kills on each extraction', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    simulation.resources.clear();
+    const player = simulation.addPlayer('session-contract', 'player-contract', 'COUNTER');
+    player.x = EXTRACTION_POINT.x;
+    player.y = EXTRACTION_POINT.y;
+    player.kills = 7;
+    player.cargo.scrap = 1;
+    simulation.applyInput('session-contract', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: true, weapon: 'carbine',
+    });
+    simulation.tick(50);
+    expect(simulation.drainEvents().find((event) => event.type === 'extraction')).toMatchObject({ kills: 7 });
+
+    player.kills = 10;
+    player.cargo.scrap = 1;
+    simulation.applyInput('session-contract', {
+      sequence: 2, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: true, weapon: 'carbine',
+    });
+    simulation.tick(50);
+    expect(simulation.drainEvents().find((event) => event.type === 'extraction')).toMatchObject({ kills: 3 });
   });
 
   it('applies operator squad bonuses inside the authoritative simulation', () => {

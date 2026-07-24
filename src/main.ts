@@ -30,6 +30,9 @@ import {
   initialRenderTier, type PerformanceSample,
 } from './game/systems/PerformanceGovernor';
 import { createDeepTalkFallback, operatorMemoryLimit } from '../packages/shared/src/persona';
+import {
+  buildContractBoard, type ContractBoard, type ContractCard, type ContractId, type ContractReward,
+} from '../packages/shared/src/contracts';
 
 declare global {
   interface Window {
@@ -106,7 +109,8 @@ const bossIntroName = byId<HTMLElement>('bossIntroName');
 const bossIntroClass = byId<HTMLElement>('bossIntroClass');
 const bossIntroDirective = byId<HTMLElement>('bossIntroDirective');
 const dodgeButton = byId<HTMLButtonElement>('dodgeButton');
-let currentModal: 'shelter' | 'roster' | 'deep-talk' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
+const contractBadge = byId<HTMLElement>('contractBadge');
+let currentModal: 'shelter' | 'contracts' | 'roster' | 'deep-talk' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
 let latestProfile: PlayerProfile | null = null;
@@ -117,6 +121,7 @@ const talkHistory = new Map<string, Array<{
   source?: 'ai' | 'rules';
 }>>();
 const talkUsage = new Map<string, { used: number; limit: number }>();
+let latestContractBoard: ContractBoard | null = null;
 let currentLinkLeader = '';
 let cutinTimer = 0;
 let bossIntroTimer = 0;
@@ -144,10 +149,16 @@ const tutorialSteps = [
   { code: '07 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E, 모바일은 EXTRACT를 누르세요. 사망하면 현장 화물을 모두 잃습니다.', keys: ['E', 'EXTRACT'] },
   { code: '08 // FABRICATE', icon: '▣', title: '추출 자원을 전력으로', body: '안전하게 추출한 뒤 쉘터의 전술 장비 제작에서 영구 장비를 만드세요. 최대 2개를 장착해 다음 탐사의 생존·화력·회수 능력을 바꿀 수 있습니다.', keys: ['SHELTER', 'GEAR'] },
   { code: '09 // DEEP TALK', icon: '◌', title: '기억하는 오퍼레이터', body: '오퍼레이터 화면에서 딥 토크를 열면 캐릭터별 대화와 장기 기억을 확인할 수 있습니다. 외부 AI는 별도 동의가 있을 때만 사용되며 언제든 기억을 삭제할 수 있습니다.', keys: ['OPERATIVES', 'DEEP TALK'] },
+  { code: '10 // CONTRACTS', icon: '◆', title: '매일 바뀌는 생존 계약', body: '계약 보드에는 일일 3개와 주간 2개의 서버 검증 목표가 배치됩니다. 달성한 보상을 직접 수령하고 연속 생존 보너스를 쌓으세요.', keys: ['CONTRACTS', 'CLAIM'] },
 ] as const;
 
 function renderPersistentHud(): void {
   const save = state.snapshot();
+  const contractBoard = buildContractBoard(save.contracts);
+  const claimableContracts = [...contractBoard.daily, ...contractBoard.weekly]
+    .filter((contract) => contract.completed && !contract.claimed).length;
+  contractBadge.textContent = String(claimableContracts);
+  contractBadge.classList.toggle('hidden', claimableContracts === 0);
   const equippedGear = save.gear.equipped.map((gearId) => GEAR_DEFINITIONS[gearId]);
   resourceHud.innerHTML = (Object.keys(labels) as Array<keyof typeof labels>).map((key) =>
     `<div class="resource"><span>${icons[key]} ${labels[key]}</span><b>${save.resources[key].toLocaleString()}</b></div>`,
@@ -500,6 +511,119 @@ function renderTutorial(step: number): void {
     void network.track('tutorial_complete', { steps: tutorialSteps.length });
     closeModal();
   });
+}
+
+async function renderContracts(): Promise<void> {
+  currentModal = 'contracts';
+  pauseForModal();
+  modalContent.innerHTML = `
+    <div class="contract-loading">
+      <span class="eyebrow">SHELTER DISPATCH // SECURE CONTRACT FEED</span>
+      <h2>생존 계약 동기화 중</h2>
+      <p class="subtle">현재 작전 기록과 수령 가능한 보상을 확인하고 있습니다.</p>
+    </div>`;
+
+  let board: ContractBoard;
+  let authoritative = false;
+  try {
+    if (!network.accountAvailable) throw new Error('ACCOUNT_API_OFFLINE');
+    board = await network.getContractBoard();
+    authoritative = true;
+  } catch {
+    board = state.contractBoard();
+    showToast('계약 서버에 연결하지 못해 로컬 보드를 표시합니다.');
+  }
+  if (currentModal !== 'contracts') return;
+  latestContractBoard = board;
+  renderContractBoard(board, authoritative);
+  void network.track('contract_view', {
+    daily: board.daily.length,
+    weekly: board.weekly.length,
+    streak: board.streak,
+    online: authoritative,
+  });
+}
+
+function renderContractBoard(board: ContractBoard, authoritative = network.accountAvailable): void {
+  const claimable = [...board.daily, ...board.weekly].filter((contract) => contract.completed && !contract.claimed).length;
+  const dailyReset = new Date(board.nextDailyResetAt).toLocaleString('ko-KR', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  const weeklyReset = new Date(board.nextWeeklyResetAt).toLocaleString('ko-KR', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  const cards = (contracts: ContractCard[]) => contracts.map((contract) => {
+    const progress = Math.min(100, Math.round((contract.progress / contract.target) * 100));
+    return `<article class="contract-card ${contract.claimed ? 'claimed' : contract.completed ? 'complete' : ''}">
+      <div class="contract-card-head"><span>${contract.cadence === 'daily' ? 'DAILY' : 'WEEKLY'} // ${contract.id.toUpperCase()}</span>
+      <em>${contract.claimed ? 'CLAIMED' : contract.completed ? 'READY' : `${contract.progress} / ${contract.target}`}</em></div>
+      <h3>${escapeHtml(contract.title)}</h3>
+      <p>${escapeHtml(contract.description)}</p>
+      <div class="contract-progress"><i style="width:${progress}%"></i></div>
+      <div class="contract-reward"><span>REWARD</span><b>${formatContractReward(contract.reward)}</b></div>
+      <button data-contract-claim="${contract.id}" ${contract.completed && !contract.claimed ? '' : 'disabled'}>
+        ${contract.claimed ? '수령 완료' : contract.completed ? '보상 수령' : '진행 중'}
+      </button>
+    </article>`;
+  }).join('');
+
+  modalContent.innerHTML = `
+    <span class="eyebrow">SHELTER DISPATCH // ${authoritative ? 'SERVER VERIFIED' : 'LOCAL TRAINING'}</span>
+    <div class="contract-heading">
+      <div><h2>생존 계약 보드</h2><p>${authoritative
+    ? '플레이 기록을 서버가 검증한 뒤 보상을 확정합니다.'
+    : '서버 연결 전에는 훈련용 진행도를 표시하며 온라인 계정에는 합산되지 않습니다.'}</p></div>
+      <div class="streak-core"><span>ACTIVE STREAK</span><b>${board.streak}</b><small>3일마다 데이터 · 7일마다 코어 보너스</small></div>
+    </div>
+    ${claimable ? `<div class="contract-ready-banner">수령 가능한 계약 ${claimable}개 // 보상 신호가 대기 중입니다.</div>` : ''}
+    <section class="contract-section">
+      <header><div><span>DAILY ROTATION</span><h3>오늘의 계약</h3></div><small>${dailyReset} 갱신 · KST</small></header>
+      <div class="contract-grid">${cards(board.daily)}</div>
+    </section>
+    <section class="contract-section weekly">
+      <header><div><span>WEEKLY DIRECTIVE</span><h3>주간 지령</h3></div><small>${weeklyReset} 갱신 · KST</small></header>
+      <div class="contract-grid weekly">${cards(board.weekly)}</div>
+    </section>
+    <p class="contract-fairness">${authoritative
+    ? '계약 보상은 구매와 무관하며 모든 플레이어에게 동일한 주기로 제공됩니다. 미수령 보상은 다음 갱신 시 사라집니다.'
+    : 'LOCAL TRAINING // 이 보드의 진행도와 보상은 기기에만 저장됩니다. 서버 연결 후 권위형 계약 보드로 교체됩니다.'}</p>`;
+
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-contract-claim]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const contractId = button.dataset.contractClaim as ContractId;
+      button.disabled = true;
+      button.textContent = '확정 중…';
+      try {
+        const usedServer = authoritative;
+        const result = usedServer
+          ? await network.claimContract(contractId)
+          : state.claimContract(contractId);
+        if (!result) throw new Error('CONTRACT_CLAIM_REJECTED');
+        latestContractBoard = result.board;
+        renderPersistentHud();
+        renderContractBoard(result.board, usedServer);
+        const bonusText = result.streakBonus ? ` · 연속 보너스 ${formatContractReward(result.streakBonus)}` : '';
+        showToast(`계약 보상 ${formatContractReward(result.reward)}${bonusText}`);
+        void network.track('contract_claim', {
+          contractId,
+          cadence: [...result.board.daily, ...result.board.weekly]
+            .find((contract) => contract.id === contractId)?.cadence ?? 'unknown',
+          streak: result.board.streak,
+          online: usedServer,
+        });
+      } catch {
+        showToast('계약 보상을 확정하지 못했습니다. 진행도와 연결 상태를 확인하세요.');
+        if (latestContractBoard) renderContractBoard(latestContractBoard, authoritative);
+      }
+    });
+  });
+}
+
+function formatContractReward(reward: ContractReward): string {
+  const entries = (Object.keys(reward) as Array<keyof ContractReward>)
+    .filter((key) => reward[key] > 0)
+    .map((key) => `${icons[key]} ${reward[key]}`);
+  return entries.join(' + ') || '보상 없음';
 }
 
 function renderShelter(): void {
@@ -1015,6 +1139,7 @@ commandForm.addEventListener('submit', (event) => {
 });
 
 byId('shelterButton').addEventListener('click', renderShelter);
+byId('contractsButton').addEventListener('click', () => { void renderContracts(); });
 byId('rosterButton').addEventListener('click', renderRoster);
 storeButton.addEventListener('click', () => { void renderStore(); });
 byId('alphaButton').addEventListener('click', renderAlphaInfo);
@@ -1109,6 +1234,7 @@ gameEvents.on('network-profile', (profile: PlayerProfile) => {
   if (previousGear !== profile.gear.equipped.join('|')) gameEvents.emit('loadout-changed');
   renderPersistentHud();
   if (currentModal === 'shelter') renderShelter();
+  if (currentModal === 'contracts') void renderContracts();
   if (currentModal === 'roster') renderRoster();
   if (currentModal === 'deep-talk' && rosterSelection) renderDeepTalk(rosterSelection);
   if (currentModal === 'store') void renderStore();

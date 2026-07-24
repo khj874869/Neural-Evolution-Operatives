@@ -58,7 +58,7 @@ export type SimulationEvent =
   | { type: 'neural-link'; playerSessionId: string; operatorId: string; skillName: string; message: string }
   | {
     type: 'extraction'; playerSessionId: string; playerId: string; cargo: ResourceWallet;
-    extractionNumber: number; operationId: OperationId; operationComplete: boolean;
+    extractionNumber: number; operationId: OperationId; operationComplete: boolean; kills: number;
   }
   | { type: 'death'; playerSessionId: string; message: string };
 
@@ -70,6 +70,7 @@ interface InternalPlayer extends SimPlayer {
   shots: number;
   hits: number;
   extractionNumber: number;
+  reportedKills: number;
   salvageCollected: number;
   collected: ResourceWallet;
 }
@@ -146,6 +147,7 @@ export class RedZoneSimulation {
       shots: 0,
       hits: 0,
       extractionNumber: 0,
+      reportedKills: 0,
       salvageCollected: 0,
       collected: emptyWallet(),
     };
@@ -482,7 +484,9 @@ export class RedZoneSimulation {
     if (Math.hypot(player.x - EXTRACTION_POINT.x, player.y - EXTRACTION_POINT.y) > 72) return;
     if (!Object.values(player.cargo).some((value) => value > 0)) return;
     const cargo = { ...player.cargo };
+    const kills = Math.max(0, player.kills - player.reportedKills);
     player.cargo = emptyWallet();
+    player.reportedKills = player.kills;
     player.extractionNumber += 1;
     this.events.push({
       type: 'extraction',
@@ -492,6 +496,7 @@ export class RedZoneSimulation {
       extractionNumber: player.extractionNumber,
       operationId: this.operationId,
       operationComplete: this.bossDefeated,
+      kills,
     });
   }
 

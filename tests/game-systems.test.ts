@@ -28,6 +28,10 @@ import {
 import {
   createDeepTalkFallback, getOperatorPersona, operatorMemoryLimit,
 } from '../packages/shared/src/persona';
+import {
+  advanceContracts, buildContractBoard, claimContract, CONTRACT_DEFINITIONS, CONTRACT_IDS,
+  contractPeriodKeys, createContractState, normalizeContractState, refreshContractState,
+} from '../packages/shared/src/contracts';
 
 const save = (lastSeenAt: number): SaveData => ({
   version: 1,
@@ -36,6 +40,7 @@ const save = (lastSeenAt: number): SaveData => ({
   operators: [], squad: [], accountLevel: 1, xp: 0, pity: 0,
   gear: { owned: [], equipped: [] },
   campaign: { completedOperations: [] },
+  contracts: createContractState(new Date(lastSeenAt)),
   stats: { raids: 0, kills: 0, extractedScrap: 0 }, lastSeenAt,
 });
 
@@ -141,6 +146,66 @@ describe('deep talk persona core', () => {
     expect(operatorMemoryLimit('SSR')).toBe(8);
     expect(operatorMemoryLimit('SR')).toBe(5);
     expect(operatorMemoryLimit('R')).toBe(3);
+  });
+});
+
+describe('survival contract rotation', () => {
+  it('rotates at Seoul resets while weekly progress survives daily refreshes', () => {
+    const dayOne = new Date('2026-07-21T00:00:00.000Z');
+    const state = createContractState(dayOne);
+    expect(contractPeriodKeys(dayOne)).toEqual({ dayKey: '2026-07-21', weekKey: '2026-07-20' });
+    advanceContracts(state, {
+      extractions: 5, scrapExtracted: 300, dataExtracted: 60, kills: 120, operationsCompleted: 4,
+    }, dayOne);
+    const firstBoard = buildContractBoard(state, dayOne);
+    expect(firstBoard.daily).toHaveLength(3);
+    expect(firstBoard.weekly).toHaveLength(2);
+    expect([...firstBoard.daily, ...firstBoard.weekly].every((contract) => contract.completed)).toBe(true);
+    expect(firstBoard.nextDailyResetAt).toBe('2026-07-21T15:00:00.000Z');
+    expect(firstBoard.nextWeeklyResetAt).toBe('2026-07-26T15:00:00.000Z');
+    const weeklyProgress = state.weekly.map((contract) => ({ ...contract }));
+
+    expect(claimContract(state, firstBoard.daily[0].id, dayOne).streakBonus).toBeNull();
+    expect(state.streak).toBe(1);
+
+    const dayTwo = new Date('2026-07-22T00:00:00.000Z');
+    refreshContractState(state, dayTwo);
+    expect(state.daily.every((contract) => contract.progress === 0 && !contract.claimed)).toBe(true);
+    expect(state.weekly).toEqual(weeklyProgress);
+    advanceContracts(state, {
+      extractions: 5, scrapExtracted: 300, dataExtracted: 60, kills: 120, operationsCompleted: 4,
+    }, dayTwo);
+    claimContract(state, state.daily[0].id, dayTwo);
+
+    const dayThree = new Date('2026-07-23T00:00:00.000Z');
+    refreshContractState(state, dayThree);
+    advanceContracts(state, {
+      extractions: 5, scrapExtracted: 300, dataExtracted: 60, kills: 120, operationsCompleted: 4,
+    }, dayThree);
+    expect(claimContract(state, state.daily[0].id, dayThree).streakBonus).toEqual({
+      scrap: 0, water: 0, data: 15, cores: 0,
+    });
+    expect(state.streak).toBe(3);
+  });
+
+  it('repairs missing and injected slots to the deterministic live rotation', () => {
+    const now = new Date('2026-07-21T00:00:00.000Z');
+    const expected = createContractState(now);
+    const assigned = new Set(expected.daily.map((contract) => contract.id));
+    const injectedId = CONTRACT_IDS.find((id) => (
+      CONTRACT_DEFINITIONS[id].cadence === 'daily' && !assigned.has(id)
+    ))!;
+    const damaged = {
+      ...expected,
+      daily: [{ id: injectedId, progress: 999, claimed: true }],
+      weekly: [],
+    };
+    const repaired = normalizeContractState(damaged, now);
+    expect(repaired.daily.map((contract) => contract.id)).toEqual(expected.daily.map((contract) => contract.id));
+    expect(repaired.weekly.map((contract) => contract.id)).toEqual(expected.weekly.map((contract) => contract.id));
+    expect(repaired.daily).toHaveLength(3);
+    expect(repaired.weekly).toHaveLength(2);
+    expect(repaired.daily.every((contract) => contract.progress === 0 && !contract.claimed)).toBe(true);
   });
 });
 

@@ -10,6 +10,9 @@ import { gameEvents } from '../events';
 import type { ClientErrorReport } from '../telemetry/ClientTelemetry';
 import { isOperationId, type OperationId } from '../../../packages/shared/src/operations';
 import type { GearId } from '../../../packages/shared/src/gear';
+import type {
+  ContractBoard, ContractId, ContractReward,
+} from '../../../packages/shared/src/contracts';
 
 export interface NetworkSnapshot {
   localSessionId: string;
@@ -78,6 +81,10 @@ export class GameServerClient {
     this.analyticsConsent = consented;
     if (!consented) this.analyticsQueue.length = 0;
     else void this.flushAnalytics();
+  }
+
+  get accountAvailable(): boolean {
+    return Boolean(this.endpoint && this.token);
   }
 
   async connect(operationId: OperationId = 'operation-zero'): Promise<void> {
@@ -186,6 +193,29 @@ export class GameServerClient {
     gameEvents.emit('network-profile', response.profile);
     if (this.connected) this.room?.send('sync-loadout');
     return response.profile;
+  }
+
+  async getContractBoard(): Promise<ContractBoard> {
+    const response = await this.authorized<{ board: ContractBoard }>('/api/contracts', { method: 'GET' });
+    return response.board;
+  }
+
+  async claimContract(contractId: ContractId): Promise<{
+    profile: PlayerProfile;
+    board: ContractBoard;
+    reward: ContractReward;
+    streakBonus: ContractReward | null;
+  }> {
+    const response = await this.authorized<{
+      profile: PlayerProfile;
+      board: ContractBoard;
+      reward: ContractReward;
+      streakBonus: ContractReward | null;
+    }>(`/api/contracts/${encodeURIComponent(contractId)}/claim`, {
+      method: 'POST', body: '{}',
+    });
+    gameEvents.emit('network-profile', response.profile);
+    return response;
   }
 
   async setAiConsent(consent: boolean): Promise<PlayerProfile> {

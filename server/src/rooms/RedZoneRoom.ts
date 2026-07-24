@@ -128,7 +128,10 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
     for (const event of this.simulation.drainEvents()) {
       if (event.type === 'extraction') {
         const idempotencyId = `${this.roomId}:${event.playerId}:${event.extractionNumber}`;
-        void roomDependencies().economy.grantExtraction(event.playerId, event.cargo, idempotencyId)
+        void roomDependencies().economy.grantExtraction(event.playerId, event.cargo, idempotencyId, {
+          kills: event.kills,
+          operationComplete: event.operationComplete,
+        })
           .then(async () => {
             if (event.operationComplete) {
               await roomDependencies().economy.completeOperation(event.playerId, event.operationId, idempotencyId);

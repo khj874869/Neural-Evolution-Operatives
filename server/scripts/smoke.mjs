@@ -9,6 +9,14 @@ const authResponse = await fetch(`${endpoint}/api/auth/guest`, {
 });
 if (!authResponse.ok) throw new Error(`Guest auth failed: ${authResponse.status}`);
 const auth = await authResponse.json();
+const contractsResponse = await fetch(`${endpoint}/api/contracts`, {
+  headers: { authorization: `Bearer ${auth.token}` },
+});
+if (!contractsResponse.ok) throw new Error(`Contract board failed: ${contractsResponse.status}`);
+const contracts = await contractsResponse.json();
+if (contracts.board?.daily?.length !== 3 || contracts.board?.weekly?.length !== 2) {
+  throw new Error('Contract rotation did not return three daily and two weekly objectives');
+}
 const personaResponse = await fetch(`${endpoint}/api/persona/chat`, {
   method: 'POST',
   headers: {
@@ -81,6 +89,7 @@ console.log(JSON.stringify({
   status: 'ok', roomId: room.roomId, sessionRestored: true,
   personaSource: persona.exchange.source,
   personaMemorySaved: true,
+  contracts: `${contracts.board.daily.length}/${contracts.board.weekly.length}`,
   equippedGear: crafted.profile.gear.equipped, ...snapshot,
 }));
 await room.leave();

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PlayerProfile } from '../../../packages/shared/src/protocol.js';
 import { isOperationId } from '../../../packages/shared/src/operations.js';
 import { normalizeGearState } from '../../../packages/shared/src/gear.js';
+import { createContractState, normalizeContractState } from '../../../packages/shared/src/contracts.js';
 
 export function createPlayerProfile(deviceId: string, now = new Date()): PlayerProfile {
   return {
@@ -28,6 +29,7 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
       dailyTurnsUsed: 0,
       lastExchange: null,
     },
+    contracts: createContractState(now),
     commerce: { entitlements: [], subscriptionUntil: null, purchases: [] },
     lastSeenAt: now.toISOString(),
     createdAt: now.toISOString(),
@@ -38,6 +40,7 @@ export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
   const candidate = profile as PlayerProfile & {
     gear?: { owned?: unknown[]; equipped?: unknown[] };
     ai?: Partial<PlayerProfile['ai']>;
+    contracts?: unknown;
   };
   profile.campaign ??= { completedOperations: [] };
   profile.campaign.completedOperations = [...new Set(
@@ -61,6 +64,7 @@ export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
       ? Math.min(10_000, Number(candidate.ai?.dailyTurnsUsed)) : 0,
     lastExchange: normalizeLastExchange(candidate.ai?.lastExchange),
   };
+  profile.contracts = normalizeContractState(candidate.contracts);
   return profile;
 }
 

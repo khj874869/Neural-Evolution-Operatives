@@ -16,12 +16,14 @@ const config: ServerConfig = {
 describe('game account API', () => {
   let app: ReturnType<typeof createStandaloneHttpApp>;
   let repository: InMemoryPlayerRepository;
+  let economy: EconomyService;
 
   beforeEach(async () => {
     repository = new InMemoryPlayerRepository();
     await repository.initialize();
     const tokens = new TokenService(config.jwtSecret);
-    app = createStandaloneHttpApp({ config, repository, tokens, economy: new EconomyService(repository, () => 0.5) });
+    economy = new EconomyService(repository, () => 0.5, () => new Date('2026-07-21T00:00:00.000Z'));
+    app = createStandaloneHttpApp({ config, repository, tokens, economy });
   });
 
   it('creates a guest account and reads it through bearer authentication', async () => {
@@ -32,6 +34,8 @@ describe('game account API', () => {
     expect(profile.body.profile.campaign).toEqual({ completedOperations: [] });
     expect(profile.body.profile.gear).toEqual({ owned: [], equipped: [] });
     expect(profile.body.profile.ai).toMatchObject({ consentedAt: null, dailyTurnsUsed: 0, lastExchange: null });
+    expect(profile.body.profile.contracts.daily).toHaveLength(3);
+    expect(profile.body.profile.contracts.weekly).toHaveLength(2);
   });
 
   it('rejects economy calls without authentication', async () => {
@@ -41,13 +45,13 @@ describe('game account API', () => {
   it('exposes health without leaking secrets', async () => {
     const health = await request(app).get('/health').expect(200);
     expect(health.body).toEqual({
-      status: 'ok', service: 'neural-evolution-game-server', version: '1.2.0', channel: 'alpha', storage: 'memory',
+      status: 'ok', service: 'neural-evolution-game-server', version: '1.3.0', channel: 'alpha', storage: 'memory',
     });
     expect(health.headers['x-request-id']).toBeTypeOf('string');
-    await request(app).get('/ready').expect(200, { status: 'ready', version: '1.2.0', channel: 'alpha' });
+    await request(app).get('/ready').expect(200, { status: 'ready', version: '1.3.0', channel: 'alpha' });
     const release = await request(app).get('/api/release').expect(200);
     expect(release.body).toMatchObject({
-      version: '1.2.0', channel: 'alpha', commit: 'abcdef0',
+      version: '1.3.0', channel: 'alpha', commit: 'abcdef0',
       commerceAvailable: false, aiAvailable: false, aiDailyTurnLimit: 12,
     });
     expect(new Date(release.body.serverTime).getTime()).not.toBeNaN();
@@ -64,6 +68,34 @@ describe('game account API', () => {
       .send({ squad: ['lumen', 'aegis-07', 'ratchet'] })
       .expect(200);
     expect(response.body.profile.squad).toEqual(['lumen', 'aegis-07', 'ratchet']);
+  });
+
+  it('serves and claims server-authoritative survival contracts', async () => {
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:contract-device-01' }).expect(200);
+    const authorization = `Bearer ${auth.body.token}`;
+    const initial = await request(app).get('/api/contracts').set('authorization', authorization).expect(200);
+    expect(initial.body.board.daily).toHaveLength(3);
+    expect(initial.body.board.weekly).toHaveLength(2);
+    await request(app).post(`/api/contracts/${initial.body.board.daily[0].id}/claim`)
+      .set('authorization', authorization)
+      .expect(409, { error: 'CONTRACT_NOT_COMPLETE' });
+
+    for (let extraction = 1; extraction <= 5; extraction += 1) {
+      await economy.grantExtraction(
+        auth.body.profile.playerId,
+        { scrap: 60, water: 0, data: 12, cores: 0 },
+        `api-contract-room:${extraction}`,
+        { kills: 25, operationComplete: true },
+      );
+    }
+    const completed = await request(app).get('/api/contracts').set('authorization', authorization).expect(200);
+    const contractId = completed.body.board.daily[0].id;
+    const claimed = await request(app).post(`/api/contracts/${contractId}/claim`)
+      .set('authorization', authorization)
+      .set('idempotency-key', 'contract:api:claim:0001')
+      .expect(200);
+    expect(claimed.body.board.daily.find((contract: { id: string }) => contract.id === contractId).claimed).toBe(true);
+    expect(claimed.body.profile.contracts.streak).toBe(1);
   });
 
   it('crafts and equips tactical gear through authenticated APIs', async () => {
