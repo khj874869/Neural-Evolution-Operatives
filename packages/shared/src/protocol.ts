@@ -24,6 +24,7 @@ export interface GameInputMessage {
   weapon: WeaponId;
   activateLink?: boolean;
   dash?: boolean;
+  paused?: boolean;
 }
 
 export interface TacticalMessage {

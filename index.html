@@ -26,6 +26,21 @@
       <section id="game-shell">
         <div id="game"></div>
         <div id="scanlines"></div>
+        <div class="battlefield-chrome" aria-hidden="true">
+          <i class="field-corner field-corner-nw"></i>
+          <i class="field-corner field-corner-ne"></i>
+          <i class="field-corner field-corner-sw"></i>
+          <i class="field-corner field-corner-se"></i>
+          <div class="combat-orbit"></div>
+          <div class="field-mode">
+            <span>RED ZONE // LIVE</span>
+            <b>TACTICAL OPTICS ACTIVE</b>
+          </div>
+          <div class="field-grid-ref">
+            <span>SECTOR 07</span>
+            <b>GRID 12.44</b>
+          </div>
+        </div>
         <aside class="squad glass" id="squadHud"></aside>
         <section class="operation-hud glass" id="operationHud" aria-live="polite">
           <div><span id="operationCode">OP-00 // SALVAGE</span><b id="operationTitle">죽은 도시의 신호</b></div>
@@ -62,6 +77,7 @@
         <button id="contractsButton" class="contracts-button"><span>◆</span> 계약<em id="contractBadge" class="hidden">0</em></button>
         <button id="rosterButton"><span>◈</span> 오퍼레이터</button>
         <button id="storeButton"><span>▣</span> 보급소</button>
+        <button id="guideButton"><span>?</span> 가이드</button>
         <button id="alphaButton"><span>⌁</span> 알파 정보</button>
         <form id="commandForm">
           <span class="prompt">TACTICAL://</span>
@@ -87,7 +103,7 @@
       </div>
 
       <div class="modal-backdrop hidden" id="modalBackdrop">
-        <section class="modal glass" role="dialog" aria-modal="true">
+        <section class="modal glass" role="dialog" aria-modal="true" aria-label="게임 메뉴 및 정보">
           <button class="close" id="closeModal" aria-label="닫기">×</button>
           <div id="modalContent"></div>
         </section>

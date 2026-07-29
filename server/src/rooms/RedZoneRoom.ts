@@ -18,6 +18,7 @@ const inputSchema = z.object({
   weapon: z.enum(['carbine', 'scatter', 'rail']),
   activateLink: z.boolean().optional().default(false),
   dash: z.boolean().optional().default(false),
+  paused: z.boolean().optional().default(false),
 });
 const tacticalSchema = z.object({ text: z.string().trim().min(1).max(100) });
 

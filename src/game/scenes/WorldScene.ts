@@ -169,6 +169,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
     gameEvents.on('network-status', this.handleNetworkStatus, this);
     gameEvents.on('neural-link-request', this.requestNeuralLink, this);
+    gameEvents.on('suspend-world-input', this.suspendWorldInput, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
@@ -181,6 +182,7 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
       gameEvents.off('network-status', this.handleNetworkStatus, this);
       gameEvents.off('neural-link-request', this.requestNeuralLink, this);
+      gameEvents.off('suspend-world-input', this.suspendWorldInput, this);
       this.scale.off('resize', this.handleResize, this);
     });
 
@@ -210,10 +212,21 @@ export class WorldScene extends Phaser.Scene {
 
   private drawWorld(): void {
     const palette = this.operationDefinition.palette;
+    const groundTexture = this.add.tileSprite(0, 0, WORLD_SIZE, WORLD_SIZE, 'red-zone-ground')
+      .setOrigin(0)
+      .setDepth(-7)
+      .setAlpha(this.operationId === 'operation-ashfall' ? 0.68 : 0.58)
+      .setTint(this.operationId === 'operation-ashfall' ? 0xd6a184 : 0xb7d1c8);
     const ground = this.add.graphics();
-    ground.fillStyle(palette.ground).fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
-    ground.lineStyle(1, palette.grid, 0.42);
+    ground.fillStyle(palette.ground, this.operationId === 'operation-ashfall' ? 0.46 : 0.56)
+      .fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+    ground.lineStyle(1, palette.grid, 0.34);
     for (let axis = 0; axis <= WORLD_SIZE; axis += 80) {
+      ground.lineBetween(axis, 0, axis, WORLD_SIZE);
+      ground.lineBetween(0, axis, WORLD_SIZE, axis);
+    }
+    ground.lineStyle(1, palette.accent, 0.12);
+    for (let axis = 0; axis <= WORLD_SIZE; axis += 400) {
       ground.lineBetween(axis, 0, axis, WORLD_SIZE);
       ground.lineBetween(0, axis, WORLD_SIZE, axis);
     }
@@ -222,6 +235,17 @@ export class WorldScene extends Phaser.Scene {
     ground.setDepth(-5);
 
     const seed = new Phaser.Math.RandomDataGenerator([this.operationDefinition.codename]);
+    for (let index = 0; index < 18; index += 1) {
+      const x = seed.between(140, WORLD_SIZE - 140);
+      const y = seed.between(140, WORLD_SIZE - 140);
+      const radius = seed.between(58, 180);
+      ground.fillStyle(
+        this.operationId === 'operation-ashfall' ? 0x8f351f : 0x40684e,
+        seed.realInRange(0.025, 0.065),
+      ).fillCircle(x, y, radius);
+      ground.lineStyle(1, palette.accent, seed.realInRange(0.04, 0.1))
+        .strokeCircle(x, y, radius + seed.between(8, 24));
+    }
     for (let index = 0; index < 64; index += 1) {
       const x = seed.between(90, WORLD_SIZE - 90);
       const y = seed.between(90, WORLD_SIZE - 90);
@@ -259,6 +283,10 @@ export class WorldScene extends Phaser.Scene {
         );
       }
     }
+    groundTexture.setTilePosition(
+      this.operationId === 'operation-ashfall' ? 164 : 0,
+      this.operationId === 'operation-ashfall' ? 96 : 0,
+    );
     this.extractionRing = this.add.circle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 64, palette.accent, 0.045)
       .setStrokeStyle(2, palette.accent, 0.7).setDepth(1);
     this.add.text(EXTRACTION_POINT.x, EXTRACTION_POINT.y - 88, `${this.operationDefinition.zoneName} // EXTRACTION`, {
@@ -431,6 +459,7 @@ export class WorldScene extends Phaser.Scene {
         weapon: this.currentWeapon,
         activateLink: this.linkRequested,
         dash: this.dashNetworkPending,
+        paused: false,
       });
       this.linkRequested = false;
       this.extractRequested = false;
@@ -1113,6 +1142,34 @@ export class WorldScene extends Phaser.Scene {
     this.scene.resume();
   }
 
+  private suspendWorldInput(): void {
+    const mobile = this.registry.get('mobileInput') as MobileInputState;
+    mobile.up = false;
+    mobile.down = false;
+    mobile.left = false;
+    mobile.right = false;
+    mobile.fire = false;
+    mobile.dash = false;
+    mobile.extract = false;
+    this.player?.setVelocity(0, 0);
+    this.linkRequested = false;
+    this.extractRequested = false;
+    this.dashNetworkPending = false;
+    if (!this.networkConnected) return;
+    this.network?.sendInput({
+      sequence: ++this.networkSequence,
+      moveX: 0,
+      moveY: 0,
+      aimAngle: (this.player?.rotation ?? Math.PI / 2) - Math.PI / 2,
+      fire: false,
+      extract: false,
+      weapon: this.currentWeapon,
+      activateLink: false,
+      dash: false,
+      paused: true,
+    });
+  }
+
   private handleResize(gameSize: Phaser.Structs.Size): void {
     this.stormOverlay.setSize(gameSize.width, gameSize.height);
   }
@@ -1139,19 +1196,24 @@ export class WorldScene extends Phaser.Scene {
     this.networkSessionId = snapshot.localSessionId;
     const own = snapshot.players.find((player) => player.id === snapshot.localSessionId);
     if (own) {
-      if (own.hp < this.hp) {
+      const safeNumber = (value: number | undefined, fallback = 0): number => (
+        Number.isFinite(value) ? Number(value) : fallback
+      );
+      const ownHp = safeNumber(own.hp, this.hp);
+      if (ownHp < this.hp) {
         if (!this.reducedMotion) this.cameras.main.shake(80, 0.0035);
         this.impactBurst(this.player.x, this.player.y, 0xff5d5d, 5);
         gameEvents.emit('sfx', 'hurt');
         gameEvents.emit('haptic', 'heavy');
       }
-      this.player.x = Phaser.Math.Linear(this.player.x, own.x, 0.32);
-      this.player.y = Phaser.Math.Linear(this.player.y, own.y, 0.32);
-      this.hp = own.hp;
-      this.radiation = own.radiation;
-      this.missionKills = own.kills;
+      this.player.x = Phaser.Math.Linear(this.player.x, safeNumber(own.x, this.player.x), 0.32);
+      this.player.y = Phaser.Math.Linear(this.player.y, safeNumber(own.y, this.player.y), 0.32);
+      this.hp = ownHp;
+      this.radiation = safeNumber(own.radiation, this.radiation);
+      this.missionKills = safeNumber(own.kills, this.missionKills);
       const nextCargo = {
-        scrap: own.cargoScrap, water: own.cargoWater, data: own.cargoData, cores: own.cargoCores,
+        scrap: safeNumber(own.cargoScrap), water: safeNumber(own.cargoWater),
+        data: safeNumber(own.cargoData), cores: safeNumber(own.cargoCores),
       };
       const nextCargoTotal = Object.values(nextCargo).reduce((sum, value) => sum + value, 0);
       if (nextCargoTotal > this.lastNetworkCargo) {
@@ -1160,9 +1222,9 @@ export class WorldScene extends Phaser.Scene {
       if (nextCargo.data > this.fieldCargo.data) this.operationDataCollected += nextCargo.data - this.fieldCargo.data;
       this.lastNetworkCargo = nextCargoTotal;
       this.fieldCargo = nextCargo;
-      this.networkSequence = Math.max(this.networkSequence, own.lastSequence);
-      this.neuralLinkCharge = own.linkCharge;
-      this.dashCooldownMs = Math.max(this.dashCooldownMs, own.dashCooldownMs);
+      this.networkSequence = Math.max(this.networkSequence, safeNumber(own.lastSequence));
+      this.neuralLinkCharge = safeNumber(own.linkCharge);
+      this.dashCooldownMs = Math.max(this.dashCooldownMs, safeNumber(own.dashCooldownMs));
     }
     this.operationRelaysDestroyed = snapshot.relaysDestroyed;
     if (snapshot.bossDefeated) this.operationBossDefeated = true;
@@ -1187,7 +1249,14 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private syncNetworkEnemies(enemies: NetworkSnapshot['enemies']): void {
-    const incoming = new Set(enemies.map((enemy) => enemy.id));
+    const validEnemies = enemies.filter((enemy) => (
+      typeof enemy.id === 'string'
+      && Boolean(ENEMY_STATS[enemy.kind])
+      && Number.isFinite(enemy.x)
+      && Number.isFinite(enemy.y)
+      && Number.isFinite(enemy.hp)
+    ));
+    const incoming = new Set(validEnemies.map((enemy) => enemy.id));
     for (const [id, sprite] of this.serverEnemies) {
       if (incoming.has(id)) continue;
       this.impactBurst(sprite.x, sprite.y, ENEMY_STATS[sprite.archetype ?? 'raider'].tint, 8);
@@ -1196,10 +1265,11 @@ export class WorldScene extends Phaser.Scene {
       sprite.disableBody(true, true);
       this.serverEnemies.delete(id);
     }
-    for (const source of enemies) {
+    for (const source of validEnemies) {
+      const stats = ENEMY_STATS[source.kind];
       let sprite = this.serverEnemies.get(source.id);
       if (!sprite) {
-        sprite = this.enemies.get(source.x, source.y, ENEMY_STATS[source.kind].texture) as EnemySprite | null ?? undefined;
+        sprite = this.enemies.get(source.x, source.y, stats.texture) as EnemySprite | null ?? undefined;
         if (!sprite) continue;
         this.serverEnemies.set(source.id, sprite);
         if (source.kind === this.operationDefinition.bossKind && !this.bossIntroShown) {
@@ -1209,7 +1279,6 @@ export class WorldScene extends Phaser.Scene {
           gameEvents.emit('haptic', 'warning');
         }
       }
-      const stats = ENEMY_STATS[source.kind];
       const previousHp = sprite.getData('hp') as number | undefined;
       sprite.setTexture(stats.texture).enableBody(true, source.x, source.y, true, true)
         .setPosition(source.x, source.y).setTint(stats.tint).setScale(stats.scale).setDepth(3);
@@ -1224,7 +1293,14 @@ export class WorldScene extends Phaser.Scene {
 
   private syncNetworkResources(resources: NetworkSnapshot['resources']): void {
     const tints: Record<keyof Resources, number> = { scrap: 0xa7b1aa, water: 0x61b9ff, data: 0xb47cff, cores: 0xffd76a };
-    const incoming = new Set(resources.map((resource) => resource.id));
+    const validResources = resources.filter((resource) => (
+      typeof resource.id === 'string'
+      && Boolean(RESOURCE_TEXTURES[resource.kind])
+      && Number.isFinite(resource.x)
+      && Number.isFinite(resource.y)
+      && Number.isFinite(resource.value)
+    ));
+    const incoming = new Set(validResources.map((resource) => resource.id));
     for (const [id, sprite] of this.serverResources) {
       if (incoming.has(id)) continue;
       this.impactBurst(sprite.x, sprite.y, 0xffffff, 5);
@@ -1232,7 +1308,7 @@ export class WorldScene extends Phaser.Scene {
       sprite.disableBody(true, true);
       this.serverResources.delete(id);
     }
-    for (const source of resources) {
+    for (const source of validResources) {
       let sprite = this.serverResources.get(source.id);
       if (!sprite) {
         sprite = this.resources.get(source.x, source.y, RESOURCE_TEXTURES[source.kind]) as ResourceSprite | null ?? undefined;

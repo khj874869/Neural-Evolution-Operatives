@@ -89,6 +89,7 @@ const bossHudName = byId<HTMLElement>('bossHudName');
 const eventFeed = byId<HTMLDivElement>('eventFeed');
 const modalBackdrop = byId<HTMLDivElement>('modalBackdrop');
 const modalContent = byId<HTMLDivElement>('modalContent');
+const closeModalButton = byId<HTMLButtonElement>('closeModal');
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
 const toast = byId<HTMLDivElement>('toast');
@@ -125,6 +126,7 @@ let latestContractBoard: ContractBoard | null = null;
 let currentLinkLeader = '';
 let cutinTimer = 0;
 let bossIntroTimer = 0;
+let lastFocusedElement: HTMLElement | null = null;
 
 releaseBadge.textContent = `${CLIENT_RELEASE.channel.toUpperCase()} ${CLIENT_RELEASE.version}`;
 releaseBadge.title = '비공개 테스트 빌드';
@@ -140,16 +142,76 @@ const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>>
   Engineer: [{ label: '화력', value: 62 }, { label: '회수', value: 94 }, { label: '지원', value: 78 }],
 };
 const tutorialSteps = [
-  { code: '01 // MOVE', icon: '⌖', title: '레드 존 이동', body: 'PC는 WASD 또는 방향키, 모바일은 왼쪽 방향 패드로 이동합니다. 멈춰 있으면 적응형 AI가 우회 병력을 투입합니다.', keys: ['W', 'A', 'S', 'D'] },
-  { code: '02 // DODGE', icon: '➤', title: '긴급 회피', body: 'PC는 Space, 모바일은 DODGE로 1.8초마다 빠르게 이탈합니다. 게임패드는 B 버튼을 사용합니다.', keys: ['SPACE', 'DODGE'] },
-  { code: '03 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 게임패드는 오른쪽 스틱과 A/RT를 사용합니다.', keys: ['CLICK', 'FIRE'] },
-  { code: '04 // LOADOUT', icon: '⌁', title: '실시간 무장 전환', body: '카빈은 균형형, 파쇄포는 근거리 산탄, 코일건은 장거리 고화력 무장입니다. PC는 숫자 1·2·3, 모바일은 하단 무장 버튼으로 바꿉니다.', keys: ['1', '2', '3'] },
-  { code: '05 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.', keys: ['TACTICAL://'] },
-  { code: '06 // NEURAL LINK', icon: '◉', title: '분대 리미트 브레이크', body: '교전으로 링크 게이지를 100% 충전한 뒤 PC는 Q, 모바일은 리더 초상화 버튼을 누르세요. 분대 1번 리더의 역할별 필살기가 발동합니다.', keys: ['Q', '100%'] },
-  { code: '07 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E, 모바일은 EXTRACT를 누르세요. 사망하면 현장 화물을 모두 잃습니다.', keys: ['E', 'EXTRACT'] },
-  { code: '08 // FABRICATE', icon: '▣', title: '추출 자원을 전력으로', body: '안전하게 추출한 뒤 쉘터의 전술 장비 제작에서 영구 장비를 만드세요. 최대 2개를 장착해 다음 탐사의 생존·화력·회수 능력을 바꿀 수 있습니다.', keys: ['SHELTER', 'GEAR'] },
-  { code: '09 // DEEP TALK', icon: '◌', title: '기억하는 오퍼레이터', body: '오퍼레이터 화면에서 딥 토크를 열면 캐릭터별 대화와 장기 기억을 확인할 수 있습니다. 외부 AI는 별도 동의가 있을 때만 사용되며 언제든 기억을 삭제할 수 있습니다.', keys: ['OPERATIVES', 'DEEP TALK'] },
-  { code: '10 // CONTRACTS', icon: '◆', title: '매일 바뀌는 생존 계약', body: '계약 보드에는 일일 3개와 주간 2개의 서버 검증 목표가 배치됩니다. 달성한 보상을 직접 수령하고 연속 생존 보너스를 쌓으세요.', keys: ['CONTRACTS', 'CLAIM'] },
+  {
+    code: '01 // PURPOSE', icon: 'N//E', title: '이 게임에서 무엇을 하나요?',
+    body: '3인 오퍼레이터 분대를 이끌고 레드 존을 탐사해 자원을 회수하는 전술 생존 게임입니다. 전투만 잘하는 것보다 언제 더 모으고 언제 철수할지 판단하는 것이 중요합니다.',
+    utility: '5~10분 단위의 짧은 탐사에서 전술 판단, 수집, 성장의 재미를 반복해서 즐길 수 있습니다.',
+    tip: '핵심 루프는 탐사 → 전술 대응 → 안전 추출 → 쉘터 성장입니다. 첫 목표는 자원 8개를 모아 살아서 돌아오는 것입니다.',
+    keys: ['EXPLORE', 'DECIDE', 'EXTRACT'],
+  },
+  {
+    code: '02 // CONTROL', icon: '⌖', title: '살아남는 기본 조작',
+    body: 'PC는 WASD와 마우스, 모바일은 방향 패드와 FIRE, 게임패드는 양쪽 스틱을 사용합니다. Space 또는 DODGE로 1.8초마다 위험 지역을 빠르게 벗어날 수 있습니다.',
+    utility: 'PC·모바일·게임패드 어디서든 같은 저장 흐름과 전투 규칙으로 플레이할 수 있습니다.',
+    tip: '한자리에 오래 머물면 적응형 디렉터가 우회 병력을 보냅니다. 사격하면서 원을 그리듯 계속 이동하세요.',
+    keys: ['WASD', 'AIM', 'FIRE', 'DODGE'],
+  },
+  {
+    code: '03 // LOADOUT', icon: '⌁', title: '상황에 맞춰 무장을 바꾸세요',
+    body: '카빈은 안정적인 중거리 전투, 파쇄포는 근접 돌파, 코일건은 장거리 정밀 사격에 특화되어 있습니다. 전투 중에도 즉시 교체할 수 있습니다.',
+    utility: '적의 종류와 거리에 따라 무기를 바꾸면 같은 분대도 전혀 다른 방식으로 운용할 수 있습니다.',
+    tip: '빠른 드론에는 카빈, 몰려오는 적에는 파쇄포, 체력이 높은 지휘 유닛에는 코일건이 효율적입니다.',
+    keys: ['1 CARBINE', '2 SCATTER', '3 COIL'],
+  },
+  {
+    code: '04 // COMMAND', icon: '◇', title: '말로 분대를 지휘하세요',
+    body: '하단 TACTICAL 입력창에 “모두 복귀해”, “치료해줘”, “오른쪽으로 우회해”, “강한 적을 집중 공격해”처럼 자연스럽게 입력하면 분대 행동이 즉시 바뀝니다.',
+    utility: '복잡한 단축키 없이 자연어로 집결·치료·우회·집중 공격 전술을 실행할 수 있습니다.',
+    tip: '분대가 흩어졌다면 “모두 내 쪽으로 복귀”를 먼저 사용하고, 보스전에서는 “강한 적 집중 공격”으로 화력을 모으세요.',
+    keys: ['REGROUP', 'HEAL', 'FLANK', 'FOCUS'],
+  },
+  {
+    code: '05 // NEURAL LINK', icon: '◉', title: '분대 조합을 필살기로 연결하세요',
+    body: '교전으로 링크 게이지를 100% 채운 뒤 Q 또는 리더 초상화를 누르면 1번 슬롯 오퍼레이터의 역할별 뉴럴 링크가 발동합니다.',
+    utility: '분대 리더를 바꿔 방어, 화력, 회복, 기동 중심의 서로 다른 빌드를 만들 수 있습니다.',
+    tip: '보스 등장 직전까지 게이지를 아껴두고, 오퍼레이터 화면에서 원하는 리더를 1번 슬롯에 배치하세요.',
+    keys: ['LEADER SLOT', '100%', 'Q'],
+  },
+  {
+    code: '06 // RISK', icon: '⬡', title: '욕심과 추출 사이를 판단하세요',
+    body: '모은 현장 화물은 중앙 리프트에서 E 또는 EXTRACT를 눌러야 계정 자원이 됩니다. 쓰러지면 이번 탐사에서 모은 화물을 잃습니다.',
+    utility: '안전한 소규모 수익과 위험한 고수익 탐사를 스스로 선택하는 리스크·리워드 플레이가 가능합니다.',
+    tip: '체력이 40% 아래거나 방사능이 상승 중이면 추가 전투보다 추출을 우선하세요. 보라색 데이터는 희귀하지만 욕심은 금물입니다.',
+    keys: ['CARGO', 'E', 'EXTRACT'],
+  },
+  {
+    code: '07 // GROWTH', icon: '▣', title: '회수 자원을 영구 전력으로 바꾸세요',
+    body: '쉘터 모듈을 업그레이드하면 오프라인 생산량이 늘고, 작업장에서 영구 전술 장비를 제작해 최대 2개까지 장착할 수 있습니다.',
+    utility: '플레이하지 않는 시간에도 자원이 쌓이며, 원하는 생존·화력·회수 특성에 맞춰 장기 성장 경로를 설계할 수 있습니다.',
+    tip: '초반에는 작업장과 정수 시설을 먼저 올리고, 첫 장비는 생존 보정 효과를 우선하면 탐사 성공률이 크게 높아집니다.',
+    keys: ['SHELTER', 'UPGRADE', 'GEAR'],
+  },
+  {
+    code: '08 // OPERATIVES', icon: '◈', title: '오퍼레이터를 수집하고 편성하세요',
+    body: '오퍼레이터마다 역할, 희귀도, 뉴럴 링크, 관계 수치가 다릅니다. 3명을 편성해 역할 조합 보너스를 만들고 딥 토크에서 개인 서사와 기억을 확인할 수 있습니다.',
+    utility: '전투 성능을 위한 편성과 캐릭터 관계·스토리 수집을 한 화면에서 함께 즐길 수 있습니다.',
+    tip: 'Vanguard·Engineer·Support 조합은 초반 생존과 자원 회수의 균형이 좋습니다. 외부 AI 대화는 별도 동의가 있을 때만 사용됩니다.',
+    keys: ['ROSTER', 'FORMATION', 'DEEP TALK'],
+  },
+  {
+    code: '09 // ROUTINE', icon: '◆', title: '계약과 오프라인 보상으로 이어가세요',
+    body: '일일 3개·주간 2개의 서버 검증 계약을 달성해 보상을 직접 수령하세요. 쉘터는 접속하지 않은 동안에도 최대 8시간 자원을 생산합니다.',
+    utility: '매일 짧게 접속해도 명확한 목표와 성장 보상을 얻을 수 있고, 주간 목표는 장기 플레이 방향을 제시합니다.',
+    tip: '게임을 시작하면 먼저 계약 보드를 확인하고, 이미 진행 중인 목표에 맞춰 무기와 탐사 전략을 고르세요.',
+    keys: ['DAILY', 'WEEKLY', 'CLAIM'],
+  },
+  {
+    code: '10 // ACCESS', icon: '◎', title: '나에게 맞는 방식으로 플레이하세요',
+    body: '설정에서 HUD 크기, 고대비·적록 보정, 모션 감소, 그래픽 품질, 사운드와 진동을 조절할 수 있습니다. 필드 가이드는 하단 버튼에서 언제든 다시 열 수 있습니다.',
+    utility: '시각·움직임 민감도와 기기 성능에 맞춰 인터페이스를 조절하면서 동일한 게임 진행을 유지할 수 있습니다.',
+    tip: '화면이 복잡하면 HUD를 크게 하고 모션 감소를 켜세요. 개인정보와 외부 AI 사용 여부도 설정에서 언제든 변경할 수 있습니다.',
+    keys: ['SETTINGS', 'ACCESSIBILITY', 'FIELD GUIDE'],
+  },
 ] as const;
 
 function renderPersistentHud(): void {
@@ -220,16 +282,33 @@ function escapeHtml(value: string): string {
 }
 
 function addFeed(message: string, danger = false): void {
+  const now = Date.now();
+  const previous = eventFeed.firstElementChild as HTMLElement | null;
+  if (previous?.dataset.message === message && now - Number(previous.dataset.updatedAt ?? 0) < 3_000) {
+    const count = Number(previous.dataset.repeatCount ?? 1) + 1;
+    previous.dataset.repeatCount = String(count);
+    previous.dataset.updatedAt = String(now);
+    previous.textContent = `> ${message} ×${count}`;
+    if (danger) previous.classList.add('danger');
+    return;
+  }
   const line = document.createElement('div');
   line.textContent = `> ${message}`;
   if (danger) line.className = 'danger';
+  line.dataset.message = message;
+  line.dataset.repeatCount = '1';
+  line.dataset.updatedAt = String(now);
   eventFeed.prepend(line);
   while (eventFeed.children.length > 5) eventFeed.lastElementChild?.remove();
 }
 
 function pauseForModal(): void {
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && !modalBackdrop.contains(focused)) lastFocusedElement = focused;
+  gameEvents.emit('suspend-world-input');
   if (game.scene.isActive('WorldScene')) game.scene.pause('WorldScene');
   modalBackdrop.classList.remove('hidden');
+  window.requestAnimationFrame(() => closeModalButton.focus());
 }
 
 function closeModal(): void {
@@ -247,6 +326,9 @@ function closeModal(): void {
   currentModal = null;
   sound.play('ui');
   gameEvents.emit('resume-world');
+  const focusTarget = lastFocusedElement;
+  lastFocusedElement = null;
+  window.requestAnimationFrame(() => focusTarget?.focus());
   if (closing === 'privacy' && !settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 180);
 }
 
@@ -307,7 +389,7 @@ function renderSettings(): void {
       ${(['auto', 'high', 'balanced', 'low'] as const).map((value) => `<button data-graphics-quality="${value}" class="${settings.graphicsQuality === value ? 'selected' : ''}">${value === 'auto' ? '자동' : value === 'high' ? '높음' : value === 'balanced' ? '균형' : '낮음'}</button>`).join('')}
     </div></div>
     <div class="settings-actions">
-      <button id="replayTutorial">튜토리얼 다시 보기</button>
+      <button id="replayTutorial">필드 가이드 열기</button>
       <button id="openPrivacy">개인정보·AI 안내</button>
       <button class="primary" id="closeSettings">설정 완료</button>
     </div>`;
@@ -487,19 +569,75 @@ function renderTutorial(step: number): void {
   currentModal = 'tutorial';
   pauseForModal();
   modalContent.innerHTML = `
-    <div class="tutorial-card">
-      <div class="tutorial-progress">${tutorialSteps.map((_item, index) => `<i class="${index <= safeStep ? 'active' : ''}"></i>`).join('')}</div>
-      <span class="eyebrow">FIELD OPERATIONS TUTORIAL // ${tutorial.code}</span>
-      <div class="tutorial-icon">${tutorial.icon}</div>
-      <h2>${tutorial.title}</h2>
-      <p>${tutorial.body}</p>
-      <div class="tutorial-keys">${tutorial.keys.map((key) => `<kbd>${key}</kbd>`).join('')}</div>
-      <div class="tutorial-actions">
-        <button id="skipTutorial">건너뛰기</button>
-        <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? '작전 투입' : '다음 단계'}</button>
-      </div>
+    <div class="field-guide">
+      <aside class="guide-rail">
+        <div class="guide-identity">
+          <span>N//E FIELD MANUAL</span>
+          <b>OPERATIVE<br />ONBOARDING</b>
+          <small>전술 생존부터 장기 성장까지</small>
+        </div>
+        <nav aria-label="필드 가이드 목차">
+          ${tutorialSteps.map((item, index) => `
+            <button data-tutorial-step="${index}" class="${index === safeStep ? 'active' : ''}" ${index === safeStep ? 'aria-current="step"' : ''}>
+              <span>${String(index + 1).padStart(2, '0')}</span>
+              <b>${item.title}</b>
+              <small>${item.code.split('//')[1]?.trim() ?? item.code}</small>
+            </button>`).join('')}
+        </nav>
+        <div class="guide-loop">
+          <span>CORE GAME LOOP</span>
+          <div><b>탐사</b><i>→</i><b>전술</b><i>→</i><b>추출</b><i>→</i><b>성장</b></div>
+        </div>
+      </aside>
+      <section class="guide-stage">
+        <div class="guide-progress">
+          <span>FIELD GUIDE // ${tutorial.code}</span>
+          <b>${String(safeStep + 1).padStart(2, '0')} <i>/ ${String(tutorialSteps.length).padStart(2, '0')}</i></b>
+        </div>
+        <div class="guide-progress-track"><i style="width:${(safeStep + 1) / tutorialSteps.length * 100}%"></i></div>
+        <div class="guide-hero">
+          <div class="guide-visual" aria-hidden="true">
+            <span>${tutorial.icon}</span>
+            <b>${String(safeStep + 1).padStart(2, '0')}</b>
+          </div>
+          <div>
+            <span class="eyebrow">OPERATIVE KNOWLEDGE MODULE</span>
+            <h2>${tutorial.title}</h2>
+            <p>${tutorial.body}</p>
+          </div>
+        </div>
+        <div class="guide-utility">
+          <span>이렇게 활용하세요</span>
+          <strong>${tutorial.utility}</strong>
+        </div>
+        <div class="guide-note">
+          <span>FIELD NOTE</span>
+          <p>${tutorial.tip}</p>
+        </div>
+        <div class="tutorial-keys">${tutorial.keys.map((key) => `<kbd>${key}</kbd>`).join('')}</div>
+        <div class="tutorial-actions">
+          <button id="closeGuide">가이드 닫기</button>
+          <button id="previousTutorial" ${safeStep === 0 ? 'disabled' : ''}>이전</button>
+          <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? (settings.tutorialComplete ? '작전으로 돌아가기' : '작전 투입') : '다음 모듈'}</button>
+        </div>
+      </section>
     </div>`;
-  modalContent.querySelector<HTMLButtonElement>('#skipTutorial')?.addEventListener('click', closeModal);
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-tutorial-step]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = Number(button.dataset.tutorialStep);
+      if (Number.isInteger(target)) {
+        sound.play('ui');
+        renderTutorial(target);
+      }
+    });
+  });
+  modalContent.querySelector<HTMLButtonElement>('#closeGuide')?.addEventListener('click', closeModal);
+  modalContent.querySelector<HTMLButtonElement>('#previousTutorial')?.addEventListener('click', () => {
+    if (safeStep > 0) {
+      sound.play('ui');
+      renderTutorial(safeStep - 1);
+    }
+  });
   modalContent.querySelector<HTMLButtonElement>('#nextTutorial')?.addEventListener('click', () => {
     sound.play('ui');
     if (safeStep < tutorialSteps.length - 1) {
@@ -1142,11 +1280,17 @@ byId('shelterButton').addEventListener('click', renderShelter);
 byId('contractsButton').addEventListener('click', () => { void renderContracts(); });
 byId('rosterButton').addEventListener('click', renderRoster);
 storeButton.addEventListener('click', () => { void renderStore(); });
+byId('guideButton').addEventListener('click', () => renderTutorial(0));
 byId('alphaButton').addEventListener('click', renderAlphaInfo);
 byId('settingsButton').addEventListener('click', renderSettings);
-byId('closeModal').addEventListener('click', closeModal);
+closeModalButton.addEventListener('click', closeModal);
 modalBackdrop.addEventListener('click', (event) => {
   if (event.target === modalBackdrop && currentModal !== 'game-over') closeModal();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || modalBackdrop.classList.contains('hidden') || currentModal === 'game-over') return;
+  event.preventDefault();
+  closeModal();
 });
 
 const muteButton = byId<HTMLButtonElement>('muteButton');
@@ -1250,6 +1394,7 @@ gameEvents.on('performance-sample', (sample: PerformanceSample) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    gameEvents.emit('suspend-world-input');
     game.loop.sleep();
   } else {
     game.loop.wake();
@@ -1284,7 +1429,8 @@ gameEvents.on('hud-update', (hud: {
     : hud.operation.stage === 'RELAY' ? 'DESTROY NEURAL RELAYS'
     : hud.operation.stage === 'EXTRACT' ? 'RETURN TO SHELTER LIFT'
       : `${Math.min(hud.operation.current, hud.operation.target)} / ${hud.operation.target}`;
-  const charge = Math.max(0, Math.min(100, Math.floor(hud.linkCharge)));
+  const rawCharge = Number.isFinite(hud.linkCharge) ? hud.linkCharge : 0;
+  const charge = Math.max(0, Math.min(100, Math.floor(rawCharge)));
   neuralLinkBar.style.width = `${charge}%`;
   neuralLinkChargeText.textContent = `${charge}%`;
   neuralLinkButton.disabled = charge < 100;

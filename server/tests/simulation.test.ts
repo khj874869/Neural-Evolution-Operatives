@@ -33,6 +33,44 @@ describe('authoritative red zone simulation', () => {
     expect(player.lastSequence).toBe(1);
   });
 
+  it('keeps explicitly paused players safe and excludes them from wave pressure', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    simulation.enemies.clear();
+    const player = simulation.addPlayer('session-paused', 'player-paused', 'MENU-READER');
+    simulation.enemies.set('paused-attacker', {
+      id: 'paused-attacker', kind: 'raider', x: player.x + 10, y: player.y,
+      hp: 38, attackCooldownMs: 0,
+    });
+    const enemyCountBeforePause = simulation.enemies.size;
+    simulation.applyInput('session-paused', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      weapon: 'carbine', paused: true,
+    });
+    for (let index = 0; index < 160; index += 1) simulation.tick(100);
+    expect(player.hp).toBe(100);
+    expect(simulation.enemies.size).toBe(enemyCountBeforePause);
+  });
+
+  it('caps unattended wave growth and grants a short respawn shield', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-cap', 'player-cap', 'SURVIVOR');
+    for (let index = 0; index < 900; index += 1) simulation.tick(100);
+    expect(simulation.enemies.size).toBeLessThanOrEqual(48);
+
+    simulation.enemies.clear();
+    player.hp = 0;
+    simulation.tick(100);
+    expect(player.hp).toBe(100);
+    simulation.enemies.set('respawn-attacker', {
+      id: 'respawn-attacker', kind: 'breaker', x: player.x + 10, y: player.y,
+      hp: 92, attackCooldownMs: 0,
+    });
+    for (let index = 0; index < 20; index += 1) simulation.tick(100);
+    expect(player.hp).toBe(100);
+    for (let index = 0; index < 20; index += 1) simulation.tick(100);
+    expect(player.hp).toBeLessThan(100);
+  });
+
   it('creates one extraction event and clears field cargo', () => {
     const simulation = new RedZoneSimulation(() => 0.5);
     simulation.resources.clear();

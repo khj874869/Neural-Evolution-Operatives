@@ -107,7 +107,9 @@ export class GameServerClient {
       void this.track('session_start', {
         mode: 'online', serverVersion: this.releaseInfo?.version ?? 'unknown',
       });
-      void this.claimOffline();
+      void this.claimOffline().catch(() => {
+        // Offline rewards are optional; a transient sync failure must not surface as an unhandled error.
+      });
     } catch {
       if (epoch !== this.lifecycleEpoch) return;
       this.connected = false;
@@ -363,7 +365,9 @@ export class GameServerClient {
         gameEvents.emit('sfx', 'extract');
         gameEvents.emit('haptic', 'success');
         gameEvents.emit('server-extraction', event.payload ?? {});
-        void this.refreshProfile();
+        void this.refreshProfile().catch(() => {
+          // The authoritative extraction already succeeded; the next profile sync can retry naturally.
+        });
       }
       if (event.type === 'mission' && event.payload?.bossDefeated) gameEvents.emit('boss-defeated');
       if (event.type === 'neural-link' && typeof event.payload?.operatorId === 'string' && typeof event.payload?.skillName === 'string') {
@@ -384,7 +388,9 @@ export class GameServerClient {
       this.lastReconnectAt = new Date().toISOString();
       gameEvents.emit('network-status', 'online', `ROOM ${room.roomId.slice(0, 6)} · SESSION RESTORED`);
       gameEvents.emit('feed', '뉴럴 링크 복구 완료 // 현장 상태를 유지했습니다.');
-      void this.refreshProfile();
+      void this.refreshProfile().catch(() => {
+        // Reconnection remains usable even when the profile refresh is briefly unavailable.
+      });
     });
     room.onLeave(() => {
       if (this.room !== room || epoch !== this.lifecycleEpoch) return;

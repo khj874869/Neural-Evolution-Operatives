@@ -7,6 +7,10 @@ export class BootScene extends Phaser.Scene {
   }
 
   preload(): void {
+    this.load.image(
+      'red-zone-ground',
+      `${import.meta.env.BASE_URL}assets/environment/red-zone-ground-v2.png`,
+    );
     for (const operator of OPERATORS) this.load.image(`operator-${operator.id}`, operator.portrait);
   }
 
