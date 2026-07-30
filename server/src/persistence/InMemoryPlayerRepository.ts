@@ -1,6 +1,12 @@
 import type { PlayerProfile } from '../../../packages/shared/src/protocol.js';
 import type { FunnelEventName, FunnelProperties } from '../../../packages/shared/src/analytics.js';
 import type { CommercePlatform, StoreProductId } from '../../../packages/shared/src/commerce.js';
+import type {
+  AlphaFeedbackReceipt, AlphaFeedbackSubmission, AlphaOpsSnapshot,
+} from '../../../packages/shared/src/alphaOps.js';
+import {
+  aggregateAlphaOps, type AlphaOpsFeedbackFact,
+} from '../ops/AlphaOpsAggregator.js';
 import { PurchaseReceiptConflictError, type PlayerRepository, type ProfileMutation } from './PlayerRepository.js';
 import { createPlayerProfile } from './profileFactory.js';
 
@@ -10,8 +16,14 @@ export class InMemoryPlayerRepository implements PlayerRepository {
   private readonly events = new Map<string, PlayerProfile>();
   private readonly queues = new Map<string, Promise<void>>();
   private readonly purchaseReceipts = new Map<string, { playerId: string; productId: StoreProductId; profile: PlayerProfile | null }>();
+  private readonly alphaFeedback = new Map<string, AlphaOpsFeedbackFact & { playerId: string }>();
   private purchaseQueue = Promise.resolve();
-  readonly analytics: Array<{ playerId: string; event: FunnelEventName; properties: FunnelProperties }> = [];
+  readonly analytics: Array<{
+    playerId: string;
+    event: FunnelEventName;
+    properties: FunnelProperties;
+    createdAt: string;
+  }> = [];
 
   async initialize(): Promise<void> {}
   async healthCheck(): Promise<void> {}
@@ -42,15 +54,63 @@ export class InMemoryPlayerRepository implements PlayerRepository {
     for (let index = this.analytics.length - 1; index >= 0; index -= 1) {
       if (this.analytics[index].playerId === playerId) this.analytics.splice(index, 1);
     }
+    for (const [key, entry] of this.alphaFeedback) {
+      if (entry.playerId === playerId) this.alphaFeedback.delete(key);
+    }
     for (const [key, receipt] of this.purchaseReceipts) {
       if (receipt.playerId === playerId) this.purchaseReceipts.set(key, { ...receipt, playerId: '', profile: null });
     }
     return true;
   }
 
-  async recordAnalytics(playerId: string, event: FunnelEventName, properties: FunnelProperties): Promise<void> {
+  async recordAnalytics(
+    playerId: string,
+    event: FunnelEventName,
+    properties: FunnelProperties,
+    createdAt = new Date(),
+  ): Promise<void> {
     if (!this.profiles.has(playerId)) throw new Error('PLAYER_NOT_FOUND');
-    this.analytics.push({ playerId, event, properties: structuredClone(properties) });
+    this.analytics.push({
+      playerId,
+      event,
+      properties: structuredClone(properties),
+      createdAt: createdAt.toISOString(),
+    });
+  }
+
+  async recordAlphaFeedback(
+    playerId: string,
+    idempotencyKey: string,
+    submission: AlphaFeedbackSubmission,
+    createdAt = new Date(),
+  ): Promise<AlphaFeedbackReceipt> {
+    if (!this.profiles.has(playerId)) throw new Error('PLAYER_NOT_FOUND');
+    const key = `${playerId}:${idempotencyKey}`;
+    const existing = this.alphaFeedback.get(key);
+    if (existing) return { accepted: true, replayed: true, submittedAt: existing.createdAt };
+    const submittedAt = createdAt.toISOString();
+    this.alphaFeedback.set(key, {
+      playerId,
+      ...structuredClone(submission),
+      createdAt: submittedAt,
+    });
+    return { accepted: true, replayed: false, submittedAt };
+  }
+
+  async getAlphaOpsSnapshot(windowDays: number, now = new Date()): Promise<AlphaOpsSnapshot> {
+    const profiles = [...this.profiles.values()].map((profile) => ({
+      playerId: profile.playerId,
+      createdAt: profile.createdAt,
+    }));
+    return aggregateAlphaOps(
+      profiles,
+      this.analytics.map(({ playerId, event, createdAt }) => ({ playerId, event, createdAt })),
+      [...this.alphaFeedback.values()].map(({ category, rating, message, diagnostics, createdAt }) => ({
+        category, rating, message, diagnostics, createdAt,
+      })),
+      windowDays,
+      now,
+    );
   }
 
   async mutatePurchase(

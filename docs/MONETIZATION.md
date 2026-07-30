@@ -40,7 +40,7 @@
 | 월 결제 전환율 | 2~4% |
 | 월 ARPPU | ₩15,000~₩30,000 |
 
-현재 서버는 `session_start`, `tutorial_complete`, `operation_complete`, `contract_view`, `contract_claim`, `store_view`, `checkout_intent`, `purchase_complete`를 `analytics_events`에 기록합니다.
+현재 서버는 사용자가 선택 분석에 동의한 경우 `session_start`, `tutorial_complete`, `operation_complete`, `contract_view`, `contract_claim`, `store_view`, `checkout_intent`, `purchase_complete`, `client_error`를 `analytics_events`에 기록합니다. v1.4 운영 콘솔(`/ops`)은 7·14·30일 관측창의 D1/D7, 고유 유저 퍼널과 자발적 피드백을 플레이어 ID 없이 집계합니다. `OPS_ADMIN_TOKEN`을 설정하지 않은 환경에서는 콘솔과 API가 모두 비활성화됩니다.
 
 ```sql
 SELECT
@@ -88,4 +88,4 @@ Google Play의 디지털 상품은 Play 결제 시스템을 사용하고 확률�
 - 애정·집착 표현을 결제 압박이나 미성년자 타기팅에 사용하지 않습니다.
 - 무료 플레이어도 OPERATION ZERO와 기본 관계 성장을 끝까지 경험할 수 있게 유지합니다.
 - 전투력 판매보다 편의·수집·외형 중심으로 운영하며 PvP 우위를 판매하지 않습니다.
-- v1.3 비공개 알파에서는 딥 토크·기억·안전 기능과 계약 새로고침을 과금 등급으로 나누지 않고 호출 비용·만족도·자연 잔존율부터 측정합니다.
+- v1.4 비공개 알파에서는 딥 토크·기억·안전 기능과 계약 새로고침을 과금 등급으로 나누지 않고 호출 비용·만족도·자연 잔존율부터 측정합니다.

@@ -13,6 +13,9 @@ import type { GearId } from '../../../packages/shared/src/gear';
 import type {
   ContractBoard, ContractId, ContractReward,
 } from '../../../packages/shared/src/contracts';
+import type {
+  AlphaFeedbackReceipt, AlphaFeedbackSubmission,
+} from '../../../packages/shared/src/alphaOps';
 
 export interface NetworkSnapshot {
   localSessionId: string;
@@ -281,6 +284,17 @@ export class GameServerClient {
     await previousRoom?.leave().catch(() => undefined);
     this.connected = false;
     this.token = undefined;
+  }
+
+  async submitAlphaFeedback(
+    submission: AlphaFeedbackSubmission,
+    requestId = crypto.randomUUID(),
+  ): Promise<AlphaFeedbackReceipt> {
+    return this.authorized<AlphaFeedbackReceipt>('/api/alpha/feedback', {
+      method: 'POST',
+      headers: { 'idempotency-key': requestId },
+      body: JSON.stringify(submission),
+    });
   }
 
   async track(event: FunnelEventName, properties: FunnelProperties = {}): Promise<void> {
