@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EXTRACTION_POINT, RedZoneSimulation } from '../src/simulation/RedZoneSimulation.js';
-import { PLAYER_COLLISION_RADIUS, worldObstacles } from '../../packages/shared/src/world.js';
+import { PLAYER_COLLISION_RADIUS, worldObstacles, worldStageSectors } from '../../packages/shared/src/world.js';
 
 describe('authoritative red zone simulation', () => {
   it('accepts ordered inputs and rejects replayed sequences', () => {
@@ -128,13 +128,18 @@ describe('authoritative red zone simulation', () => {
   it('accepts weapon selection and deploys the operation boss after salvage and kills', () => {
     const simulation = new RedZoneSimulation(() => 0.5);
     const player = simulation.addPlayer('session-4', 'player-4', 'WARDEN-HUNTER');
+    const arena = worldStageSectors('operation-zero', 'WARDEN')[0];
+    player.x = arena.x;
+    player.y = arena.y;
     player.kills = 10;
     player.cargo.scrap = 8;
     expect(simulation.applyInput('session-4', {
       sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false, weapon: 'rail',
     })).toBe(true);
     simulation.tick(50);
-    expect([...simulation.enemies.values()].some((enemy) => enemy.kind === 'warden')).toBe(true);
+    const boss = [...simulation.enemies.values()].find((enemy) => enemy.kind === 'warden');
+    expect(boss).toBeDefined();
+    expect(Math.hypot((boss?.x ?? player.x) - player.x, (boss?.y ?? player.y) - player.y)).toBeGreaterThan(200);
     expect(simulation.drainEvents().some((event) => event.type === 'feed' && event.message.includes('케르베로스'))).toBe(true);
   });
 
@@ -147,8 +152,13 @@ describe('authoritative red zone simulation', () => {
     expect([...simulation.enemies.values()].filter((enemy) => enemy.kind === 'relay')).toHaveLength(3);
     expect([...simulation.enemies.values()].some((enemy) => enemy.kind === 'harvester')).toBe(false);
     simulation.relaysDestroyed = 3;
+    const arena = worldStageSectors('operation-ashfall', 'WARDEN')[0];
+    player.x = arena.x;
+    player.y = arena.y;
     simulation.tick(50);
-    expect([...simulation.enemies.values()].some((enemy) => enemy.kind === 'harvester')).toBe(true);
+    const boss = [...simulation.enemies.values()].find((enemy) => enemy.kind === 'harvester');
+    expect(boss).toBeDefined();
+    expect(Math.hypot((boss?.x ?? player.x) - player.x, (boss?.y ?? player.y) - player.y)).toBeGreaterThan(200);
     expect(simulation.drainEvents().some((event) => event.type === 'feed' && event.message.includes('헤카톤'))).toBe(true);
   });
 

@@ -11,8 +11,12 @@ import type { PlayerProfile } from '../packages/shared/src/protocol';
 import { describeSquadBonuses } from '../packages/shared/src/squad';
 import { SoundEngine, type GameSfx } from './game/systems/SoundEngine';
 import {
-  operationDefinition, type OperationDefinition, type OperationId, type OperationStatus,
+  operationDefinition, operationStageBrief, operationStageIndex,
+  type OperationDefinition, type OperationId, type OperationStatus,
 } from '../packages/shared/src/operations';
+import {
+  nearestWorldSector, nearestWorldStageSector, WORLD_SIZE, worldSectors, worldStageSectors,
+} from '../packages/shared/src/world';
 import { WEAPON_SPECS, type WeaponId } from '../packages/shared/src/combat';
 import {
   RECRUIT_ODDS,
@@ -63,10 +67,10 @@ game.registry.set('mobileInput', mobileInput);
 game.registry.set('network', network);
 game.registry.set('settings', settings);
 
-const byId = <T extends HTMLElement>(id: string): T => {
+const byId = <T extends Element>(id: string): T => {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing UI element: ${id}`);
-  return element as T;
+  return element as unknown as T;
 };
 
 const resourceHud = byId<HTMLDivElement>('resourceHud');
@@ -82,6 +86,20 @@ const operationTitle = byId<HTMLElement>('operationTitle');
 const operationObjective = byId<HTMLElement>('operationObjective');
 const operationProgress = byId<HTMLElement>('operationProgress');
 const operationCount = byId<HTMLElement>('operationCount');
+const operationStageRail = byId<HTMLElement>('operationStageRail');
+const tacticalMap = byId<HTMLElement>('tacticalMap');
+const mapDistrict = byId<HTMLElement>('mapDistrict');
+const mapCoordinates = byId<HTMLElement>('mapCoordinates');
+const mapDirective = byId<HTMLElement>('mapDirective');
+const mapObjectives = byId<HTMLElement>('mapObjectives');
+const mapPlayer = byId<HTMLElement>('mapPlayer');
+const mapRouteLine = byId<SVGLineElement>('mapRouteLine');
+const mapBearing = byId<HTMLElement>('mapBearing');
+const mapTarget = byId<HTMLElement>('mapTarget');
+const stageBanner = byId<HTMLElement>('stageBanner');
+const stageBannerCode = byId<HTMLElement>('stageBannerCode');
+const stageBannerDistrict = byId<HTMLElement>('stageBannerDistrict');
+const stageBannerDirective = byId<HTMLElement>('stageBannerDirective');
 const bossHud = byId<HTMLElement>('bossHud');
 const bossHpBar = byId<HTMLElement>('bossHpBar');
 const bossHpText = byId<HTMLElement>('bossHpText');
@@ -126,6 +144,9 @@ let latestContractBoard: ContractBoard | null = null;
 let currentLinkLeader = '';
 let cutinTimer = 0;
 let bossIntroTimer = 0;
+let stageBannerTimer = 0;
+let tacticalStageKey = '';
+let tacticalMapKey = '';
 let lastFocusedElement: HTMLElement | null = null;
 
 releaseBadge.textContent = `${CLIENT_RELEASE.channel.toUpperCase()} ${CLIENT_RELEASE.version}`;
@@ -135,6 +156,7 @@ storeButton.classList.toggle('hidden', !CLIENT_RELEASE.commerceEnabled);
 
 const labels = { scrap: '고철', water: '식수', data: '데이터', cores: '코어' } as const;
 const icons = { scrap: '▰', water: '◒', data: '◇', cores: '◈' } as const;
+const compassDirections = ['북', '북동', '동', '남동', '남', '남서', '서', '북서'] as const;
 const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>> = {
   Vanguard: [{ label: '돌파', value: 88 }, { label: '방어', value: 92 }, { label: '지원', value: 42 }],
   Sniper: [{ label: '화력', value: 96 }, { label: '기동', value: 58 }, { label: '지원', value: 45 }],
@@ -157,56 +179,63 @@ const tutorialSteps = [
     keys: ['WASD', 'AIM', 'FIRE', 'DODGE'],
   },
   {
-    code: '03 // LOADOUT', icon: '⌁', title: '상황에 맞춰 무장을 바꾸세요',
+    code: '03 // NAVIGATION', icon: '△', title: '전술 지도로 다음 구역을 찾으세요',
+    body: '우측 전술 지도에서 빛나는 목표점, 현재 위치와 목표를 잇는 경로선, 방향 화살표와 거리를 확인하세요. 상단 스테이지 레일은 이번 작전의 전체 흐름과 현재 단계를 보여줍니다.',
+    utility: '넓은 레드 존에서도 헤매지 않고 현재 단계에 맞는 자원 지대·중계기·보스 구역·추출 지점으로 이동할 수 있습니다.',
+    tip: '목표가 여러 개면 가장 가까운 활성 구역이 자동 선택됩니다. 중계기를 파괴하면 남은 목표 중 가장 가까운 지점으로 즉시 갱신됩니다.',
+    keys: ['MAP', 'ROUTE', 'DISTANCE', 'STAGE'],
+  },
+  {
+    code: '04 // LOADOUT', icon: '⌁', title: '상황에 맞춰 무장을 바꾸세요',
     body: '카빈은 안정적인 중거리 전투, 파쇄포는 근접 돌파, 코일건은 장거리 정밀 사격에 특화되어 있습니다. 전투 중에도 즉시 교체할 수 있습니다.',
     utility: '적의 종류와 거리에 따라 무기를 바꾸면 같은 분대도 전혀 다른 방식으로 운용할 수 있습니다.',
     tip: '빠른 드론에는 카빈, 몰려오는 적에는 파쇄포, 체력이 높은 지휘 유닛에는 코일건이 효율적입니다.',
     keys: ['1 CARBINE', '2 SCATTER', '3 COIL'],
   },
   {
-    code: '04 // COMMAND', icon: '◇', title: '말로 분대를 지휘하세요',
+    code: '05 // COMMAND', icon: '◇', title: '말로 분대를 지휘하세요',
     body: '하단 TACTICAL 입력창에 “모두 복귀해”, “치료해줘”, “오른쪽으로 우회해”, “강한 적을 집중 공격해”처럼 자연스럽게 입력하면 분대 행동이 즉시 바뀝니다.',
     utility: '복잡한 단축키 없이 자연어로 집결·치료·우회·집중 공격 전술을 실행할 수 있습니다.',
     tip: '분대가 흩어졌다면 “모두 내 쪽으로 복귀”를 먼저 사용하고, 보스전에서는 “강한 적 집중 공격”으로 화력을 모으세요.',
     keys: ['REGROUP', 'HEAL', 'FLANK', 'FOCUS'],
   },
   {
-    code: '05 // NEURAL LINK', icon: '◉', title: '분대 조합을 필살기로 연결하세요',
+    code: '06 // NEURAL LINK', icon: '◉', title: '분대 조합을 필살기로 연결하세요',
     body: '교전으로 링크 게이지를 100% 채운 뒤 Q 또는 리더 초상화를 누르면 1번 슬롯 오퍼레이터의 역할별 뉴럴 링크가 발동합니다.',
     utility: '분대 리더를 바꿔 방어, 화력, 회복, 기동 중심의 서로 다른 빌드를 만들 수 있습니다.',
     tip: '보스 등장 직전까지 게이지를 아껴두고, 오퍼레이터 화면에서 원하는 리더를 1번 슬롯에 배치하세요.',
     keys: ['LEADER SLOT', '100%', 'Q'],
   },
   {
-    code: '06 // RISK', icon: '⬡', title: '욕심과 추출 사이를 판단하세요',
+    code: '07 // RISK', icon: '⬡', title: '욕심과 추출 사이를 판단하세요',
     body: '모은 현장 화물은 중앙 리프트에서 E 또는 EXTRACT를 눌러야 계정 자원이 됩니다. 쓰러지면 이번 탐사에서 모은 화물을 잃습니다.',
     utility: '안전한 소규모 수익과 위험한 고수익 탐사를 스스로 선택하는 리스크·리워드 플레이가 가능합니다.',
     tip: '체력이 40% 아래거나 방사능이 상승 중이면 추가 전투보다 추출을 우선하세요. 보라색 데이터는 희귀하지만 욕심은 금물입니다.',
     keys: ['CARGO', 'E', 'EXTRACT'],
   },
   {
-    code: '07 // GROWTH', icon: '▣', title: '회수 자원을 영구 전력으로 바꾸세요',
+    code: '08 // GROWTH', icon: '▣', title: '회수 자원을 영구 전력으로 바꾸세요',
     body: '쉘터 모듈을 업그레이드하면 오프라인 생산량이 늘고, 작업장에서 영구 전술 장비를 제작해 최대 2개까지 장착할 수 있습니다.',
     utility: '플레이하지 않는 시간에도 자원이 쌓이며, 원하는 생존·화력·회수 특성에 맞춰 장기 성장 경로를 설계할 수 있습니다.',
     tip: '초반에는 작업장과 정수 시설을 먼저 올리고, 첫 장비는 생존 보정 효과를 우선하면 탐사 성공률이 크게 높아집니다.',
     keys: ['SHELTER', 'UPGRADE', 'GEAR'],
   },
   {
-    code: '08 // OPERATIVES', icon: '◈', title: '오퍼레이터를 수집하고 편성하세요',
+    code: '09 // OPERATIVES', icon: '◈', title: '오퍼레이터를 수집하고 편성하세요',
     body: '오퍼레이터마다 역할, 희귀도, 뉴럴 링크, 관계 수치가 다릅니다. 3명을 편성해 역할 조합 보너스를 만들고 딥 토크에서 개인 서사와 기억을 확인할 수 있습니다.',
     utility: '전투 성능을 위한 편성과 캐릭터 관계·스토리 수집을 한 화면에서 함께 즐길 수 있습니다.',
     tip: 'Vanguard·Engineer·Support 조합은 초반 생존과 자원 회수의 균형이 좋습니다. 외부 AI 대화는 별도 동의가 있을 때만 사용됩니다.',
     keys: ['ROSTER', 'FORMATION', 'DEEP TALK'],
   },
   {
-    code: '09 // ROUTINE', icon: '◆', title: '계약과 오프라인 보상으로 이어가세요',
+    code: '10 // ROUTINE', icon: '◆', title: '계약과 오프라인 보상으로 이어가세요',
     body: '일일 3개·주간 2개의 서버 검증 계약을 달성해 보상을 직접 수령하세요. 쉘터는 접속하지 않은 동안에도 최대 8시간 자원을 생산합니다.',
     utility: '매일 짧게 접속해도 명확한 목표와 성장 보상을 얻을 수 있고, 주간 목표는 장기 플레이 방향을 제시합니다.',
     tip: '게임을 시작하면 먼저 계약 보드를 확인하고, 이미 진행 중인 목표에 맞춰 무기와 탐사 전략을 고르세요.',
     keys: ['DAILY', 'WEEKLY', 'CLAIM'],
   },
   {
-    code: '10 // ACCESS', icon: '◎', title: '나에게 맞는 방식으로 플레이하세요',
+    code: '11 // ACCESS', icon: '◎', title: '나에게 맞는 방식으로 플레이하세요',
     body: '설정에서 HUD 크기, 고대비·적록 보정, 모션 감소, 그래픽 품질, 사운드와 진동을 조절할 수 있습니다. 필드 가이드는 하단 버튼에서 언제든 다시 열 수 있습니다.',
     utility: '시각·움직임 민감도와 기기 성능에 맞춰 인터페이스를 조절하면서 동일한 게임 진행을 유지할 수 있습니다.',
     tip: '화면이 복잡하면 HUD를 크게 하고 모션 감소를 켜세요. 개인정보와 외부 AI 사용 여부도 설정에서 언제든 변경할 수 있습니다.',
@@ -305,6 +334,9 @@ function addFeed(message: string, danger = false): void {
 function pauseForModal(): void {
   const focused = document.activeElement;
   if (focused instanceof HTMLElement && !modalBackdrop.contains(focused)) lastFocusedElement = focused;
+  window.clearTimeout(stageBannerTimer);
+  stageBanner.classList.remove('active');
+  stageBanner.setAttribute('aria-hidden', 'true');
   gameEvents.emit('suspend-world-input');
   if (game.scene.isActive('WorldScene')) game.scene.pause('WorldScene');
   modalBackdrop.classList.remove('hidden');
@@ -566,8 +598,9 @@ function clearLocalAccount(): void {
 function renderTutorial(step: number): void {
   const safeStep = Math.max(0, Math.min(tutorialSteps.length - 1, step));
   const tutorial = tutorialSteps[safeStep];
+  const continuing = currentModal === 'tutorial' && !modalBackdrop.classList.contains('hidden');
   currentModal = 'tutorial';
-  pauseForModal();
+  if (!continuing) pauseForModal();
   modalContent.innerHTML = `
     <div class="field-guide">
       <aside class="guide-rail">
@@ -602,7 +635,7 @@ function renderTutorial(step: number): void {
           </div>
           <div>
             <span class="eyebrow">OPERATIVE KNOWLEDGE MODULE</span>
-            <h2>${tutorial.title}</h2>
+            <h2 tabindex="-1">${tutorial.title}</h2>
             <p>${tutorial.body}</p>
           </div>
         </div>
@@ -648,6 +681,12 @@ function renderTutorial(step: number): void {
     applySettings();
     void network.track('tutorial_complete', { steps: tutorialSteps.length });
     closeModal();
+  });
+  window.requestAnimationFrame(() => {
+    modalContent.querySelector<HTMLElement>('[aria-current="step"]')?.scrollIntoView({
+      block: 'nearest', inline: 'center', behavior: settings.reducedMotion ? 'auto' : 'smooth',
+    });
+    if (continuing) modalContent.querySelector<HTMLHeadingElement>('.guide-stage h2')?.focus({ preventScroll: true });
   });
 }
 
@@ -1345,6 +1384,29 @@ gameEvents.on('neural-link-activated', (operatorId: string, skillName: string) =
   showToast(`${getOperator(operatorId).name} // ${skillName}`);
 });
 gameEvents.on('boss-intro', showBossIntro);
+gameEvents.on('operation-update', (status: OperationStatus) => {
+  const definition = operationDefinition(status.operationId);
+  const stage = operationStageBrief(status.operationId, status.stage);
+  const stageNumber = operationStageIndex(status.operationId, status.stage) + 1;
+  window.clearTimeout(stageBannerTimer);
+  if (status.stage === 'WARDEN' || status.stage === 'COMPLETE') {
+    stageBanner.classList.remove('active');
+    stageBanner.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  stageBannerCode.textContent = `STAGE ${stageNumber.toString().padStart(2, '0')} // ${stage.label}`;
+  stageBannerDistrict.textContent = stage.district;
+  stageBannerDirective.textContent = stage.directive;
+  stageBanner.style.setProperty('--stage-accent', `#${definition.palette.accent.toString(16).padStart(6, '0')}`);
+  stageBanner.setAttribute('aria-hidden', 'false');
+  stageBanner.classList.remove('active');
+  void stageBanner.offsetWidth;
+  stageBanner.classList.add('active');
+  stageBannerTimer = window.setTimeout(() => {
+    stageBanner.classList.remove('active');
+    stageBanner.setAttribute('aria-hidden', 'true');
+  }, settings.reducedMotion ? 1_050 : 2_800);
+});
 gameEvents.on('state-changed', renderPersistentHud);
 gameEvents.on('game-over', renderGameOver);
 gameEvents.on('operation-complete', (result: {
@@ -1414,6 +1476,8 @@ gameEvents.on('hud-update', (hud: {
   linkCharge: number;
   linkLeader: string;
   dashCooldownMs: number;
+  position: { x: number; y: number };
+  activeObjectiveIds: string[];
   boss: { hp: number; maxHp: number; name: string } | null;
 }) => {
   hpText.textContent = `${Math.ceil(hud.hp)}%`;
@@ -1425,6 +1489,61 @@ gameEvents.on('hud-update', (hud: {
   operationTitle.textContent = hud.operation.title;
   operationObjective.textContent = hud.operation.objective;
   operationProgress.style.width = `${Math.min(100, hud.operation.target <= 0 ? 0 : hud.operation.current / hud.operation.target * 100)}%`;
+  const definition = operationDefinition(hud.operation.operationId);
+  const activeStageIndex = operationStageIndex(hud.operation.operationId, hud.operation.stage);
+  const activeStage = operationStageBrief(hud.operation.operationId, hud.operation.stage);
+  const stageKey = `${hud.operation.operationId}:${hud.operation.stage}`;
+  if (tacticalStageKey !== stageKey) {
+    tacticalStageKey = stageKey;
+    operationStageRail.innerHTML = definition.stages.map((stage, index) => `
+      <i class="${index < activeStageIndex ? 'complete' : index === activeStageIndex ? 'active' : ''}"
+        title="${stage.label} // ${stage.district}" aria-hidden="true"><span>${index + 1}</span></i>
+    `).join('');
+    operationStageRail.setAttribute(
+      'aria-label',
+      `작전 스테이지 ${activeStageIndex + 1}/${definition.stages.length}: ${activeStage.label}, ${activeStage.district}`,
+    );
+  }
+  const px = Math.max(0, Math.min(WORLD_SIZE, Number.isFinite(hud.position.x) ? hud.position.x : WORLD_SIZE / 2));
+  const py = Math.max(0, Math.min(WORLD_SIZE, Number.isFinite(hud.position.y) ? hud.position.y : WORLD_SIZE / 2));
+  const sector = nearestWorldSector(hud.operation.operationId, { x: px, y: py });
+  const stageSectors = worldStageSectors(hud.operation.operationId, hud.operation.stage);
+  const liveTargetIds = new Set(hud.activeObjectiveIds);
+  const liveTargets = stageSectors.filter((item) => liveTargetIds.has(item.id));
+  const target = liveTargets.length > 0
+    ? liveTargets.reduce((nearest, candidate) => (
+      Math.hypot(candidate.x - px, candidate.y - py) < Math.hypot(nearest.x - px, nearest.y - py)
+        ? candidate
+        : nearest
+    ))
+    : nearestWorldStageSector(hud.operation.operationId, hud.operation.stage, { x: px, y: py });
+  const deltaX = target.x - px;
+  const deltaY = target.y - py;
+  const distance = Math.hypot(deltaX, deltaY);
+  const bearing = (Math.atan2(deltaX, -deltaY) * 180 / Math.PI + 360) % 360;
+  const direction = compassDirections[Math.round(bearing / 45) % compassDirections.length];
+  mapDistrict.textContent = `${sector.code} // ${sector.label}`;
+  mapCoordinates.textContent = `X ${Math.round(px).toString().padStart(4, '0')} · Y ${Math.round(py).toString().padStart(4, '0')}`;
+  mapDirective.textContent = activeStage.directive;
+  mapTarget.textContent = `${direction} ${target.label} · ${Math.round(distance)}m`;
+  mapTarget.title = `${target.label}까지 ${Math.round(distance)}m`;
+  mapTarget.setAttribute('aria-label', `${direction}, ${target.label}까지 ${Math.round(distance)}미터`);
+  mapBearing.style.transform = `rotate(${bearing}deg)`;
+  mapPlayer.style.left = `${px / WORLD_SIZE * 100}%`;
+  mapPlayer.style.top = `${py / WORLD_SIZE * 100}%`;
+  mapRouteLine.setAttribute('x1', String(px / WORLD_SIZE * 100));
+  mapRouteLine.setAttribute('y1', String(py / WORLD_SIZE * 100));
+  mapRouteLine.setAttribute('x2', String(target.x / WORLD_SIZE * 100));
+  mapRouteLine.setAttribute('y2', String(target.y / WORLD_SIZE * 100));
+  const mapKey = `${stageKey}:${[...liveTargetIds].sort().join(',')}:${target.id}`;
+  if (tacticalMapKey !== mapKey) {
+    tacticalMapKey = mapKey;
+    mapObjectives.innerHTML = worldSectors(hud.operation.operationId).map((item) => `
+      <i class="map-objective ${item.kind} ${liveTargetIds.has(item.id) ? 'active' : ''} ${item.id === target.id ? 'target' : ''}"
+        style="left:${item.x / WORLD_SIZE * 100}%;top:${item.y / WORLD_SIZE * 100}%"
+        title="${item.code} // ${item.label}"></i>
+    `).join('');
+  }
   operationCount.textContent = hud.operation.stage === 'WARDEN' ? 'BOSS SIGNAL LOCKED'
     : hud.operation.stage === 'RELAY' ? 'DESTROY NEURAL RELAYS'
     : hud.operation.stage === 'EXTRACT' ? 'RETURN TO SHELTER LIFT'
@@ -1444,6 +1563,7 @@ gameEvents.on('hud-update', (hud: {
     neuralLinkSkillText.textContent = neuralLinkSkill(hud.linkLeader).name;
   }
   bossHud.classList.toggle('hidden', !hud.boss);
+  tacticalMap.classList.toggle('boss-active', Boolean(hud.boss));
   if (hud.boss) {
     bossHudName.textContent = hud.boss.name;
     bossHpBar.style.width = `${Math.max(0, hud.boss.hp / hud.boss.maxHp * 100)}%`;

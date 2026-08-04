@@ -8,8 +8,9 @@ import {
   evaluateOperation, operationDefinition, type OperationId,
 } from '../../../packages/shared/src/operations.js';
 import {
-  EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
-  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
+  EXTRACTION_POINT, findOpenPosition, findSectorSpawnPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, worldStageSectors,
+  type WorldObstacle,
 } from '../../../packages/shared/src/world.js';
 import { calculateCombatBonuses, type GearId } from '../../../packages/shared/src/gear.js';
 
@@ -584,7 +585,13 @@ export class RedZoneSimulation {
     this.bossSpawned = true;
     const definition = operationDefinition(this.operationId);
     const id = `enemy-${this.nextEntityId++}`;
-    const position = findOpenPosition({
+    const arena = worldStageSectors(this.operationId, 'WARDEN')[0];
+    const position = arena ? findSectorSpawnPosition(
+      arena,
+      enemyCollisionRadius(definition.bossKind),
+      this.obstacles,
+      [...this.players.values()],
+    ) : findOpenPosition({
       x: clamp(player.x + 560, 80, WORLD_SIZE - 80),
       y: clamp(player.y - 220, 80, WORLD_SIZE - 80),
     }, enemyCollisionRadius(definition.bossKind), this.obstacles);
@@ -626,9 +633,20 @@ export class RedZoneSimulation {
 
   private spawnResourceCache(): void {
     if (this.resources.size >= MAX_FIELD_RESOURCES) return;
-    const kinds: ResourceKind[] = ['scrap', 'scrap', 'scrap', 'water', 'data'];
+    const kinds: ResourceKind[] = this.operationId === 'operation-ashfall'
+      ? ['scrap', 'scrap', 'water', 'data', 'data', 'data']
+      : ['scrap', 'scrap', 'scrap', 'water', 'data'];
     const id = `resource-${this.nextEntityId++}`;
-    const position = findOpenPosition({
+    const salvageSectors = worldStageSectors(this.operationId, 'SCAVENGE');
+    const sector = this.random() < 0.72
+      ? salvageSectors[Math.floor(this.random() * salvageSectors.length)]
+      : undefined;
+    const angle = this.random() * Math.PI * 2;
+    const distance = sector ? Math.sqrt(this.random()) * sector.radius * 0.76 : 0;
+    const position = findOpenPosition(sector ? {
+      x: sector.x + Math.cos(angle) * distance,
+      y: sector.y + Math.sin(angle) * distance,
+    } : {
       x: 80 + this.random() * (WORLD_SIZE - 160),
       y: 80 + this.random() * (WORLD_SIZE - 160),
     }, 12, this.obstacles);

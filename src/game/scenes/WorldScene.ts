@@ -18,8 +18,9 @@ import {
   type OperationDefinition, type OperationId, type OperationStage, type OperationStatus,
 } from '../../../packages/shared/src/operations';
 import {
-  EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
-  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
+  EXTRACTION_POINT, findOpenPosition, findSectorSpawnPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, worldRoutes,
+  worldSectors, worldStageSectors, type WorldObstacle,
 } from '../../../packages/shared/src/world';
 import { calculateCombatBonuses } from '../../../packages/shared/src/gear';
 import type { SquadBonuses } from '../../../packages/shared/src/squad';
@@ -54,6 +55,8 @@ export class WorldScene extends Phaser.Scene {
   private resources!: Phaser.Physics.Arcade.Group;
   private obstacles!: Phaser.Physics.Arcade.StaticGroup;
   private transientEffects!: Phaser.GameObjects.Group;
+  private stageLayer!: Phaser.GameObjects.Graphics;
+  private stageMarkers: Phaser.GameObjects.Arc[] = [];
   private performance!: PerformanceGovernor;
   private lastHudAt = -Infinity;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -65,6 +68,7 @@ export class WorldScene extends Phaser.Scene {
   private radiation = 0;
   private fieldCargo: Resources = { scrap: 0, water: 0, data: 0, cores: 0 };
   private missionKills = 0;
+  private operationKills = 0;
   private lastShotAt = 0;
   private companionShotAt = 0;
   private waveAt = 0;
@@ -116,6 +120,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.resetRunState();
     this.state = this.registry.get('state') as GameState;
     this.network = this.registry.get('network') as GameServerClient | undefined;
     const settings = this.registry.get('settings') as PlayerSettings | undefined;
@@ -195,6 +200,53 @@ export class WorldScene extends Phaser.Scene {
     this.updateHud(true);
   }
 
+  private resetRunState(): void {
+    this.companions = [];
+    this.stageMarkers = [];
+    this.lastHudAt = -Infinity;
+    this.director = new AdaptiveDirector();
+    this.telemetry = freshTelemetry();
+    this.hp = 100;
+    this.radiation = 0;
+    this.fieldCargo = { scrap: 0, water: 0, data: 0, cores: 0 };
+    this.missionKills = 0;
+    this.operationKills = 0;
+    this.lastShotAt = 0;
+    this.companionShotAt = 0;
+    this.waveAt = 0;
+    this.stormAt = 0;
+    this.stormActive = false;
+    this.order = 'REGROUP';
+    this.orderUntil = 0;
+    this.networkConnected = false;
+    this.networkSessionId = '';
+    this.networkSequence = 0;
+    this.lastNetworkInputAt = 0;
+    this.currentWeapon = 'carbine';
+    this.operationCollected = 0;
+    this.operationDataCollected = 0;
+    this.operationRelaysDestroyed = 0;
+    this.operationRelaysSpawned = false;
+    this.operationBossSpawned = false;
+    this.operationBossDefeated = false;
+    this.operationExtracted = false;
+    this.operationComplete = false;
+    this.operationStage = undefined;
+    this.lastNetworkCargo = 0;
+    this.bossAbilityAt = 0;
+    this.bossIntroShown = false;
+    this.neuralLinkCharge = 0;
+    this.linkRequested = false;
+    this.linkLeader = 'aegis-07';
+    this.dashCooldownMs = 0;
+    this.dashNetworkPending = false;
+    this.extractRequested = false;
+    this.gamepadConnected = false;
+    this.gamepadButtons.clear();
+    this.serverEnemies.clear();
+    this.serverResources.clear();
+  }
+
   update(time: number, delta: number): void {
     if (!this.player.active || this.hp <= 0) return;
     const performance = this.performance.sample(delta);
@@ -234,6 +286,16 @@ export class WorldScene extends Phaser.Scene {
     ground.strokeCircle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 130);
     ground.setDepth(-5);
 
+    for (const route of worldRoutes(this.operationId)) {
+      const routeColor = route.stage === 'WARDEN' ? 0xff4f72 : palette.accent;
+      for (let index = 1; index < route.points.length; index += 1) {
+        const from = route.points[index - 1];
+        const to = route.points[index];
+        ground.lineStyle(12, palette.ground, 0.72).lineBetween(from.x, from.y, to.x, to.y);
+        ground.lineStyle(2, routeColor, 0.12).lineBetween(from.x, from.y, to.x, to.y);
+      }
+    }
+
     const seed = new Phaser.Math.RandomDataGenerator([this.operationDefinition.codename]);
     for (let index = 0; index < 18; index += 1) {
       const x = seed.between(140, WORLD_SIZE - 140);
@@ -254,6 +316,25 @@ export class WorldScene extends Phaser.Scene {
       ground.lineStyle(seed.between(1, 3), scarColor, seed.realInRange(0.05, 0.13))
         .strokeCircle(x, y, seed.between(12, 52));
       ground.lineBetween(x - seed.between(8, 30), y, x + seed.between(8, 30), y + seed.between(-18, 18));
+    }
+    for (const sector of worldSectors(this.operationId)) {
+      const sectorColor = sector.kind === 'boss' ? 0xff4f72
+        : sector.kind === 'relay' ? 0xe678ff
+          : sector.kind === 'extract' ? palette.accent : palette.grid;
+      ground.fillStyle(sectorColor, sector.kind === 'extract' ? 0.035 : 0.018)
+        .fillCircle(sector.x, sector.y, sector.radius);
+      ground.lineStyle(1, sectorColor, sector.kind === 'extract' ? 0.26 : 0.13)
+        .strokeCircle(sector.x, sector.y, sector.radius);
+      ground.lineStyle(1, sectorColor, 0.18)
+        .lineBetween(sector.x - 24, sector.y, sector.x + 24, sector.y)
+        .lineBetween(sector.x, sector.y - 24, sector.x, sector.y + 24);
+      this.add.text(sector.x, sector.y - Math.min(92, sector.radius * 0.48), `${sector.code} // ${sector.label}`, {
+        color: `#${sectorColor.toString(16).padStart(6, '0')}`,
+        backgroundColor: '#040b09c9',
+        fontFamily: 'Share Tech Mono',
+        fontSize: '9px',
+        padding: { x: 5, y: 3 },
+      }).setOrigin(0.5).setDepth(1);
     }
     for (const obstacle of this.cover) {
       const sprite = this.obstacles.create(obstacle.x, obstacle.y, obstacle.kind) as Phaser.Physics.Arcade.Sprite;
@@ -289,9 +370,51 @@ export class WorldScene extends Phaser.Scene {
     );
     this.extractionRing = this.add.circle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 64, palette.accent, 0.045)
       .setStrokeStyle(2, palette.accent, 0.7).setDepth(1);
+    this.stageLayer = this.add.graphics().setDepth(1.2);
     this.add.text(EXTRACTION_POINT.x, EXTRACTION_POINT.y - 88, `${this.operationDefinition.zoneName} // EXTRACTION`, {
       color: `#${palette.accent.toString(16).padStart(6, '0')}`, fontFamily: 'Share Tech Mono', fontSize: '11px',
     }).setOrigin(0.5);
+  }
+
+  private renderStagePresentation(stage: OperationStage): void {
+    if (!this.stageLayer) return;
+    const palette = this.operationDefinition.palette;
+    const activeColor = stage === 'WARDEN' ? 0xff4f72 : stage === 'RELAY' ? 0xe678ff : palette.accent;
+    this.stageLayer.clear();
+    for (const marker of this.stageMarkers) {
+      this.tweens.killTweensOf(marker);
+      marker.destroy();
+    }
+    this.stageMarkers = [];
+
+    for (const route of worldRoutes(this.operationId).filter((candidate) => candidate.stage === stage)) {
+      for (let index = 1; index < route.points.length; index += 1) {
+        const from = route.points[index - 1];
+        const to = route.points[index];
+        this.stageLayer.lineStyle(14, activeColor, 0.035).lineBetween(from.x, from.y, to.x, to.y);
+        this.stageLayer.lineStyle(3, activeColor, 0.42).lineBetween(from.x, from.y, to.x, to.y);
+      }
+    }
+
+    for (const sector of worldStageSectors(this.operationId, stage)) {
+      this.stageLayer.fillStyle(activeColor, 0.035).fillCircle(sector.x, sector.y, sector.radius);
+      this.stageLayer.lineStyle(4, activeColor, 0.42).strokeCircle(sector.x, sector.y, sector.radius);
+      const marker = this.add.circle(sector.x, sector.y, Math.min(72, sector.radius * 0.34), activeColor, 0.025)
+        .setStrokeStyle(3, activeColor, 0.82)
+        .setDepth(1.3);
+      this.stageMarkers.push(marker);
+      if (!this.reducedMotion) {
+        this.tweens.add({
+          targets: marker,
+          scale: 1.35,
+          alpha: 0.2,
+          duration: 1_150,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+      }
+    }
   }
 
   private spawnCompanions(): void {
@@ -338,12 +461,23 @@ export class WorldScene extends Phaser.Scene {
 
   private spawnResourceCaches(): void {
     const seed = new Phaser.Math.RandomDataGenerator([String(Date.now())]);
+    const salvageSectors = worldStageSectors(this.operationId, 'SCAVENGE');
     for (let index = 0; index < 28; index += 1) {
       const kinds: Array<keyof Resources> = this.operationId === 'operation-ashfall'
         ? ['scrap', 'scrap', 'water', 'data', 'data', 'data']
         : ['scrap', 'scrap', 'scrap', 'water', 'data'];
       const kind = seed.pick(kinds);
-      this.spawnResource(seed.between(80, WORLD_SIZE - 80), seed.between(80, WORLD_SIZE - 80), kind, seed.between(2, 7));
+      const sector = index < 20 ? salvageSectors[index % salvageSectors.length] : undefined;
+      const angle = seed.realInRange(0, Math.PI * 2);
+      const distance = sector ? Math.sqrt(seed.frac()) * sector.radius * 0.76 : 0;
+      const position = findOpenPosition(sector ? {
+        x: sector.x + Math.cos(angle) * distance,
+        y: sector.y + Math.sin(angle) * distance,
+      } : {
+        x: seed.between(80, WORLD_SIZE - 80),
+        y: seed.between(80, WORLD_SIZE - 80),
+      }, 12, this.cover);
+      this.spawnResource(position.x, position.y, kind, seed.between(2, 7));
     }
   }
 
@@ -730,13 +864,14 @@ export class WorldScene extends Phaser.Scene {
     this.operationStatus = evaluateOperation(this.operationId, {
       collected: this.operationCollected,
       dataCollected: this.operationDataCollected,
-      kills: this.missionKills,
+      kills: this.operationKills,
       relaysDestroyed: this.operationRelaysDestroyed,
       bossDefeated: this.operationBossDefeated,
       extracted: this.operationExtracted,
     });
     if (this.operationStage === this.operationStatus.stage) return;
     this.operationStage = this.operationStatus.stage;
+    this.renderStagePresentation(this.operationStatus.stage);
     gameEvents.emit('operation-update', this.operationStatus);
     this.emitFeed(`${this.operationStatus.code}: ${this.operationStatus.objective}`,
       this.operationStatus.stage === 'WARDEN' || this.operationStatus.stage === 'RELAY');
@@ -765,7 +900,13 @@ export class WorldScene extends Phaser.Scene {
     const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
     const isBoss = archetype === 'warden' || archetype === 'harvester';
     const distance = forcedDistance ?? (isBoss ? 560 : Phaser.Math.Between(430, 680));
-    const position = findOpenPosition({
+    const bossSector = isBoss ? worldStageSectors(this.operationId, 'WARDEN')[0] : undefined;
+    const position = bossSector ? findSectorSpawnPosition(
+      bossSector,
+      38,
+      this.cover,
+      [this.player],
+    ) : findOpenPosition({
       x: Phaser.Math.Clamp(this.player.x + Math.cos(angle) * distance, 24, WORLD_SIZE - 24),
       y: Phaser.Math.Clamp(this.player.y + Math.sin(angle) * distance, 24, WORLD_SIZE - 24),
     }, isBoss ? 38 : archetype === 'breaker' || archetype === 'relay' ? 24 : 14, this.cover);
@@ -876,6 +1017,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.emit('sfx', 'kill');
     gameEvents.emit('haptic', archetype === 'breaker' ? 'heavy' : 'light');
     this.missionKills += 1;
+    this.operationKills += 1;
     this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 12);
     this.telemetry.kills += 1;
     this.state.recordKill();
@@ -996,7 +1138,7 @@ export class WorldScene extends Phaser.Scene {
       codename: this.operationDefinition.codename,
       title: this.operationDefinition.completionTitle,
       narrative: this.operationDefinition.completionNarrative,
-      kills: this.missionKills,
+      kills: this.operationKills,
       collected: this.operationCollected,
       weapon: WEAPON_SPECS[this.currentWeapon].name,
       online,
@@ -1121,6 +1263,8 @@ export class WorldScene extends Phaser.Scene {
       linkCharge: this.neuralLinkCharge,
       linkLeader: this.linkLeader,
       dashCooldownMs: this.dashCooldownMs,
+      position: { x: this.player.x, y: this.player.y },
+      activeObjectiveIds: this.activeObjectiveIds(),
       boss: boss ? {
         hp: Number(boss.getData('hp') ?? 0),
         maxHp: ENEMY_STATS[this.operationDefinition.bossKind].hp,
@@ -1170,6 +1314,20 @@ export class WorldScene extends Phaser.Scene {
     });
   }
 
+  private activeObjectiveIds(): string[] {
+    const sectors = worldStageSectors(this.operationId, this.operationStatus.stage);
+    if (this.operationStatus.stage !== 'RELAY') return sectors.map((sector) => sector.id);
+    const relays = this.enemies.getChildren().filter((child) => {
+      const enemy = child as EnemySprite;
+      return enemy.active && enemy.archetype === 'relay';
+    }) as EnemySprite[];
+    return sectors
+      .filter((sector) => relays.some((relay) => Phaser.Math.Distance.Between(
+        sector.x, sector.y, relay.x, relay.y,
+      ) < 96))
+      .map((sector) => sector.id);
+  }
+
   private handleResize(gameSize: Phaser.Structs.Size): void {
     this.stormOverlay.setSize(gameSize.width, gameSize.height);
   }
@@ -1211,6 +1369,7 @@ export class WorldScene extends Phaser.Scene {
       this.hp = ownHp;
       this.radiation = safeNumber(own.radiation, this.radiation);
       this.missionKills = safeNumber(own.kills, this.missionKills);
+      this.operationKills = safeNumber(own.kills, this.operationKills);
       const nextCargo = {
         scrap: safeNumber(own.cargoScrap), water: safeNumber(own.cargoWater),
         data: safeNumber(own.cargoData), cores: safeNumber(own.cargoCores),
@@ -1350,6 +1509,7 @@ export class WorldScene extends Phaser.Scene {
 
   private handleSettingsChanged(settings: PlayerSettings): void {
     this.reducedMotion = settings.reducedMotion;
+    if (this.operationStage) this.renderStagePresentation(this.operationStage);
     const tier = this.performance.setMode(
       settings.graphicsQuality,
       navigator.maxTouchPoints > 0 || this.scale.width < 820,

@@ -13,11 +13,12 @@ import { normalizeReleaseChannel } from '../packages/shared/src/release';
 import { clientPlatform } from '../src/release';
 import { createClientErrorReport, sanitizeErrorMessage } from '../src/game/telemetry/ClientTelemetry';
 import {
-  activeOperationId, evaluateOperation, isOperationUnlocked,
+  activeOperationId, evaluateOperation, isOperationUnlocked, operationStageBrief, operationStageIndex,
 } from '../packages/shared/src/operations';
 import {
-  EXTRACTION_POINT, isCircleBlocked, isLineBlocked, PLAYER_COLLISION_RADIUS,
-  RELAY_POSITIONS, resolveCircleMovement, worldObstacles,
+  EXTRACTION_POINT, findSectorSpawnPosition, isCircleBlocked, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  nearestWorldSector, nearestWorldStageSector, RELAY_POSITIONS, resolveCircleMovement,
+  worldObstacles, worldRoutes, worldSectors, worldStageSectors,
 } from '../packages/shared/src/world';
 import {
   calculateCombatBonuses, describeGearBonuses, normalizeGearState,
@@ -278,6 +279,50 @@ describe('shared red-zone cover geometry', () => {
     for (const obstacles of [zero, ashfall]) {
       expect(isCircleBlocked(EXTRACTION_POINT, 220, obstacles)).toBe(false);
       for (const relay of RELAY_POSITIONS) expect(isCircleBlocked(relay, 30, obstacles)).toBe(false);
+    }
+  });
+
+  it('maps every campaign stage to readable sectors and tactical routes', () => {
+    for (const operationId of ['operation-zero', 'operation-ashfall'] as const) {
+      const sectors = worldSectors(operationId);
+      const routes = worldRoutes(operationId);
+      expect(new Set(sectors.map((sector) => sector.id)).size).toBe(sectors.length);
+      expect(sectors.some((sector) => sector.kind === 'boss')).toBe(true);
+      expect(sectors.some((sector) => sector.kind === 'extract')).toBe(true);
+      expect(routes.every((route) => route.points.length >= 2)).toBe(true);
+      expect(sectors.every((sector) => (
+        !isCircleBlocked(sector, PLAYER_COLLISION_RADIUS, worldObstacles(operationId))
+      ))).toBe(true);
+      expect(routes.every((route) => route.points.slice(1).every((point, index) => (
+        !isLineBlocked(route.points[index], point, worldObstacles(operationId), PLAYER_COLLISION_RADIUS)
+      )))).toBe(true);
+
+      const definitionStages = operationId === 'operation-zero'
+        ? ['SCAVENGE', 'ELIMINATE', 'WARDEN', 'EXTRACT'] as const
+        : ['SCAVENGE', 'ELIMINATE', 'RELAY', 'WARDEN', 'EXTRACT'] as const;
+      definitionStages.forEach((stage, index) => {
+        expect(worldStageSectors(operationId, stage).length).toBeGreaterThan(0);
+        expect(operationStageBrief(operationId, stage).district.length).toBeGreaterThan(2);
+        expect(operationStageIndex(operationId, stage)).toBe(index);
+      });
+    }
+  });
+
+  it('selects the nearest local district and active-stage objective', () => {
+    const player = { x: 1_850, y: 1_700 };
+    expect(nearestWorldSector('operation-zero', player).id).toBe('zero-salvage-east');
+    expect(nearestWorldStageSector('operation-zero', 'SCAVENGE', player).id).toBe('zero-salvage-east');
+    expect(nearestWorldStageSector('operation-zero', 'EXTRACT', player).id).toBe('zero-extract');
+    expect(nearestWorldStageSector('operation-ashfall', 'COMPLETE', player).kind).toBe('extract');
+  });
+
+  it('places a boss inside its arena and safely away from a player at the center', () => {
+    for (const operationId of ['operation-zero', 'operation-ashfall'] as const) {
+      const arena = worldStageSectors(operationId, 'WARDEN')[0];
+      const spawn = findSectorSpawnPosition(arena, 38, worldObstacles(operationId), [arena]);
+      expect(Math.hypot(spawn.x - arena.x, spawn.y - arena.y)).toBeGreaterThan(200);
+      expect(Math.hypot(spawn.x - arena.x, spawn.y - arena.y)).toBeLessThan(arena.radius - 38);
+      expect(isCircleBlocked(spawn, 38, worldObstacles(operationId))).toBe(false);
     }
   });
 

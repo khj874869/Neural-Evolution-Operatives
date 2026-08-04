@@ -46,7 +46,10 @@
           <div><span id="operationCode">OP-00 // SALVAGE</span><b id="operationTitle">죽은 도시의 신호</b></div>
           <p id="operationObjective">현장 자원을 회수하십시오.</p>
           <div class="operation-progress"><i id="operationProgress"></i></div>
-          <small id="operationCount">0 / 8</small>
+          <div class="operation-footer">
+            <div class="operation-stage-rail" id="operationStageRail" aria-label="작전 스테이지"></div>
+            <small id="operationCount">0 / 8</small>
+          </div>
         </section>
         <section class="boss-hud hidden" id="bossHud" aria-live="assertive">
           <span>MOTHERBRAIN COMMAND UNIT</span><b id="bossHudName">감시자 케르베로스</b>
@@ -69,6 +72,27 @@
           <div class="bar radiation"><i id="radiationBar"></i></div>
         </div>
         <div class="event-feed glass" id="eventFeed"></div>
+        <aside class="tactical-map glass" id="tacticalMap" aria-label="전술 지도">
+          <header><span>TACTICAL MAP</span><b id="mapDistrict">구역 동기화 중</b></header>
+          <div class="map-viewport" id="mapViewport">
+            <i class="map-axis map-axis-x"></i><i class="map-axis map-axis-y"></i>
+            <svg class="map-route-vector" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <line id="mapRouteLine" x1="50" y1="50" x2="50" y2="50"></line>
+            </svg>
+            <div id="mapObjectives"></div>
+            <i class="map-player" id="mapPlayer"></i>
+          </div>
+          <footer>
+            <span id="mapCoordinates">X 1200 · Y 1200</span>
+            <b class="map-target"><i id="mapBearing">↑</i><span id="mapTarget">목표 계산 중</span></b>
+          </footer>
+          <p class="map-directive" id="mapDirective">목표 경로 계산 중</p>
+        </aside>
+        <section class="stage-banner" id="stageBanner" aria-live="assertive" aria-hidden="true">
+          <span id="stageBannerCode">STAGE 01 // 탐색</span>
+          <strong id="stageBannerDistrict">침수 상가</strong>
+          <p id="stageBannerDirective">폐허의 회수 신호를 따라 자원 거점을 확보하십시오.</p>
+        </section>
         <div class="crosshair">+</div>
       </section>
 
