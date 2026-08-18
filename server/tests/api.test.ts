@@ -126,11 +126,34 @@ describe('game account API', () => {
     expect(catalog.body.checkoutAvailable).toBe(false);
 
     const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:analytics-device-01' }).expect(200);
+    const authorization = `Bearer ${auth.body.token}`;
     await request(app).post('/api/analytics/events')
-      .set('authorization', `Bearer ${auth.body.token}`)
+      .set('authorization', authorization)
+      .send({ event: 'store_view', properties: { source: 'before_consent' } })
+      .expect(403, { error: 'ANALYTICS_CONSENT_REQUIRED' });
+    await request(app).put('/api/profile/analytics-consent')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'analytics:consent:0001')
+      .send({ consent: true })
+      .expect(200);
+    await request(app).post('/api/analytics/events')
+      .set('authorization', authorization)
       .send({ event: 'store_view', properties: { source: 'command_dock' } })
       .expect(202);
     expect(repository.analytics).toContainEqual(expect.objectContaining({ event: 'store_view' }));
+  });
+
+  it('rate limits guest account authentication by client address', async () => {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await request(app).post('/api/auth/guest')
+        .send({ deviceId: `web:rate-limit-${String(attempt).padStart(4, '0')}` })
+        .expect(200);
+    }
+    const limited = await request(app).post('/api/auth/guest')
+      .send({ deviceId: 'web:rate-limit-blocked' })
+      .expect(429);
+    expect(limited.body).toMatchObject({ error: 'RATE_LIMITED', requestId: expect.any(String) });
+    expect(limited.headers['retry-after']).toBeTypeOf('string');
   });
 
   it('never grants a purchase while platform receipt verification is not configured', async () => {

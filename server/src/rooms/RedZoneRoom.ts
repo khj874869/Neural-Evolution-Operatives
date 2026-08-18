@@ -28,11 +28,44 @@ interface PlayerAuth {
   operationId: OperationId;
 }
 
+interface RateWindow {
+  startedAtMs: number;
+  count: number;
+}
+
+export class FixedWindowRateLimiter {
+  private readonly windows = new Map<string, RateWindow>();
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  allow(sessionId: string, channel: string, limit: number, windowMs: number): boolean {
+    const key = `${sessionId}:${channel}`;
+    const now = this.now();
+    const current = this.windows.get(key);
+    if (!current || now - current.startedAtMs >= windowMs) {
+      this.windows.set(key, { startedAtMs: now, count: 1 });
+      return true;
+    }
+    if (current.count >= limit) return false;
+    current.count += 1;
+    return true;
+  }
+
+  clearSession(sessionId: string): void {
+    const prefix = `${sessionId}:`;
+    for (const key of this.windows.keys()) {
+      if (key.startsWith(prefix)) this.windows.delete(key);
+    }
+  }
+}
+
 export class RedZoneRoom extends Room<{ state: RedZoneState }> {
   state = new RedZoneState();
   maxClients = 4;
   private simulation!: RedZoneSimulation;
   private operationId: OperationId = 'operation-zero';
+  private readonly messageLimiter = new FixedWindowRateLimiter();
+  private readonly rateLimitWarningAt = new Map<string, number>();
 
   onCreate(options: { operationId?: unknown } = {}): void {
     this.operationId = isOperationId(options.operationId) ? options.operationId : 'operation-zero';
@@ -40,18 +73,23 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
     this.state.operationId = this.operationId;
     this.setSimulationInterval((deltaMs) => this.updateSimulation(deltaMs), 50);
     this.onMessage('input', (client, message: GameInputMessage) => {
+      if (!this.allowMessage(client, 'input', 35, 1_000)) return;
       const parsed = inputSchema.safeParse(message);
       if (parsed.success) this.simulation.applyInput(client.sessionId, parsed.data);
     });
     this.onMessage('tactical', (client, message: TacticalMessage) => {
+      if (!this.allowMessage(client, 'tactical', 6, 10_000)) return;
       const parsed = tacticalSchema.safeParse(message);
       if (!parsed.success) return;
+      const result = this.simulation.applyTacticalCommand(client.sessionId, parsed.data.text);
       client.send('server-event', {
-        type: 'feed',
-        message: `전술 링크 수신: ${parsed.data.text}`,
+        type: result.applied ? 'feed' : 'error',
+        message: result.message,
+        payload: { order: result.order, cooldownMs: result.cooldownMs ?? 0 },
       } satisfies ServerEventMessage);
     });
     this.onMessage('sync-squad', async (client) => {
+      if (!this.allowMessage(client, 'profile-sync', 6, 60_000)) return;
       try {
         const playerId = this.simulation.getPlayerId(client.sessionId);
         if (!playerId) return;
@@ -67,6 +105,7 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
       }
     });
     this.onMessage('sync-loadout', async (client) => {
+      if (!this.allowMessage(client, 'profile-sync', 6, 60_000)) return;
       try {
         const playerId = this.simulation.getPlayerId(client.sessionId);
         if (!playerId) return;
@@ -121,6 +160,21 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
   onLeave(client: Client): void {
     this.simulation.removePlayer(client.sessionId);
     this.state.players.delete(client.sessionId);
+    this.messageLimiter.clearSession(client.sessionId);
+    this.rateLimitWarningAt.delete(client.sessionId);
+  }
+
+  private allowMessage(client: Client, channel: string, limit: number, windowMs: number): boolean {
+    if (this.messageLimiter.allow(client.sessionId, channel, limit, windowMs)) return true;
+    const now = Date.now();
+    const lastWarningAt = this.rateLimitWarningAt.get(client.sessionId) ?? 0;
+    if (now - lastWarningAt >= 10_000) {
+      this.rateLimitWarningAt.set(client.sessionId, now);
+      client.send('server-event', {
+        type: 'error', message: '메시지 전송 속도가 너무 빠릅니다. 잠시 후 다시 시도하십시오.',
+      } satisfies ServerEventMessage);
+    }
+    return false;
   }
 
   private updateSimulation(deltaMs: number): void {

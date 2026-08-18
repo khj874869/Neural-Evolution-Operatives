@@ -50,6 +50,8 @@ describe('tactical command parser', () => {
     expect(parseTacticalCommand('방패병 어그로 끌어줘, 내가 뒤치기 할게').order).toBe('DRAW_AGGRO');
     expect(parseTacticalCommand('모두 내 쪽으로 복귀해').order).toBe('REGROUP');
     expect(parseTacticalCommand('루멘, 지금 치료해줘').order).toBe('HEAL');
+    expect(parseTacticalCommand('강한 적을 집중 공격해').order).toBe('FOCUS');
+    expect(parseTacticalCommand('주변 자원을 찾아 회수해').order).toBe('SCAVENGE');
   });
 });
 

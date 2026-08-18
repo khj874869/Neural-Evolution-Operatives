@@ -300,4 +300,163 @@ describe('authoritative red zone simulation', () => {
     simulation.tick(50);
     expect(player.linkCharge).toBeLessThan(60);
   });
+
+  it('authorizes Support healing once per 40 seconds and clamps health', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-heal', 'player-heal', 'MEDIC-LINK', ['lumen']);
+    player.hp = 48;
+    expect(simulation.applyTacticalCommand('session-heal', '지금 치료해줘')).toMatchObject({
+      order: 'HEAL', applied: true,
+    });
+    expect(player.hp).toBe(72);
+    expect(simulation.applyTacticalCommand('session-heal', '다시 치료해줘')).toMatchObject({
+      order: 'HEAL', applied: false, cooldownMs: 40_000,
+    });
+
+    simulation.elapsedMs = 40_000;
+    player.hp = 90;
+    expect(simulation.applyTacticalCommand('session-heal', '치료해줘').applied).toBe(true);
+    expect(player.hp).toBe(100);
+
+    const unsupported = simulation.addPlayer('session-no-heal', 'player-no-heal', 'NO-MEDIC', ['rook']);
+    unsupported.hp = 40;
+    expect(simulation.applyTacticalCommand('session-no-heal', '치료해줘')).toMatchObject({
+      order: 'HEAL', applied: false,
+    });
+    expect(unsupported.hp).toBe(40);
+  });
+
+  it('prioritizes a focused strong target and magnetizes salvage on the server', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-orders', 'player-orders', 'TACTICIAN');
+    simulation.enemies.clear();
+    simulation.resources.clear();
+    simulation.enemies.set('near-drone', {
+      id: 'near-drone', kind: 'drone', x: player.x + 80, y: player.y, hp: 22, attackCooldownMs: 9_999,
+    });
+    simulation.enemies.set('focus-warden', {
+      id: 'focus-warden', kind: 'warden', x: player.x + 160, y: player.y, hp: 520, attackCooldownMs: 9_999,
+    });
+    expect(simulation.applyTacticalCommand('session-orders', '강한 적을 집중 공격해')).toMatchObject({
+      order: 'FOCUS', applied: true,
+    });
+    simulation.applyInput('session-orders', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'carbine',
+    });
+    simulation.tick(50);
+    expect(simulation.enemies.get('near-drone')?.hp).toBe(22);
+    expect(simulation.enemies.get('focus-warden')?.hp).toBeLessThan(500);
+
+    simulation.resources.set('remote-scrap', {
+      id: 'remote-scrap', kind: 'scrap', x: player.x + 140, y: player.y, value: 5,
+    });
+    expect(simulation.applyTacticalCommand('session-orders', '주변 자원을 찾아 회수해')).toMatchObject({
+      order: 'SCAVENGE', applied: true,
+    });
+    simulation.tick(50);
+    expect(player.cargo.scrap).toBe(5);
+    expect(simulation.resources.has('remote-scrap')).toBe(false);
+  });
+
+  it('applies flank mobility and firepower plus hold and regroup protection', () => {
+    const flankSimulation = new RedZoneSimulation(() => 0.5);
+    const flanker = flankSimulation.addPlayer('session-flank-order', 'player-flank-order', 'FLANKER');
+    flankSimulation.enemies.clear();
+    flankSimulation.resources.clear();
+    const initialX = flanker.x;
+    expect(flankSimulation.applyTacticalCommand('session-flank-order', '오른쪽으로 우회해').order).toBe('FLANK');
+    flankSimulation.applyInput('session-flank-order', {
+      sequence: 1, moveX: 1, moveY: 0, aimAngle: 0, fire: false, extract: false, weapon: 'carbine',
+    });
+    flankSimulation.tick(100);
+    expect(flanker.x - initialX).toBeGreaterThan(22);
+    flankSimulation.enemies.set('flank-target', {
+      id: 'flank-target', kind: 'raider', x: flanker.x + 100, y: flanker.y,
+      hp: 38, attackCooldownMs: 9_999,
+    });
+    flankSimulation.applyInput('session-flank-order', {
+      sequence: 2, moveX: 0, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'carbine',
+    });
+    flankSimulation.tick(100);
+    expect(flankSimulation.enemies.get('flank-target')?.hp).toBeCloseTo(38 - 19 * 1.12);
+
+    const hitAfterOrder = (sessionId: string, command?: string): number => {
+      const simulation = new RedZoneSimulation(() => 0.5);
+      const player = simulation.addPlayer(sessionId, `player-${sessionId}`, sessionId);
+      simulation.enemies.clear();
+      simulation.resources.clear();
+      if (command) simulation.applyTacticalCommand(sessionId, command);
+      simulation.enemies.set(`attacker-${sessionId}`, {
+        id: `attacker-${sessionId}`, kind: 'raider', x: player.x + 10, y: player.y,
+        hp: 38, attackCooldownMs: 0,
+      });
+      simulation.tick(50);
+      return player.hp;
+    };
+    const unprotectedHp = hitAfterOrder('plain');
+    const regroupHp = hitAfterOrder('regroup', '모두 복귀해');
+    const holdHp = hitAfterOrder('hold', '자리 지키고 엄폐해');
+    expect(regroupHp).toBeGreaterThan(unprotectedHp);
+    expect(holdHp).toBeGreaterThan(regroupHp);
+  });
+
+  it('uses draw-aggro targeting and reports operation completion only once per player and run', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const near = simulation.addPlayer('session-near', 'player-near', 'NEAR');
+    const aggro = simulation.addPlayer('session-aggro', 'player-aggro', 'AGGRO');
+    simulation.enemies.clear();
+    simulation.resources.clear();
+    near.x = EXTRACTION_POINT.x + 10;
+    near.y = EXTRACTION_POINT.y;
+    aggro.x = EXTRACTION_POINT.x + 25;
+    aggro.y = EXTRACTION_POINT.y;
+    simulation.enemies.set('aggro-attacker', {
+      id: 'aggro-attacker', kind: 'raider', x: EXTRACTION_POINT.x, y: EXTRACTION_POINT.y,
+      hp: 38, attackCooldownMs: 0,
+    });
+    expect(simulation.applyTacticalCommand('session-aggro', '어그로를 끌어줘').order).toBe('DRAW_AGGRO');
+    simulation.tick(50);
+    expect(near.hp).toBe(100);
+    expect(aggro.hp).toBeLessThan(100);
+
+    simulation.enemies.clear();
+    aggro.x = EXTRACTION_POINT.x;
+    aggro.y = EXTRACTION_POINT.y;
+    (simulation as unknown as { bossDefeated: boolean }).bossDefeated = true;
+    aggro.cargo.scrap = 1;
+    simulation.applyInput('session-aggro', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: true, weapon: 'carbine',
+    });
+    simulation.tick(50);
+    expect(simulation.drainEvents().find((event) => event.type === 'extraction')).toMatchObject({
+      operationComplete: true,
+    });
+    aggro.cargo.scrap = 1;
+    simulation.applyInput('session-aggro', {
+      sequence: 2, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: true, weapon: 'carbine',
+    });
+    simulation.tick(50);
+    expect(simulation.drainEvents().find((event) => event.type === 'extraction')).toMatchObject({
+      operationComplete: false,
+    });
+  });
+
+  it('clamps malformed health and respawns before honoring pause', () => {
+    const simulation = new RedZoneSimulation(() => 0.5);
+    const player = simulation.addPlayer('session-hp-clamp', 'player-hp-clamp', 'CLAMP');
+    simulation.enemies.clear();
+    player.hp = 250;
+    simulation.tick(50);
+    expect(player.hp).toBe(100);
+    simulation.applyInput('session-hp-clamp', {
+      sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false,
+      weapon: 'carbine', paused: true,
+    });
+    player.hp = -50;
+    simulation.tick(50);
+    expect(player.hp).toBe(100);
+    expect(simulation.drainEvents()).toContainEqual(expect.objectContaining({
+      type: 'death', playerSessionId: 'session-hp-clamp',
+    }));
+  });
 });

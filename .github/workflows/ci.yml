@@ -11,6 +11,29 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: neural_evolution
+          POSTGRES_USER: neo
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U neo -d neural_evolution"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,6 +41,48 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run release:check
       - run: npm run check
       - run: npm run build
       - run: npm run build:server
+      - run: npm run release:check -- --artifacts
+      - name: Smoke production server with PostgreSQL and Redis
+        shell: bash
+        env:
+          NODE_ENV: production
+          HOST: 127.0.0.1
+          PORT: 2567
+          CORS_ORIGIN: https://alpha.example.invalid
+          JWT_SECRET: ci-only-neural-operatives-secret-32-chars
+          DATABASE_URL: postgresql://neo:ci-postgres-password@127.0.0.1:5432/neural_evolution
+          REDIS_URL: redis://127.0.0.1:6379
+          RELEASE_CHANNEL: alpha
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          server_log="$RUNNER_TEMP/neural-server.log"
+          npm run start:server >"$server_log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            kill "$server_pid" 2>/dev/null || true
+            wait "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:2567/ready >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            cat "$server_log"
+            exit 1
+          fi
+
+          if ! npm run smoke:server -- http://127.0.0.1:2567; then
+            cat "$server_log"
+            exit 1
+          fi

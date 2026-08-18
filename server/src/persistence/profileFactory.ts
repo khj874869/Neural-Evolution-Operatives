@@ -29,6 +29,7 @@ export function createPlayerProfile(deviceId: string, now = new Date()): PlayerP
       dailyTurnsUsed: 0,
       lastExchange: null,
     },
+    privacy: { analyticsConsentedAt: null },
     contracts: createContractState(now),
     commerce: { entitlements: [], subscriptionUntil: null, purchases: [] },
     lastSeenAt: now.toISOString(),
@@ -40,6 +41,7 @@ export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
   const candidate = profile as PlayerProfile & {
     gear?: { owned?: unknown[]; equipped?: unknown[] };
     ai?: Partial<PlayerProfile['ai']>;
+    privacy?: Partial<PlayerProfile['privacy']>;
     contracts?: unknown;
   };
   profile.campaign ??= { completedOperations: [] };
@@ -63,6 +65,10 @@ export function normalizePlayerProfile(profile: PlayerProfile): PlayerProfile {
     dailyTurnsUsed: Number.isInteger(candidate.ai?.dailyTurnsUsed) && Number(candidate.ai?.dailyTurnsUsed) >= 0
       ? Math.min(10_000, Number(candidate.ai?.dailyTurnsUsed)) : 0,
     lastExchange: normalizeLastExchange(candidate.ai?.lastExchange),
+  };
+  profile.privacy = {
+    analyticsConsentedAt: typeof candidate.privacy?.analyticsConsentedAt === 'string'
+      ? candidate.privacy.analyticsConsentedAt : null,
   };
   profile.contracts = normalizeContractState(candidate.contracts);
   return profile;

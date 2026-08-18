@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from '@colyseus/core';
 import type { ServerConfig } from '../src/config/env.js';
 import { createGameServer } from '../src/createServer.js';
+import type { ServerEventMessage } from '../../packages/shared/src/protocol.js';
 
 const port = 28991;
 const endpoint = `http://127.0.0.1:${port}`;
@@ -45,6 +46,18 @@ describe('real game room transport', () => {
     });
     expect(snapshot.players).toBe(1);
     expect(snapshot.enemies).toBeGreaterThan(0);
+    const tacticalAck = new Promise<ServerEventMessage>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('tactical timeout')), 4_000);
+      room.onMessage<ServerEventMessage>('server-event', (event) => {
+        if (event.payload?.order !== 'SCAVENGE') return;
+        clearTimeout(timeout);
+        resolve(event);
+      });
+    });
+    room.send('tactical', { text: '주변 자원을 찾아 회수해' });
+    await expect(tacticalAck).resolves.toMatchObject({
+      type: 'feed', payload: { order: 'SCAVENGE' },
+    });
     const sessionId = room.sessionId;
     room.reconnection.minUptime = 0;
     room.reconnection.delay = 10;

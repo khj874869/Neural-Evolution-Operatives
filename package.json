@@ -8,7 +8,8 @@
     "dev:server": "tsx watch server/src/index.ts",
     "dev:all": "concurrently -k -n CLIENT,SERVER -c cyan,green \"npm:dev\" \"npm:dev:server\"",
     "build": "tsc --noEmit && vite build",
-    "build:server": "tsc -p server/tsconfig.json",
+    "clean:server": "node scripts/clean-server-build.mjs",
+    "build:server": "npm run clean:server && tsc -p server/tsconfig.json",
     "start:server": "node dist-server/server/src/index.js",
     "smoke:server": "node server/scripts/smoke.mjs",
     "smoke:alpha": "node server/scripts/alpha-load.mjs",
@@ -17,6 +18,7 @@
     "mobile:sync": "npm run build && cap sync android",
     "mobile:open": "cap open android",
     "preview": "vite preview --host 0.0.0.0",
+    "release:check": "node scripts/release-gate.mjs",
     "test": "vitest run --config vitest.config.ts",
     "test:server": "vitest run --config vitest.server.config.ts",
     "check": "tsc --noEmit && tsc -p server/tsconfig.json --noEmit && npm run test && npm run test:server"

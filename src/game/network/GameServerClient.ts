@@ -14,6 +14,8 @@ import type {
   ContractBoard, ContractId, ContractReward,
 } from '../../../packages/shared/src/contracts';
 
+const REQUEST_TIMEOUT_MS = 8_000;
+
 export interface NetworkSnapshot {
   localSessionId: string;
   stormActive: boolean;
@@ -63,6 +65,8 @@ export class GameServerClient {
   private token?: string;
   private readonly endpoint: string;
   private analyticsConsent = false;
+  private analyticsConsentSynced = false;
+  private analyticsConsentSync: Promise<void> = Promise.resolve();
   private readonly analyticsQueue: Array<{ event: FunnelEventName; properties: FunnelProperties }> = [];
   private readonly recentErrorFingerprints = new Map<string, number>();
   private releaseInfo: ServerReleaseInfo | null = null;
@@ -79,8 +83,15 @@ export class GameServerClient {
 
   setAnalyticsConsent(consented: boolean): void {
     this.analyticsConsent = consented;
+    this.analyticsConsentSynced = false;
     if (!consented) this.analyticsQueue.length = 0;
-    else void this.flushAnalytics();
+    if (!this.token) return;
+    void this.syncAnalyticsConsent()
+      .then(() => this.flushAnalytics())
+      .catch(() => {
+        // Fail closed: telemetry stays queued until a later successful consent sync.
+        this.analyticsConsentSynced = false;
+      });
   }
 
   get accountAvailable(): boolean {
@@ -101,7 +112,12 @@ export class GameServerClient {
         method: 'POST', body: JSON.stringify({ deviceId: deviceId() }),
       });
       this.token = auth.token;
+      this.analyticsConsentSynced = false;
       gameEvents.emit('network-profile', auth.profile);
+      await this.syncAnalyticsConsent().catch(() => {
+        // Gameplay remains available, but analytics transmission stays disabled.
+        this.analyticsConsentSynced = false;
+      });
       await this.joinOperation(operationId, epoch);
       await this.flushAnalytics();
       void this.track('session_start', {
@@ -123,9 +139,9 @@ export class GameServerClient {
   }
 
   async switchOperation(operationId: OperationId): Promise<void> {
-    if (!this.endpoint || !this.token) return;
-    const epoch = ++this.lifecycleEpoch;
     this.operationId = operationId;
+    const epoch = ++this.lifecycleEpoch;
+    if (!this.endpoint || !this.token) return;
     const previousRoom = this.room;
     this.room = undefined;
     this.connected = false;
@@ -283,12 +299,13 @@ export class GameServerClient {
     await previousRoom?.leave().catch(() => undefined);
     this.connected = false;
     this.token = undefined;
+    this.analyticsConsentSynced = false;
   }
 
   async track(event: FunnelEventName, properties: FunnelProperties = {}): Promise<void> {
     if (!this.analyticsConsent || !this.endpoint) return;
     const payload = { event, properties: this.enrichAnalytics(properties) };
-    if (!this.token) {
+    if (!this.token || !this.analyticsConsentSynced) {
       this.enqueueAnalytics(payload);
       return;
     }
@@ -455,7 +472,8 @@ export class GameServerClient {
   }
 
   private async flushAnalytics(): Promise<void> {
-    if (!this.analyticsConsent || !this.endpoint || !this.token || !this.analyticsQueue.length) return;
+    if (!this.analyticsConsent || !this.analyticsConsentSynced
+      || !this.endpoint || !this.token || !this.analyticsQueue.length) return;
     const pending = this.analyticsQueue.splice(0);
     for (const payload of pending) {
       try {
@@ -480,13 +498,51 @@ export class GameServerClient {
     });
   }
 
+  private syncAnalyticsConsent(): Promise<void> {
+    const token = this.token;
+    const consent = this.analyticsConsent;
+    if (!token) {
+      this.analyticsConsentSynced = false;
+      return Promise.resolve();
+    }
+    this.analyticsConsentSynced = false;
+    const sync = this.analyticsConsentSync
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.token !== token) return;
+        const response = await this.authorized<{ profile: PlayerProfile }>('/api/profile/analytics-consent', {
+          method: 'PUT', body: JSON.stringify({ consent }),
+        });
+        if (this.token !== token || this.analyticsConsent !== consent) return;
+        this.analyticsConsentSynced = true;
+        gameEvents.emit('network-profile', response.profile);
+      });
+    this.analyticsConsentSync = sync;
+    return sync;
+  }
+
   private async request<T>(path: string, init: RequestInit): Promise<T> {
-    const response = await fetch(`${this.endpoint}${path}`, {
-      ...init,
-      headers: { 'content-type': 'application/json', ...init.headers },
-    });
-    if (!response.ok) throw new Error(`SERVER_${response.status}`);
-    return response.json() as Promise<T>;
+    const controller = new AbortController();
+    const sourceSignal = init.signal;
+    const abortFromSource = () => controller.abort(sourceSignal?.reason);
+    if (sourceSignal?.aborted) abortFromSource();
+    else sourceSignal?.addEventListener('abort', abortFromSource, { once: true });
+    const timeout = globalThis.setTimeout(
+      () => controller.abort(new Error('REQUEST_TIMEOUT')),
+      REQUEST_TIMEOUT_MS,
+    );
+    try {
+      const response = await fetch(`${this.endpoint}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers: { 'content-type': 'application/json', ...init.headers },
+      });
+      if (!response.ok) throw new Error(`SERVER_${response.status}`);
+      return response.json() as Promise<T>;
+    } finally {
+      globalThis.clearTimeout(timeout);
+      sourceSignal?.removeEventListener('abort', abortFromSource);
+    }
   }
 
   private emitSnapshot(rawState: unknown): void {
@@ -499,6 +555,7 @@ export class GameServerClient {
       enemies: Map<string, NetworkSnapshot['enemies'][number]>;
       resources: Map<string, NetworkSnapshot['resources'][number]>;
     };
+    if (!isOperationId(state.operationId) || state.operationId !== this.operationId) return;
     const mapValues = <T extends object>(map: Map<string, T>): Array<T & { id: string }> => {
       const values: Array<T & { id: string }> = [];
       map?.forEach((value, id) => values.push({ ...plain(value), id } as T & { id: string }));
@@ -507,7 +564,7 @@ export class GameServerClient {
     gameEvents.emit('network-snapshot', {
       localSessionId: this.room?.sessionId ?? '',
       stormActive: Boolean(state.stormActive),
-      operationId: isOperationId(state.operationId) ? state.operationId : 'operation-zero',
+      operationId: state.operationId,
       relaysDestroyed: Number(state.relaysDestroyed ?? 0),
       bossDefeated: Boolean(state.bossDefeated),
       players: mapValues(state.players),

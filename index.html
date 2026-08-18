@@ -42,7 +42,7 @@
           </div>
         </div>
         <aside class="squad glass" id="squadHud"></aside>
-        <section class="operation-hud glass" id="operationHud" aria-live="polite">
+        <section class="operation-hud glass" id="operationHud">
           <div><span id="operationCode">OP-00 // SALVAGE</span><b id="operationTitle">죽은 도시의 신호</b></div>
           <p id="operationObjective">현장 자원을 회수하십시오.</p>
           <div class="operation-progress"><i id="operationProgress"></i></div>
@@ -51,9 +51,10 @@
             <small id="operationCount">0 / 8</small>
           </div>
         </section>
-        <section class="boss-hud hidden" id="bossHud" aria-live="assertive">
+        <div class="sr-only" id="operationAnnouncement" role="status" aria-live="polite" aria-atomic="true"></div>
+        <section class="boss-hud hidden" id="bossHud" aria-label="보스 상태">
           <span>MOTHERBRAIN COMMAND UNIT</span><b id="bossHudName">감시자 케르베로스</b>
-          <div><i id="bossHpBar"></i></div><small id="bossHpText">520 / 520</small>
+          <div id="bossHpProgress" role="progressbar" aria-label="보스 체력" aria-valuemin="0" aria-valuemax="520" aria-valuenow="520"><i id="bossHpBar"></i></div><small id="bossHpText">520 / 520</small>
         </section>
         <div class="weapon-dock glass" id="weaponDock" aria-label="무기 선택">
           <button data-weapon="carbine" class="selected"><kbd>1</kbd><span><b>CARBINE</b><small>균형형</small></span></button>
@@ -88,7 +89,7 @@
           </footer>
           <p class="map-directive" id="mapDirective">목표 경로 계산 중</p>
         </aside>
-        <section class="stage-banner" id="stageBanner" aria-live="assertive" aria-hidden="true">
+        <section class="stage-banner" id="stageBanner" aria-hidden="true">
           <span id="stageBannerCode">STAGE 01 // 탐색</span>
           <strong id="stageBannerDistrict">침수 상가</strong>
           <p id="stageBannerDirective">폐허의 회수 신호를 따라 자원 거점을 확보하십시오.</p>
@@ -126,7 +127,7 @@
         </div>
       </div>
 
-      <div class="modal-backdrop hidden" id="modalBackdrop">
+      <div class="modal-backdrop hidden" id="modalBackdrop" aria-hidden="true">
         <section class="modal glass" role="dialog" aria-modal="true" aria-label="게임 메뉴 및 정보">
           <button class="close" id="closeModal" aria-label="닫기">×</button>
           <div id="modalContent"></div>

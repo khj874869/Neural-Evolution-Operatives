@@ -4,9 +4,7 @@ services:
     environment:
       POSTGRES_DB: neural_evolution
       POSTGRES_USER: neo
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neo_local_password}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a strong value}
     volumes:
       - neo_postgres:/var/lib/postgresql/data
     healthcheck:
@@ -17,13 +15,14 @@ services:
 
   redis:
     image: redis:8-alpine
-    command: redis-server --appendonly yes
-    ports:
-      - "6379:6379"
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD to a strong value}
+    command: >-
+      sh -c 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"'
     volumes:
       - neo_redis:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -38,8 +37,8 @@ services:
       PORT: 2567
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET to a random value of at least 32 characters}
-      DATABASE_URL: postgresql://neo:${POSTGRES_PASSWORD:-neo_local_password}@postgres:5432/neural_evolution
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the internal PostgreSQL URL}
+      REDIS_URL: ${REDIS_URL:?Set REDIS_URL to the authenticated internal Redis URL}
       RELEASE_CHANNEL: ${RELEASE_CHANNEL:-alpha}
       COMMIT_SHA: ${COMMIT_SHA:-unknown}
     ports:
@@ -49,6 +48,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2567/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
     restart: unless-stopped
 
 volumes:

@@ -87,6 +87,7 @@ const operationObjective = byId<HTMLElement>('operationObjective');
 const operationProgress = byId<HTMLElement>('operationProgress');
 const operationCount = byId<HTMLElement>('operationCount');
 const operationStageRail = byId<HTMLElement>('operationStageRail');
+const operationAnnouncement = byId<HTMLElement>('operationAnnouncement');
 const tacticalMap = byId<HTMLElement>('tacticalMap');
 const mapDistrict = byId<HTMLElement>('mapDistrict');
 const mapCoordinates = byId<HTMLElement>('mapCoordinates');
@@ -101,6 +102,7 @@ const stageBannerCode = byId<HTMLElement>('stageBannerCode');
 const stageBannerDistrict = byId<HTMLElement>('stageBannerDistrict');
 const stageBannerDirective = byId<HTMLElement>('stageBannerDirective');
 const bossHud = byId<HTMLElement>('bossHud');
+const bossHpProgress = byId<HTMLElement>('bossHpProgress');
 const bossHpBar = byId<HTMLElement>('bossHpBar');
 const bossHpText = byId<HTMLElement>('bossHpText');
 const bossHudName = byId<HTMLElement>('bossHudName');
@@ -108,6 +110,12 @@ const eventFeed = byId<HTMLDivElement>('eventFeed');
 const modalBackdrop = byId<HTMLDivElement>('modalBackdrop');
 const modalContent = byId<HTMLDivElement>('modalContent');
 const closeModalButton = byId<HTMLButtonElement>('closeModal');
+const modalBackgroundRegions = [
+  document.querySelector<HTMLElement>('.topbar'),
+  document.querySelector<HTMLElement>('#game-shell'),
+  document.querySelector<HTMLElement>('.command-dock'),
+  document.querySelector<HTMLElement>('.mobile-controls'),
+].filter((element): element is HTMLElement => element !== null);
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
 const toast = byId<HTMLDivElement>('toast');
@@ -331,6 +339,28 @@ function addFeed(message: string, danger = false): void {
   while (eventFeed.children.length > 5) eventFeed.lastElementChild?.remove();
 }
 
+const modalFocusableSelector = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function modalFocusableElements(): HTMLElement[] {
+  return [...modalBackdrop.querySelectorAll<HTMLElement>(modalFocusableSelector)]
+    .filter((element) => element.getClientRects().length > 0 && element.getAttribute('aria-hidden') !== 'true');
+}
+
+function setModalBackgroundInert(active: boolean): void {
+  modalBackgroundRegions.forEach((region) => {
+    region.inert = active;
+    if (active) region.setAttribute('aria-hidden', 'true');
+    else region.removeAttribute('aria-hidden');
+  });
+}
+
 function pauseForModal(): void {
   const focused = document.activeElement;
   if (focused instanceof HTMLElement && !modalBackdrop.contains(focused)) lastFocusedElement = focused;
@@ -339,6 +369,8 @@ function pauseForModal(): void {
   stageBanner.setAttribute('aria-hidden', 'true');
   gameEvents.emit('suspend-world-input');
   if (game.scene.isActive('WorldScene')) game.scene.pause('WorldScene');
+  setModalBackgroundInert(true);
+  modalBackdrop.setAttribute('aria-hidden', 'false');
   modalBackdrop.classList.remove('hidden');
   window.requestAnimationFrame(() => closeModalButton.focus());
 }
@@ -355,12 +387,16 @@ function closeModal(): void {
     applySettings();
   }
   modalBackdrop.classList.add('hidden');
+  modalBackdrop.setAttribute('aria-hidden', 'true');
+  setModalBackgroundInert(false);
   currentModal = null;
   sound.play('ui');
   gameEvents.emit('resume-world');
   const focusTarget = lastFocusedElement;
   lastFocusedElement = null;
-  window.requestAnimationFrame(() => focusTarget?.focus());
+  window.requestAnimationFrame(() => {
+    if (focusTarget?.isConnected) focusTarget.focus();
+  });
   if (closing === 'privacy' && !settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 180);
 }
 
@@ -471,7 +507,7 @@ function renderPrivacyCenter(): void {
     <div class="privacy-grid">
       <article><b>필수 게임 데이터</b><p>게스트 식별자, 재화, 쉘터, 오퍼레이터, 편성과 구매 검증 기록을 계정 유지와 부정 지급 방지에 사용합니다.</p></article>
       <article><b>선택 분석 데이터</b><p>동의한 경우 튜토리얼·작전·보급소 진행과 익명화된 오류 종류만 기록합니다. 설정에서 즉시 철회할 수 있습니다.</p></article>
-      <article><b>AI 처리 범위</b><p>전술 명령은 기기에서 처리합니다. 딥 토크는 별도 동의 시 입력 원문과 선택 오퍼레이터의 최근 요약 기억만 서버 중계로 외부 AI에 전송하며, 키는 앱에 포함하지 않습니다.</p></article>
+      <article><b>AI 처리 범위</b><p>전술 명령은 기기 입력과 온라인 서버 권위 판정을 함께 사용합니다. 딥 토크는 별도 동의 시 입력 원문과 선택 오퍼레이터의 최근 요약 기억만 서버 중계로 외부 AI에 전송하며, 키는 앱에 포함하지 않습니다.</p></article>
     </div>
     <div class="consent-panel">선택 분석 데이터: <b>${settings.analyticsConsent ? '허용됨' : '사용 안 함'}</b><br />
       외부 AI 딥 토크: <b>${settings.aiConsent ? '허용됨' : '규칙 기반만 사용'}</b><br />
@@ -502,13 +538,16 @@ function renderPrivacyCenter(): void {
     button.disabled = true;
     button.textContent = '내보내는 중...';
     try {
-      const payload = network.connected
+      const accountAvailable = network.accountAvailable;
+      const { endpointConfigured } = network.getDiagnostics();
+      if (!accountAvailable && endpointConfigured) throw new Error('ACCOUNT_RECONNECT_REQUIRED');
+      const payload = accountAvailable
         ? await network.exportAccount()
         : { schemaVersion: 1, exportedAt: new Date().toISOString(), mode: 'local', profile: state.snapshot() };
       downloadJson(`neural-operatives-data-${new Date().toISOString().slice(0, 10)}.json`, payload);
-      showToast('계정 데이터 내보내기 완료');
+      showToast(accountAvailable ? '서버 계정 데이터 내보내기 완료' : '로컬 모드 데이터 내보내기 완료');
     } catch {
-      showToast('데이터를 내보내지 못했습니다. 연결 상태를 확인하세요.');
+      showToast('데이터를 내보내지 못했습니다. 서버 재연결 후 다시 시도하세요.');
       button.disabled = false;
       button.textContent = '내 데이터 JSON 내보내기';
     }
@@ -521,13 +560,16 @@ function renderPrivacyCenter(): void {
     deleteButton.disabled = true;
     deleteButton.textContent = '삭제 중...';
     try {
-      if (network.connected) await network.deleteAccount();
+      const accountAvailable = network.accountAvailable;
+      const { endpointConfigured } = network.getDiagnostics();
+      if (accountAvailable) await network.deleteAccount();
+      else if (endpointConfigured) throw new Error('ACCOUNT_RECONNECT_REQUIRED');
       clearLocalAccount();
       window.location.reload();
     } catch {
       deleteButton.disabled = false;
       deleteButton.textContent = '계정 영구 삭제';
-      showToast('계정을 삭제하지 못했습니다. 서버 연결을 확인하세요.');
+      showToast('계정을 삭제하지 못했습니다. 서버 재연결 후 다시 시도하세요.');
     }
   });
   modalContent.querySelector<HTMLButtonElement>('#privacyDone')?.addEventListener('click', renderSettings);
@@ -1327,9 +1369,31 @@ modalBackdrop.addEventListener('click', (event) => {
   if (event.target === modalBackdrop && currentModal !== 'game-over') closeModal();
 });
 document.addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape' || modalBackdrop.classList.contains('hidden') || currentModal === 'game-over') return;
-  event.preventDefault();
-  closeModal();
+  if (modalBackdrop.classList.contains('hidden')) return;
+  if (event.key === 'Escape') {
+    if (currentModal === 'game-over') return;
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = modalFocusableElements();
+  if (focusable.length === 0) {
+    event.preventDefault();
+    closeModalButton.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const focusOutsideModal = !(active instanceof HTMLElement) || !modalBackdrop.contains(active);
+  if (event.shiftKey && (active === first || focusOutsideModal)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || focusOutsideModal)) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 const muteButton = byId<HTMLButtonElement>('muteButton');
@@ -1388,6 +1452,7 @@ gameEvents.on('operation-update', (status: OperationStatus) => {
   const definition = operationDefinition(status.operationId);
   const stage = operationStageBrief(status.operationId, status.stage);
   const stageNumber = operationStageIndex(status.operationId, status.stage) + 1;
+  operationAnnouncement.textContent = `작전 단계 ${stageNumber}: ${stage.label}. ${stage.district}. ${stage.directive}`;
   window.clearTimeout(stageBannerTimer);
   if (status.stage === 'WARDEN' || status.stage === 'COMPLETE') {
     stageBanner.classList.remove('active');
@@ -1480,8 +1545,9 @@ gameEvents.on('hud-update', (hud: {
   activeObjectiveIds: string[];
   boss: { hp: number; maxHp: number; name: string } | null;
 }) => {
-  hpText.textContent = `${Math.ceil(hud.hp)}%`;
-  hpBar.style.width = `${hud.hp}%`;
+  const safeHp = Math.max(0, Math.min(100, Number.isFinite(hud.hp) ? hud.hp : 0));
+  hpText.textContent = `${Math.ceil(safeHp)}%`;
+  hpBar.style.width = `${safeHp}%`;
   radiationText.textContent = hud.radiation > 75 ? '위험' : hud.radiation > 30 ? '상승' : '안정';
   radiationBar.style.width = `${hud.radiation}%`;
   missionText.innerHTML = `<strong>${hud.operation.code}</strong> · ${hud.operation.title}`;
@@ -1544,9 +1610,9 @@ gameEvents.on('hud-update', (hud: {
         title="${item.code} // ${item.label}"></i>
     `).join('');
   }
-  operationCount.textContent = hud.operation.stage === 'WARDEN' ? 'BOSS SIGNAL LOCKED'
-    : hud.operation.stage === 'RELAY' ? 'DESTROY NEURAL RELAYS'
-    : hud.operation.stage === 'EXTRACT' ? 'RETURN TO SHELTER LIFT'
+  operationCount.textContent = hud.operation.stage === 'WARDEN' ? '보스 신호 고정'
+    : hud.operation.stage === 'RELAY' ? '신경 중계기 파괴'
+    : hud.operation.stage === 'EXTRACT' ? '쉘터 리프트로 복귀'
       : `${Math.min(hud.operation.current, hud.operation.target)} / ${hud.operation.target}`;
   const rawCharge = Number.isFinite(hud.linkCharge) ? hud.linkCharge : 0;
   const charge = Math.max(0, Math.min(100, Math.floor(rawCharge)));
@@ -1565,9 +1631,15 @@ gameEvents.on('hud-update', (hud: {
   bossHud.classList.toggle('hidden', !hud.boss);
   tacticalMap.classList.toggle('boss-active', Boolean(hud.boss));
   if (hud.boss) {
+    const bossMaxHp = Math.max(1, Number.isFinite(hud.boss.maxHp) ? hud.boss.maxHp : 1);
+    const bossHp = Math.max(0, Math.min(bossMaxHp, Number.isFinite(hud.boss.hp) ? hud.boss.hp : 0));
     bossHudName.textContent = hud.boss.name;
-    bossHpBar.style.width = `${Math.max(0, hud.boss.hp / hud.boss.maxHp * 100)}%`;
-    bossHpText.textContent = `${Math.ceil(hud.boss.hp)} / ${hud.boss.maxHp}`;
+    bossHpBar.style.width = `${bossHp / bossMaxHp * 100}%`;
+    bossHpText.textContent = `${Math.ceil(bossHp)} / ${Math.ceil(bossMaxHp)}`;
+    bossHpProgress.setAttribute('aria-label', `${hud.boss.name} 체력`);
+    bossHpProgress.setAttribute('aria-valuemax', String(Math.ceil(bossMaxHp)));
+    bossHpProgress.setAttribute('aria-valuenow', String(Math.ceil(bossHp)));
+    bossHpProgress.setAttribute('aria-valuetext', `${Math.ceil(bossHp)} / ${Math.ceil(bossMaxHp)}`);
   }
 });
 

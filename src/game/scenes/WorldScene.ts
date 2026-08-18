@@ -7,7 +7,10 @@ import type { PlayerSettings } from '../settings';
 import { AdaptiveDirector, freshTelemetry, type CombatTelemetry } from '../systems/AdaptiveDirector';
 import { generateMission, type Mission } from '../systems/MissionGenerator';
 import { createPersonaReply } from '../systems/PersonaEngine';
-import { parseTacticalCommand, type TacticalOrder } from '../systems/TacticalCommand';
+import {
+  parseTacticalCommand, TACTICAL_HEAL_AMOUNT, TACTICAL_HEAL_COOLDOWN_MS,
+  TACTICAL_ORDER_DURATION_MS, type TacticalOrder,
+} from '../systems/TacticalCommand';
 import { isWeaponId, projectileAngles, WEAPON_SPECS, weaponFromSlot, type WeaponId } from '../../../packages/shared/src/combat';
 import type { EnemyKind } from '../../../packages/shared/src/protocol';
 import {
@@ -77,6 +80,7 @@ export class WorldScene extends Phaser.Scene {
   private stormOverlay!: Phaser.GameObjects.Rectangle;
   private order: TacticalOrder = 'REGROUP';
   private orderUntil = 0;
+  private lastHealAt = -Infinity;
   private extractionRing!: Phaser.GameObjects.Arc;
   private network?: GameServerClient;
   private networkConnected = false;
@@ -218,6 +222,7 @@ export class WorldScene extends Phaser.Scene {
     this.stormActive = false;
     this.order = 'REGROUP';
     this.orderUntil = 0;
+    this.lastHealAt = -Infinity;
     this.networkConnected = false;
     this.networkSessionId = '';
     this.networkSequence = 0;
@@ -669,6 +674,16 @@ export class WorldScene extends Phaser.Scene {
         destinationX += Math.cos(angle + Math.PI / 2) * 70;
         destinationY += Math.sin(angle + Math.PI / 2) * 70;
       }
+      if (this.order === 'SCAVENGE') {
+        const resource = this.findNearestResource(companion.x, companion.y, 620);
+        if (resource) {
+          destinationX = resource.x;
+          destinationY = resource.y;
+          if (Phaser.Math.Distance.Between(companion.x, companion.y, resource.x, resource.y) < 26) {
+            this.collectResource(resource);
+          }
+        }
+      }
       if (this.order !== 'HOLD' || time > this.orderUntil) {
         this.physics.moveTo(companion, destinationX, destinationY, 150);
       } else {
@@ -683,7 +698,9 @@ export class WorldScene extends Phaser.Scene {
 
     if (time - this.companionShotAt > 520) {
       for (const companion of this.companions) {
-        const target = this.findNearestEnemy(companion.x, companion.y, 490);
+        const target = this.order === 'FOCUS'
+          ? this.findFocusedEnemy(companion.x, companion.y, 490)
+          : this.findNearestEnemy(companion.x, companion.y, 490);
         if (target) this.fireBullet(companion.x, companion.y, target.x, target.y, true);
       }
       this.companionShotAt = time;
@@ -1098,6 +1115,44 @@ export class WorldScene extends Phaser.Scene {
     return nearest;
   }
 
+  private findFocusedEnemy(x: number, y: number, maxDistance = 620): EnemySprite | undefined {
+    let focused: EnemySprite | undefined;
+    let focusedScore = Number.NEGATIVE_INFINITY;
+    this.enemies.children.each((child) => {
+      const enemy = child as EnemySprite;
+      if (!enemy.active) return true;
+      const distance = Phaser.Math.Distance.Between(x, y, enemy.x, enemy.y);
+      if (distance > maxDistance || isLineBlocked({ x, y }, enemy, this.cover)) return true;
+      const archetype = enemy.archetype ?? 'raider';
+      const bossPriority = archetype === 'warden' || archetype === 'harvester' ? 10_000 : 0;
+      const objectivePriority = archetype === 'relay' ? 5_000 : 0;
+      const hp = Number(enemy.getData('hp') ?? ENEMY_STATS[archetype].hp);
+      const score = bossPriority + objectivePriority + hp - distance * 0.02;
+      if (score > focusedScore) {
+        focused = enemy;
+        focusedScore = score;
+      }
+      return true;
+    });
+    return focused;
+  }
+
+  private findNearestResource(x: number, y: number, maxDistance = 620): ResourceSprite | undefined {
+    let nearest: ResourceSprite | undefined;
+    let nearestDistance = maxDistance;
+    this.resources.children.each((child) => {
+      const resource = child as ResourceSprite;
+      if (!resource.active) return true;
+      const distance = Phaser.Math.Distance.Between(x, y, resource.x, resource.y);
+      if (distance < nearestDistance && !isLineBlocked({ x, y }, resource, this.cover)) {
+        nearest = resource;
+        nearestDistance = distance;
+      }
+      return true;
+    });
+    return nearest;
+  }
+
   private checkExtraction(): void {
     if (this.networkConnected) return;
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION_POINT.x, EXTRACTION_POINT.y);
@@ -1151,11 +1206,25 @@ export class WorldScene extends Phaser.Scene {
 
   private handleTacticalCommand(input: string): void {
     const parsed = parseTacticalCommand(input);
-    this.order = parsed.order;
-    this.orderUntil = this.time.now + 9000;
+    this.order = parsed.order === 'UNKNOWN' ? 'REGROUP' : parsed.order;
+    this.orderUntil = this.time.now + TACTICAL_ORDER_DURATION_MS;
     const squad = this.state.getSquad();
     const speaker = squad[Math.floor(Math.random() * squad.length)]?.definition ?? getOperator('aegis-07');
-    if (parsed.order === 'HEAL') this.hp = Math.min(100, this.hp + 24);
+    if (parsed.order === 'HEAL' && !this.networkConnected) {
+      const hasSupport = squad.some(({ definition }) => definition.role === 'Support');
+      const remainingMs = TACTICAL_HEAL_COOLDOWN_MS - (this.time.now - this.lastHealAt);
+      if (!hasSupport) {
+        this.emitFeed('치료 명령 거부 // Support 오퍼레이터를 분대에 편성하십시오.', true);
+      } else if (remainingMs > 0) {
+        this.emitFeed(`치료 링크 재충전 // ${Math.ceil(remainingMs / 1_000)}초`, true);
+      } else if (this.hp >= 100) {
+        this.emitFeed('치료 명령 보류 // 생체 신호가 이미 안정적입니다.');
+      } else {
+        this.hp = Math.min(100, this.hp + TACTICAL_HEAL_AMOUNT);
+        this.lastHealAt = this.time.now;
+        this.emitFeed(`Support 응급 치료 // HP +${TACTICAL_HEAL_AMOUNT}`);
+      }
+    }
     this.state.remember(speaker.id, `레드 존에서 "${input.slice(0, 44)}" 명령에 응답했다.`);
     gameEvents.emit('operator-reply', speaker, createPersonaReply(speaker, parsed.order, this.missionKills));
     gameEvents.emit('sfx', 'command');
@@ -1333,6 +1402,7 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private handleNetworkSnapshot(snapshot: NetworkSnapshot): void {
+    if (snapshot.operationId !== this.operationId) return;
     const sessionChanged = Boolean(this.networkSessionId && this.networkSessionId !== snapshot.localSessionId);
     if (!this.networkConnected || sessionChanged) {
       this.networkConnected = true;
@@ -1357,7 +1427,7 @@ export class WorldScene extends Phaser.Scene {
       const safeNumber = (value: number | undefined, fallback = 0): number => (
         Number.isFinite(value) ? Number(value) : fallback
       );
-      const ownHp = safeNumber(own.hp, this.hp);
+      const ownHp = Phaser.Math.Clamp(safeNumber(own.hp, this.hp), 0, 100);
       if (ownHp < this.hp) {
         if (!this.reducedMotion) this.cameras.main.shake(80, 0.0035);
         this.impactBurst(this.player.x, this.player.y, 0xff5d5d, 5);
@@ -1367,7 +1437,7 @@ export class WorldScene extends Phaser.Scene {
       this.player.x = Phaser.Math.Linear(this.player.x, safeNumber(own.x, this.player.x), 0.32);
       this.player.y = Phaser.Math.Linear(this.player.y, safeNumber(own.y, this.player.y), 0.32);
       this.hp = ownHp;
-      this.radiation = safeNumber(own.radiation, this.radiation);
+      this.radiation = Phaser.Math.Clamp(safeNumber(own.radiation, this.radiation), 0, 100);
       this.missionKills = safeNumber(own.kills, this.missionKills);
       this.operationKills = safeNumber(own.kills, this.operationKills);
       const nextCargo = {

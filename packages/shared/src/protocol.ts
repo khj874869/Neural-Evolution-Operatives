@@ -97,6 +97,9 @@ export interface PlayerProfile {
     dailyTurnsUsed: number;
     lastExchange: PersonaExchange | null;
   };
+  privacy: {
+    analyticsConsentedAt: string | null;
+  };
   contracts: ContractState;
   commerce: {
     entitlements: string[];
