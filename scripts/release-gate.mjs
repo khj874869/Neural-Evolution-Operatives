@@ -46,6 +46,7 @@ async function filesUnder(relativeDirectory) {
 const packageJson = JSON.parse(await read('package.json'));
 const releaseSource = await read('packages/shared/src/release.ts');
 const androidGradle = await read('android/app/build.gradle');
+const capacitorAndroidGradle = await read('android/app/capacitor.build.gradle');
 const serviceWorker = await read('public/sw.js');
 const viteConfig = await read('vite.config.ts');
 const serverTsconfig = JSON.parse(await read('server/tsconfig.json'));
@@ -111,6 +112,15 @@ for (const secretName of [
 }
 check(androidWorkflow.includes('validateHttpsUrl'), 'Android workflow must validate release URLs as HTTPS');
 check(androidWorkflow.includes('ANDROID_SIGNED_RELEASE'), 'Android workflow must enforce complete signing configuration');
+check(
+  /java-version:\s*['"]21['"]/.test(androidWorkflow),
+  'Android workflow must pin JDK 21 for Capacitor compilation',
+);
+check(
+  capacitorAndroidGradle.includes('sourceCompatibility JavaVersion.VERSION_21')
+    && capacitorAndroidGradle.includes('targetCompatibility JavaVersion.VERSION_21'),
+  'Capacitor Android compile level must remain Java 21',
+);
 check(
   androidWorkflow.includes(`ANDROID_VERSION_CODE=$((${expectedVersionCode} + GITHUB_RUN_NUMBER))`),
   'Android workflow must provide a SemVer-based monotonic versionCode',

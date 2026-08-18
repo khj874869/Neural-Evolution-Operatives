@@ -101,7 +101,7 @@ npm run build
 npm run build:server
 ```
 
-Android 내부 테스트 프로젝트를 동기화하고 디버그 APK를 만들려면 Android SDK/JDK 17 환경에서 실행합니다.
+Android 내부 테스트 프로젝트를 동기화하고 디버그 APK를 만들려면 Android SDK와 JDK 21 환경에서 실행합니다. Capacitor 8이 생성하는 Android 소스가 Java 21을 사용하므로 JDK 17이나 현재 Gradle과 호환되지 않는 JDK 25 대신 JDK 21로 고정합니다.
 
 ```bash
 npm run mobile:sync
