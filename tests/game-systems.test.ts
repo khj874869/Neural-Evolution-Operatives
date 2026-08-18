@@ -4,6 +4,9 @@ import { calculateOfflineRewards } from '../src/game/state/GameState';
 import { AdaptiveDirector, freshTelemetry } from '../src/game/systems/AdaptiveDirector';
 import { generateMission } from '../src/game/systems/MissionGenerator';
 import { parseTacticalCommand } from '../src/game/systems/TacticalCommand';
+import {
+  isTacticalOrder, TACTICAL_COMMAND_PRESETS,
+} from '../packages/shared/src/tactical';
 import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/src/squad';
 import { DEFAULT_SETTINGS, loadSettings, sanitizeSettings } from '../src/game/settings';
 import { projectileAngles, WEAPON_SPECS, weaponFromSlot } from '../packages/shared/src/combat';
@@ -52,6 +55,14 @@ describe('tactical command parser', () => {
     expect(parseTacticalCommand('루멘, 지금 치료해줘').order).toBe('HEAL');
     expect(parseTacticalCommand('강한 적을 집중 공격해').order).toBe('FOCUS');
     expect(parseTacticalCommand('주변 자원을 찾아 회수해').order).toBe('SCAVENGE');
+  });
+
+  it('keeps every quick command preset aligned with the shared parser', () => {
+    for (const preset of TACTICAL_COMMAND_PRESETS) {
+      expect(isTacticalOrder(preset.order)).toBe(true);
+      expect(parseTacticalCommand(preset.command).order).toBe(preset.order);
+    }
+    expect(isTacticalOrder('DROP_TABLE')).toBe(false);
   });
 });
 

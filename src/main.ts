@@ -37,6 +37,9 @@ import { createDeepTalkFallback, operatorMemoryLimit } from '../packages/shared/
 import {
   buildContractBoard, type ContractBoard, type ContractCard, type ContractId, type ContractReward,
 } from '../packages/shared/src/contracts';
+import {
+  parseTacticalCommand, type TacticalCommandFeedback, type TacticalOrder,
+} from '../packages/shared/src/tactical';
 
 declare global {
   interface Window {
@@ -118,6 +121,15 @@ const modalBackgroundRegions = [
 ].filter((element): element is HTMLElement => element !== null);
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
+const tacticalMenuButton = byId<HTMLButtonElement>('tacticalMenuButton');
+const tacticalTriggerLabel = byId<HTMLElement>('tacticalTriggerLabel');
+const tacticalPalette = byId<HTMLElement>('tacticalPalette');
+const closeTacticalPaletteButton = byId<HTMLButtonElement>('closeTacticalPalette');
+const tacticalStatus = byId<HTMLElement>('tacticalStatus');
+const tacticalStatusSource = byId<HTMLElement>('tacticalStatusSource');
+const tacticalStatusLabel = byId<HTMLElement>('tacticalStatusLabel');
+const tacticalStatusDetail = byId<HTMLElement>('tacticalStatusDetail');
+const tacticalStatusProgress = byId<HTMLElement>('tacticalStatusProgress');
 const toast = byId<HTMLDivElement>('toast');
 const storeButton = byId<HTMLButtonElement>('storeButton');
 const releaseBadge = byId<HTMLElement>('releaseBadge');
@@ -156,6 +168,18 @@ let stageBannerTimer = 0;
 let tacticalStageKey = '';
 let tacticalMapKey = '';
 let lastFocusedElement: HTMLElement | null = null;
+let tacticalStatusTicker = 0;
+
+type TacticalDisplayMode = 'pending' | 'active' | 'cooldown' | 'blocked' | 'error';
+interface TacticalDisplayState {
+  mode: TacticalDisplayMode;
+  order: TacticalOrder;
+  message: string;
+  source: 'local' | 'server';
+  startedAt: number;
+  endsAt: number;
+}
+let tacticalDisplayState: TacticalDisplayState | null = null;
 
 releaseBadge.textContent = `${CLIENT_RELEASE.channel.toUpperCase()} ${CLIENT_RELEASE.version}`;
 releaseBadge.title = '비공개 테스트 빌드';
@@ -165,6 +189,16 @@ storeButton.classList.toggle('hidden', !CLIENT_RELEASE.commerceEnabled);
 const labels = { scrap: '고철', water: '식수', data: '데이터', cores: '코어' } as const;
 const icons = { scrap: '▰', water: '◒', data: '◇', cores: '◈' } as const;
 const compassDirections = ['북', '북동', '동', '남동', '남', '남서', '서', '북서'] as const;
+const tacticalOrderLabels: Record<TacticalOrder, string> = {
+  DRAW_AGGRO: '도발',
+  FLANK: '우회',
+  HOLD: '엄폐',
+  REGROUP: '집결',
+  HEAL: '회복',
+  FOCUS: '집중',
+  SCAVENGE: '회수',
+  UNKNOWN: '미확인',
+};
 const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>> = {
   Vanguard: [{ label: '돌파', value: 88 }, { label: '방어', value: 92 }, { label: '지원', value: 42 }],
   Sniper: [{ label: '화력', value: 96 }, { label: '기동', value: 58 }, { label: '지원', value: 45 }],
@@ -277,6 +311,137 @@ function showToast(message: string): void {
   window.setTimeout(() => toast.classList.remove('show'), 2600);
 }
 
+function setTacticalPaletteOpen(open: boolean, restoreFocus = false): void {
+  tacticalPalette.classList.toggle('hidden', !open);
+  tacticalMenuButton.setAttribute('aria-expanded', String(open));
+  if (open) {
+    window.requestAnimationFrame(() => {
+      tacticalPalette.querySelector<HTMLButtonElement>('[data-tactical-command]')?.focus();
+    });
+  } else if (restoreFocus) {
+    tacticalMenuButton.focus();
+  }
+}
+
+function resetTacticalStatus(): void {
+  tacticalDisplayState = null;
+  window.clearInterval(tacticalStatusTicker);
+  tacticalStatusTicker = 0;
+  tacticalStatus.dataset.state = 'idle';
+  tacticalMenuButton.dataset.state = 'idle';
+  tacticalTriggerLabel.textContent = '전술';
+  tacticalStatusSource.textContent = 'LINK STANDBY';
+  tacticalStatusLabel.textContent = '분대 명령 대기';
+  tacticalStatusDetail.textContent = '자연어를 입력하거나 빠른 명령을 선택하세요.';
+  tacticalStatusProgress.style.width = '0%';
+  tacticalMenuButton.setAttribute('aria-label', '빠른 전술 명령 열기');
+  tacticalPalette.querySelectorAll<HTMLButtonElement>('[data-tactical-command]').forEach((button) => {
+    button.disabled = false;
+    button.classList.remove('active');
+    button.setAttribute('aria-pressed', 'false');
+  });
+}
+
+function renderTacticalStatus(): void {
+  const state = tacticalDisplayState;
+  if (!state) {
+    resetTacticalStatus();
+    return;
+  }
+  const now = Date.now();
+  if (state.endsAt <= now) {
+    if (state.mode === 'pending') {
+      tacticalDisplayState = {
+        ...state,
+        mode: 'error',
+        message: '전술 링크 응답이 지연되고 있습니다. 연결 상태를 확인한 뒤 다시 시도하세요.',
+        startedAt: now,
+        endsAt: now + 4_500,
+      };
+      renderTacticalStatus();
+      return;
+    }
+    resetTacticalStatus();
+    return;
+  }
+  const label = tacticalOrderLabels[state.order];
+  const remainingMs = Math.max(0, state.endsAt - now);
+  const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1_000));
+  const timed = state.mode === 'active' || state.mode === 'cooldown' || state.mode === 'blocked';
+  const statusLabels: Record<TacticalDisplayMode, string> = {
+    pending: `${label} 명령 송신`,
+    active: `${label} 전술 적용`,
+    cooldown: `${label} 완료`,
+    blocked: `${label} 재충전`,
+    error: `${label} 명령 거부`,
+  };
+  tacticalStatus.dataset.state = state.mode;
+  tacticalMenuButton.dataset.state = state.mode;
+  tacticalStatusSource.textContent = `${state.source === 'server' ? 'SERVER AUTH' : 'LOCAL CORE'} // ${state.order}`;
+  tacticalStatusLabel.textContent = statusLabels[state.mode];
+  const detailMessage = timed ? state.message.replace(/\s*\/\/\s*\d+초\s*$/, '') : state.message;
+  tacticalStatusDetail.textContent = timed ? `${detailMessage} · ${remainingSeconds}초` : detailMessage;
+  tacticalTriggerLabel.textContent = timed ? `${label} ${remainingSeconds}` : state.mode === 'pending' ? `${label}…` : '재시도';
+  tacticalMenuButton.setAttribute('aria-label', `${statusLabels[state.mode]}. ${tacticalStatusDetail.textContent}`);
+  const totalMs = Math.max(1, state.endsAt - state.startedAt);
+  tacticalStatusProgress.style.width = state.mode === 'pending'
+    ? '52%'
+    : `${Math.max(0, Math.min(100, remainingMs / totalMs * 100))}%`;
+  tacticalPalette.querySelectorAll<HTMLButtonElement>('[data-tactical-command]').forEach((button) => {
+    const selected = button.dataset.tacticalOrder === state.order;
+    button.classList.toggle('active', selected && state.mode !== 'error');
+    button.setAttribute('aria-pressed', String(selected && state.mode !== 'error'));
+    button.disabled = selected && (state.mode === 'cooldown' || state.mode === 'blocked');
+  });
+}
+
+function beginTacticalStatus(order: TacticalOrder): void {
+  const now = Date.now();
+  tacticalDisplayState = {
+    mode: 'pending',
+    order,
+    message: network.connected ? '서버 권위 판정을 기다리는 중입니다.' : '로컬 전술 코어가 명령을 해석하는 중입니다.',
+    source: network.connected ? 'server' : 'local',
+    startedAt: now,
+    endsAt: now + 8_500,
+  };
+  if (!tacticalStatusTicker) tacticalStatusTicker = window.setInterval(renderTacticalStatus, 250);
+  renderTacticalStatus();
+}
+
+function applyTacticalFeedback(feedback: TacticalCommandFeedback): void {
+  const now = Date.now();
+  const cooldownMs = Math.max(0, feedback.cooldownMs ?? 0);
+  const durationMs = Math.max(0, feedback.durationMs ?? 0);
+  const mode: TacticalDisplayMode = cooldownMs > 0
+    ? feedback.applied ? 'cooldown' : 'blocked'
+    : feedback.applied ? 'active' : 'error';
+  const displayMs = cooldownMs || durationMs || 4_500;
+  tacticalDisplayState = {
+    mode,
+    order: feedback.order,
+    message: feedback.message,
+    source: feedback.source,
+    startedAt: now,
+    endsAt: now + displayMs,
+  };
+  if (!tacticalStatusTicker) tacticalStatusTicker = window.setInterval(renderTacticalStatus, 250);
+  renderTacticalStatus();
+  showToast(feedback.message);
+}
+
+function dispatchTacticalCommand(command: string): void {
+  const normalized = command.trim();
+  if (!normalized) return;
+  const parsed = parseTacticalCommand(normalized);
+  beginTacticalStatus(parsed.order);
+  gameEvents.emit('tactical-command', normalized);
+  network.sendTactical(normalized);
+  commandInput.value = '';
+  commandInput.blur();
+  setTacticalPaletteOpen(false);
+}
+
 function showNeuralCutin(operatorId: string, skillName: string): void {
   const operator = getOperator(operatorId);
   const skill = neuralLinkSkill(operatorId);
@@ -364,6 +529,7 @@ function setModalBackgroundInert(active: boolean): void {
 function pauseForModal(): void {
   const focused = document.activeElement;
   if (focused instanceof HTMLElement && !modalBackdrop.contains(focused)) lastFocusedElement = focused;
+  setTacticalPaletteOpen(false);
   window.clearTimeout(stageBannerTimer);
   stageBanner.classList.remove('active');
   stageBanner.setAttribute('aria-hidden', 'true');
@@ -1434,12 +1600,39 @@ function renderOperationDebrief(result: {
 
 commandForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const command = commandInput.value.trim();
-  if (!command) return;
-  gameEvents.emit('tactical-command', command);
-  network.sendTactical(command);
-  commandInput.value = '';
-  commandInput.blur();
+  dispatchTacticalCommand(commandInput.value);
+});
+tacticalMenuButton.addEventListener('click', () => {
+  setTacticalPaletteOpen(tacticalPalette.classList.contains('hidden'));
+});
+closeTacticalPaletteButton.addEventListener('click', () => setTacticalPaletteOpen(false, true));
+tacticalPalette.querySelectorAll<HTMLButtonElement>('[data-tactical-command]').forEach((button) => {
+  button.addEventListener('click', () => {
+    dispatchTacticalCommand(button.dataset.tacticalCommand ?? '');
+    tacticalMenuButton.focus();
+  });
+});
+commandInput.addEventListener('focus', () => {
+  commandForm.classList.add('input-active');
+  setTacticalPaletteOpen(false);
+  gameEvents.emit('text-input-active', true);
+});
+commandInput.addEventListener('blur', () => {
+  commandForm.classList.remove('input-active');
+  gameEvents.emit('text-input-active', false);
+});
+commandInput.addEventListener('keydown', (event) => {
+  event.stopPropagation();
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    commandInput.blur();
+  }
+});
+document.addEventListener('pointerdown', (event) => {
+  if (tacticalPalette.classList.contains('hidden')) return;
+  const target = event.target;
+  if (target instanceof Node && (tacticalPalette.contains(target) || commandForm.contains(target))) return;
+  setTacticalPaletteOpen(false);
 });
 
 byId('shelterButton').addEventListener('click', renderShelter);
@@ -1454,6 +1647,11 @@ modalBackdrop.addEventListener('click', (event) => {
   if (event.target === modalBackdrop && currentModal !== 'game-over') closeModal();
 });
 document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !tacticalPalette.classList.contains('hidden')) {
+    event.preventDefault();
+    setTacticalPaletteOpen(false, true);
+    return;
+  }
   if (modalBackdrop.classList.contains('hidden')) return;
   if (event.key === 'Escape') {
     if (currentModal === 'game-over') return;
@@ -1528,6 +1726,7 @@ gameEvents.on('operator-reply', (operator: ReturnType<typeof getOperator>, reply
   showToast(`${operator.name} // ${reply}`);
   renderPersistentHud();
 });
+gameEvents.on('tactical-result', (feedback: TacticalCommandFeedback) => applyTacticalFeedback(feedback));
 gameEvents.on('neural-link-activated', (operatorId: string, skillName: string) => {
   showNeuralCutin(operatorId, skillName);
   showToast(`${getOperator(operatorId).name} // ${skillName}`);
@@ -1728,6 +1927,7 @@ gameEvents.on('hud-update', (hud: {
   }
 });
 
+resetTacticalStatus();
 applySettings();
 renderPersistentHud();
 if (state.offlineReward.elapsedMinutes >= 2) {

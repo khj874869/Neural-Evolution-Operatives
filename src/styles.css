@@ -1374,6 +1374,166 @@ body::before {
 .prompt { padding-left: 15px; font-size: 10px; letter-spacing: .08em; }
 #commandInput { font-size: 11px; }
 
+#commandForm .tactical-trigger {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 86px;
+  padding: 0 11px;
+  border-width: 0 1px 0 0;
+  border-color: rgba(92, 229, 209, .24);
+  color: var(--cyan);
+  background: rgba(20, 56, 47, .34);
+  letter-spacing: .06em;
+}
+#commandForm .tactical-trigger span { font-size: 15px; }
+#commandForm .tactical-trigger b { font: inherit; white-space: nowrap; }
+#commandForm .tactical-trigger[data-state="pending"] { color: #f3d478; }
+#commandForm .tactical-trigger[data-state="active"],
+#commandForm .tactical-trigger[data-state="cooldown"] {
+  color: var(--lime);
+  box-shadow: inset 0 -2px var(--lime), 0 0 16px rgba(215, 255, 84, .08);
+}
+#commandForm .tactical-trigger[data-state="blocked"],
+#commandForm .tactical-trigger[data-state="error"] { color: #ff8495; }
+
+.tactical-palette {
+  --tactical-accent: var(--cyan);
+  position: fixed;
+  z-index: 34;
+  left: 50%;
+  bottom: calc(var(--command-height) + max(10px, env(safe-area-inset-bottom)));
+  width: min(640px, calc(100vw - 28px));
+  max-height: min(430px, calc(100dvh - var(--topbar-height) - var(--command-height) - 28px));
+  overflow: auto;
+  padding: 13px;
+  border-color: rgba(92, 229, 209, .36);
+  background:
+    linear-gradient(135deg, rgba(92, 229, 209, .08), transparent 42%),
+    rgba(3, 16, 13, .97);
+  box-shadow: 0 18px 58px rgba(0, 0, 0, .64), inset 0 1px rgba(255, 255, 255, .04);
+  transform: translateX(-50%);
+}
+.tactical-palette::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: var(--tactical-accent);
+  box-shadow: 0 0 18px var(--tactical-accent);
+}
+.tactical-palette > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 0 2px;
+}
+.tactical-palette > header div { display: grid; gap: 2px; }
+.tactical-palette > header span { color: var(--tactical-accent); font: 8px 'Share Tech Mono'; letter-spacing: .18em; }
+.tactical-palette > header strong { color: #e6fff1; font: 14px 'Black Ops One'; letter-spacing: .06em; }
+.tactical-palette > header button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line-soft);
+  color: #8ba79c;
+  background: rgba(0, 0, 0, .24);
+  font: 17px 'Share Tech Mono';
+}
+.tactical-palette > header button:hover,
+.tactical-palette > header button:focus-visible { border-color: var(--lime); color: var(--lime); }
+
+.tactical-status {
+  position: relative;
+  display: grid;
+  grid-template-columns: 112px 142px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  overflow: hidden;
+  padding: 8px 11px 10px;
+  border: 1px solid rgba(92, 229, 209, .2);
+  background: rgba(0, 7, 6, .52);
+}
+.tactical-status > span { color: var(--tactical-accent); font: 8px 'Share Tech Mono'; letter-spacing: .11em; }
+.tactical-status > strong { color: #e8fff2; font: 10px 'Share Tech Mono'; }
+.tactical-status > b { overflow: hidden; color: #8da69c; font: 9px 'Share Tech Mono'; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.tactical-status > i {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, .04);
+}
+.tactical-status > i em {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--tactical-accent);
+  box-shadow: 0 0 10px var(--tactical-accent);
+  transition: width .24s linear;
+}
+.tactical-status[data-state="pending"] { --tactical-accent: #f3d478; }
+.tactical-status[data-state="active"],
+.tactical-status[data-state="cooldown"] { --tactical-accent: var(--lime); }
+.tactical-status[data-state="blocked"],
+.tactical-status[data-state="error"] { --tactical-accent: #ff7087; }
+.tactical-status[data-state="pending"] > i em { animation: tactical-pending 1.1s ease-in-out infinite alternate; }
+
+.tactical-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 8px;
+}
+.tactical-presets button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 23px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 7px;
+  min-height: 53px;
+  padding: 8px 9px;
+  border: 1px solid var(--line-soft);
+  color: #9db6ac;
+  background: rgba(8, 28, 23, .78);
+  text-align: left;
+}
+.tactical-presets button > span {
+  grid-row: 1 / 3;
+  align-self: center;
+  color: #4f7468;
+  font: 8px 'Share Tech Mono';
+}
+.tactical-presets button strong { color: #dcf7e8; font: 10px 'Share Tech Mono'; }
+.tactical-presets button small { overflow: hidden; color: #668378; font: 8px 'Share Tech Mono'; text-overflow: ellipsis; white-space: nowrap; }
+.tactical-presets button:hover,
+.tactical-presets button:focus-visible,
+.tactical-presets button.active { border-color: var(--lime); color: var(--lime); background: rgba(215, 255, 84, .075); }
+.tactical-presets button.active::after {
+  content: '';
+  position: absolute;
+  right: 7px;
+  top: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 9px var(--lime);
+}
+.tactical-presets button:disabled { cursor: default; opacity: .58; }
+.tactical-palette > p { margin: 8px 2px 0; color: #587267; font: 8px 'Share Tech Mono'; line-height: 1.45; }
+
+@keyframes tactical-pending {
+  from { opacity: .5; transform: translateX(-35%); }
+  to { opacity: 1; transform: translateX(72%); }
+}
+
 .modal-backdrop {
   background:
     radial-gradient(circle at 50% 45%, rgba(21, 62, 51, .32), transparent 38%),
@@ -1468,9 +1628,27 @@ body:not(.reduced-motion) .map-objective.active { animation: map-signal 1.2s eas
   .command-dock > button { min-width: 48px; padding: 0 5px; font-size: 8px; }
   #alphaButton, #muteButton, .prompt { display: none; }
   #commandForm { min-width: 0; }
+  #commandForm .tactical-trigger {
+    flex-basis: 56px;
+    min-width: 56px;
+    gap: 3px;
+    padding-inline: 6px;
+    font-size: 8px;
+  }
+  #commandForm .tactical-trigger span { font-size: 11px; }
+  #commandForm > button[type="submit"] { display: none; }
+  #commandForm.input-active > .tactical-trigger { display: none; }
+  #commandForm.input-active > button[type="submit"] { display: block; }
   #settingsButton span { display: none; }
   #commandInput { min-width: 0; padding-inline: 7px; font-size: 9px; }
   #commandForm button { min-width: 42px; padding-inline: 7px; font-size: 8px; }
+  .tactical-palette {
+    bottom: calc(var(--command-height) + max(7px, env(safe-area-inset-bottom)));
+    width: calc(100vw - 12px);
+    padding: 10px;
+  }
+  .tactical-status { grid-template-columns: 88px 116px minmax(0, 1fr); gap: 7px; }
+  .tactical-presets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .card-grid { grid-template-columns: 1fr; }
   .contract-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .gear-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1530,7 +1708,7 @@ body:not(.reduced-motion) .map-objective.active { animation: map-signal 1.2s eas
   .modal { width: 100%; max-width: 100%; max-height: calc(100dvh - 24px); }
   .command-dock > button { min-width: 40px; padding-inline: 3px; font-size: 7px; }
   #commandInput { font-size: 16px; }
-  #commandForm:focus-within {
+  #commandForm.input-active {
     position: absolute;
     z-index: 5;
     top: 9px;

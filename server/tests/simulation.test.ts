@@ -306,7 +306,7 @@ describe('authoritative red zone simulation', () => {
     const player = simulation.addPlayer('session-heal', 'player-heal', 'MEDIC-LINK', ['lumen']);
     player.hp = 48;
     expect(simulation.applyTacticalCommand('session-heal', '지금 치료해줘')).toMatchObject({
-      order: 'HEAL', applied: true,
+      order: 'HEAL', applied: true, cooldownMs: 40_000,
     });
     expect(player.hp).toBe(72);
     expect(simulation.applyTacticalCommand('session-heal', '다시 치료해줘')).toMatchObject({
@@ -338,7 +338,7 @@ describe('authoritative red zone simulation', () => {
       id: 'focus-warden', kind: 'warden', x: player.x + 160, y: player.y, hp: 520, attackCooldownMs: 9_999,
     });
     expect(simulation.applyTacticalCommand('session-orders', '강한 적을 집중 공격해')).toMatchObject({
-      order: 'FOCUS', applied: true,
+      order: 'FOCUS', applied: true, durationMs: 9_000,
     });
     simulation.applyInput('session-orders', {
       sequence: 1, moveX: 0, moveY: 0, aimAngle: 0, fire: true, extract: false, weapon: 'carbine',
@@ -351,7 +351,7 @@ describe('authoritative red zone simulation', () => {
       id: 'remote-scrap', kind: 'scrap', x: player.x + 140, y: player.y, value: 5,
     });
     expect(simulation.applyTacticalCommand('session-orders', '주변 자원을 찾아 회수해')).toMatchObject({
-      order: 'SCAVENGE', applied: true,
+      order: 'SCAVENGE', applied: true, durationMs: 9_000,
     });
     simulation.tick(50);
     expect(player.cargo.scrap).toBe(5);

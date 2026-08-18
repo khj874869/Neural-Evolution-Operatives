@@ -14,11 +14,42 @@ export interface ParsedCommand {
   targetHint?: string;
 }
 
+export interface TacticalCommandFeedback {
+  order: TacticalOrder;
+  applied: boolean;
+  message: string;
+  source: 'local' | 'server';
+  durationMs?: number;
+  cooldownMs?: number;
+}
+
+export interface TacticalCommandPreset {
+  order: Exclude<TacticalOrder, 'UNKNOWN'>;
+  label: string;
+  hint: string;
+  command: string;
+}
+
 export const TACTICAL_ORDER_DURATION_MS = 9_000;
 export const TACTICAL_HEAL_AMOUNT = 24;
 export const TACTICAL_HEAL_COOLDOWN_MS = 40_000;
 export const TACTICAL_FOCUS_DAMAGE_MULTIPLIER = 1.15;
 export const TACTICAL_SCAVENGE_RADIUS = 180;
+
+export const TACTICAL_COMMAND_PRESETS: readonly TacticalCommandPreset[] = [
+  { order: 'REGROUP', label: '집결', hint: '분대가 플레이어에게 복귀', command: '모두 내 쪽으로 복귀해' },
+  { order: 'FOCUS', label: '집중', hint: '강적에게 화력 집중', command: '강한 적을 집중 공격해' },
+  { order: 'SCAVENGE', label: '회수', hint: '주변 자원 탐색·수집', command: '주변 자원을 찾아 회수해' },
+  { order: 'HEAL', label: '회복', hint: 'Support 응급 치료 요청', command: '루멘, 지금 치료해줘' },
+] as const;
+
+const TACTICAL_ORDERS: readonly TacticalOrder[] = [
+  'DRAW_AGGRO', 'FLANK', 'HOLD', 'REGROUP', 'HEAL', 'FOCUS', 'SCAVENGE', 'UNKNOWN',
+] as const;
+
+export function isTacticalOrder(value: unknown): value is TacticalOrder {
+  return typeof value === 'string' && TACTICAL_ORDERS.includes(value as TacticalOrder);
+}
 
 const PATTERNS: ReadonlyArray<readonly [TacticalOrder, RegExp]> = [
   ['DRAW_AGGRO', /어그로|시선.*끌|도발|draw.*(aggro|fire)|distract/i],

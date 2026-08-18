@@ -9,7 +9,7 @@ import { generateMission, type Mission } from '../systems/MissionGenerator';
 import { createPersonaReply } from '../systems/PersonaEngine';
 import {
   parseTacticalCommand, TACTICAL_HEAL_AMOUNT, TACTICAL_HEAL_COOLDOWN_MS,
-  TACTICAL_ORDER_DURATION_MS, type TacticalOrder,
+  TACTICAL_ORDER_DURATION_MS, type TacticalCommandFeedback, type TacticalOrder,
 } from '../systems/TacticalCommand';
 import { isWeaponId, projectileAngles, WEAPON_SPECS, weaponFromSlot, type WeaponId } from '../../../packages/shared/src/combat';
 import type { EnemyKind } from '../../../packages/shared/src/protocol';
@@ -114,6 +114,7 @@ export class WorldScene extends Phaser.Scene {
   private dashCooldownMs = 0;
   private dashNetworkPending = false;
   private extractRequested = false;
+  private textInputActive = false;
   private gamepadConnected = false;
   private gamepadButtons = new Set<number>();
   private readonly serverEnemies = new Map<string, EnemySprite>();
@@ -168,6 +169,7 @@ export class WorldScene extends Phaser.Scene {
     this.scale.on('resize', this.handleResize, this);
 
     gameEvents.on('tactical-command', this.handleTacticalCommand, this);
+    gameEvents.on('text-input-active', this.handleTextInputActive, this);
     gameEvents.on('resume-world', this.resumeWorld, this);
     gameEvents.on('squad-changed', this.spawnCompanions, this);
     gameEvents.on('loadout-changed', this.refreshCombatBonuses, this);
@@ -181,6 +183,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('suspend-world-input', this.suspendWorldInput, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
+      gameEvents.off('text-input-active', this.handleTextInputActive, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
       gameEvents.off('squad-changed', this.spawnCompanions, this);
       gameEvents.off('loadout-changed', this.refreshCombatBonuses, this);
@@ -246,6 +249,7 @@ export class WorldScene extends Phaser.Scene {
     this.dashCooldownMs = 0;
     this.dashNetworkPending = false;
     this.extractRequested = false;
+    this.textInputActive = false;
     this.gamepadConnected = false;
     this.gamepadButtons.clear();
     this.serverEnemies.clear();
@@ -538,10 +542,11 @@ export class WorldScene extends Phaser.Scene {
   private updatePlayer(time: number, delta: number): void {
     const mobile = this.registry.get('mobileInput') as MobileInputState;
     const controller = this.pollGamepad();
-    const digitalHorizontal = Number(this.keys.D.isDown || this.cursors.right.isDown || mobile.right)
-      - Number(this.keys.A.isDown || this.cursors.left.isDown || mobile.left);
-    const digitalVertical = Number(this.keys.S.isDown || this.cursors.down.isDown || mobile.down)
-      - Number(this.keys.W.isDown || this.cursors.up.isDown || mobile.up);
+    const keyboardEnabled = !this.textInputActive;
+    const digitalHorizontal = Number((keyboardEnabled && (this.keys.D.isDown || this.cursors.right.isDown)) || mobile.right)
+      - Number((keyboardEnabled && (this.keys.A.isDown || this.cursors.left.isDown)) || mobile.left);
+    const digitalVertical = Number((keyboardEnabled && (this.keys.S.isDown || this.cursors.down.isDown)) || mobile.down)
+      - Number((keyboardEnabled && (this.keys.W.isDown || this.cursors.up.isDown)) || mobile.up);
     const horizontal = Math.abs(controller.moveX) > 0.14 ? controller.moveX : digitalHorizontal;
     const vertical = Math.abs(controller.moveY) > 0.14 ? controller.moveY : digitalVertical;
     const movement = new Phaser.Math.Vector2(horizontal, vertical);
@@ -563,15 +568,15 @@ export class WorldScene extends Phaser.Scene {
     } else if (worldPoint) {
       this.player.setRotation(Phaser.Math.Angle.Between(this.player.x, this.player.y, worldPoint.x, worldPoint.y) + Math.PI / 2);
     }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectWeapon(weaponFromSlot(1) ?? 'carbine');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) this.selectWeapon(weaponFromSlot(2) ?? 'scatter');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) this.selectWeapon(weaponFromSlot(3) ?? 'rail');
+    if (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectWeapon(weaponFromSlot(1) ?? 'carbine');
+    if (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.TWO)) this.selectWeapon(weaponFromSlot(2) ?? 'scatter');
+    if (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.THREE)) this.selectWeapon(weaponFromSlot(3) ?? 'rail');
     if (controller.weaponSlot) this.selectWeapon(weaponFromSlot(controller.weaponSlot) ?? 'carbine');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.Q) || controller.link) this.linkRequested = true;
-    this.extractRequested ||= Phaser.Input.Keyboard.JustDown(this.keys.E) || mobile.extract || controller.extract;
+    if ((keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.Q)) || controller.link) this.linkRequested = true;
+    this.extractRequested ||= (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.E)) || mobile.extract || controller.extract;
     mobile.extract = false;
     this.dashCooldownMs = Math.max(0, this.dashCooldownMs - delta);
-    const dashActivated = (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || mobile.dash || controller.dash)
+    const dashActivated = ((keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.SPACE)) || mobile.dash || controller.dash)
       && this.performDash(movement);
     if (this.networkConnected) this.dashNetworkPending ||= dashActivated;
     mobile.dash = false;
@@ -581,7 +586,8 @@ export class WorldScene extends Phaser.Scene {
     }
     const weapon = WEAPON_SPECS[this.currentWeapon];
     const assistedFire = mobile.fire || controller.fire;
-    if ((pointer.isDown || assistedFire)
+    const pointerFire = keyboardEnabled && pointer.isDown;
+    if ((pointerFire || assistedFire)
       && time - this.lastShotAt > weapon.cooldownMs * this.combatBonuses.fireCooldownMultiplier) {
       const target = assistedFire ? this.findNearestEnemy(this.player.x, this.player.y, weapon.range) : undefined;
       this.firePlayerWeapon(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y);
@@ -593,7 +599,7 @@ export class WorldScene extends Phaser.Scene {
         moveX: movement.lengthSq() > 0 ? movement.x / movementSpeed : 0,
         moveY: movement.lengthSq() > 0 ? movement.y / movementSpeed : 0,
         aimAngle: this.player.rotation - Math.PI / 2,
-        fire: pointer.isDown || assistedFire,
+        fire: pointerFire || assistedFire,
         extract: this.extractRequested,
         weapon: this.currentWeapon,
         activateLink: this.linkRequested,
@@ -1206,24 +1212,63 @@ export class WorldScene extends Phaser.Scene {
 
   private handleTacticalCommand(input: string): void {
     const parsed = parseTacticalCommand(input);
-    this.order = parsed.order === 'UNKNOWN' ? 'REGROUP' : parsed.order;
-    this.orderUntil = this.time.now + TACTICAL_ORDER_DURATION_MS;
     const squad = this.state.getSquad();
     const speaker = squad[Math.floor(Math.random() * squad.length)]?.definition ?? getOperator('aegis-07');
+    let localFeedback: TacticalCommandFeedback | undefined;
+
+    if (parsed.order === 'UNKNOWN') {
+      if (!this.networkConnected) {
+        localFeedback = {
+          order: parsed.order,
+          applied: false,
+          message: '전술 명령을 해석하지 못했습니다. 빠른 명령을 선택하거나 표현을 바꿔보세요.',
+          source: 'local',
+        };
+      }
+    } else if (parsed.order !== 'HEAL') {
+      this.order = parsed.order;
+      this.orderUntil = this.time.now + TACTICAL_ORDER_DURATION_MS;
+      if (!this.networkConnected) {
+        localFeedback = {
+          order: parsed.order,
+          applied: true,
+          durationMs: TACTICAL_ORDER_DURATION_MS,
+          message: `전술 명령 승인 // ${parsed.order}`,
+          source: 'local',
+        };
+      }
+    }
+
     if (parsed.order === 'HEAL' && !this.networkConnected) {
       const hasSupport = squad.some(({ definition }) => definition.role === 'Support');
       const remainingMs = TACTICAL_HEAL_COOLDOWN_MS - (this.time.now - this.lastHealAt);
       if (!hasSupport) {
-        this.emitFeed('치료 명령 거부 // Support 오퍼레이터를 분대에 편성하십시오.', true);
+        localFeedback = {
+          order: parsed.order, applied: false, source: 'local',
+          message: '치료 명령 거부 // Support 오퍼레이터를 분대에 편성하십시오.',
+        };
       } else if (remainingMs > 0) {
-        this.emitFeed(`치료 링크 재충전 // ${Math.ceil(remainingMs / 1_000)}초`, true);
+        localFeedback = {
+          order: parsed.order, applied: false, source: 'local', cooldownMs: remainingMs,
+          message: `치료 링크 재충전 // ${Math.ceil(remainingMs / 1_000)}초`,
+        };
       } else if (this.hp >= 100) {
-        this.emitFeed('치료 명령 보류 // 생체 신호가 이미 안정적입니다.');
+        localFeedback = {
+          order: parsed.order, applied: false, source: 'local',
+          message: '치료 명령 보류 // 생체 신호가 이미 안정적입니다.',
+        };
       } else {
         this.hp = Math.min(100, this.hp + TACTICAL_HEAL_AMOUNT);
         this.lastHealAt = this.time.now;
-        this.emitFeed(`Support 응급 치료 // HP +${TACTICAL_HEAL_AMOUNT}`);
+        localFeedback = {
+          order: parsed.order, applied: true, source: 'local', cooldownMs: TACTICAL_HEAL_COOLDOWN_MS,
+          message: `Support 응급 치료 // HP +${TACTICAL_HEAL_AMOUNT}`,
+        };
       }
+    }
+    if (localFeedback) {
+      gameEvents.emit('tactical-result', localFeedback);
+      this.emitFeed(localFeedback.message, !localFeedback.applied);
     }
     this.state.remember(speaker.id, `레드 존에서 "${input.slice(0, 44)}" 명령에 응답했다.`);
     gameEvents.emit('operator-reply', speaker, createPersonaReply(speaker, parsed.order, this.missionKills));
@@ -1344,6 +1389,11 @@ export class WorldScene extends Phaser.Scene {
 
   private emitFeed(message: string, danger = false): void {
     gameEvents.emit('feed', message, danger);
+  }
+
+  private handleTextInputActive(active: boolean): void {
+    this.textInputActive = active;
+    if (active && this.player?.active) this.player.setVelocity(0, 0);
   }
 
   private resumeWorld(): void {

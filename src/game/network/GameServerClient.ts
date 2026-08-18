@@ -16,6 +16,9 @@ import type {
 import type {
   AlphaFeedbackReceipt, AlphaFeedbackSubmission,
 } from '../../../packages/shared/src/alphaOps';
+import {
+  isTacticalOrder, type TacticalCommandFeedback,
+} from '../../../packages/shared/src/tactical';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
@@ -392,6 +395,19 @@ export class GameServerClient {
     room.onStateChange((state: unknown) => this.emitSnapshot(state));
     room.onMessage<ServerEventMessage>('server-event', (event) => {
       gameEvents.emit('feed', event.message, event.type === 'error');
+      const tacticalOrder = event.payload?.order;
+      if (isTacticalOrder(tacticalOrder)) {
+        const durationMs = finiteDuration(event.payload?.durationMs);
+        const cooldownMs = finiteDuration(event.payload?.cooldownMs);
+        gameEvents.emit('tactical-result', {
+          order: tacticalOrder,
+          applied: event.type !== 'error',
+          message: event.message,
+          source: 'server',
+          ...(durationMs > 0 ? { durationMs } : {}),
+          ...(cooldownMs > 0 ? { cooldownMs } : {}),
+        } satisfies TacticalCommandFeedback);
+      }
       if (event.type === 'extraction') {
         gameEvents.emit('sfx', 'extract');
         gameEvents.emit('haptic', 'success');
@@ -586,6 +602,10 @@ export class GameServerClient {
       resources: mapValues(state.resources),
     } satisfies NetworkSnapshot);
   }
+}
+
+function finiteDuration(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
 function deviceId(): string {

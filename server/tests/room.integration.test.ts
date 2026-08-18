@@ -13,6 +13,7 @@ describe('real game room transport', () => {
   beforeAll(async () => {
     const config: ServerConfig = {
       host: '127.0.0.1', port, corsOrigin: 'http://localhost:5173',
+      trustProxyHops: 0,
       jwtSecret: 'integration-secret-that-is-long-enough', nodeEnv: 'test',
       releaseChannel: 'alpha', commitSha: 'abcdef0',
       aiModel: 'gpt-5.6-terra', aiDailyTurnLimit: 12, aiTimeoutMs: 8_000, aiModerationEnabled: true,
@@ -56,7 +57,7 @@ describe('real game room transport', () => {
     });
     room.send('tactical', { text: '주변 자원을 찾아 회수해' });
     await expect(tacticalAck).resolves.toMatchObject({
-      type: 'feed', payload: { order: 'SCAVENGE' },
+      type: 'feed', payload: { order: 'SCAVENGE', durationMs: 9_000, cooldownMs: 0 },
     });
     const sessionId = room.sessionId;
     room.reconnection.minUptime = 0;

@@ -82,6 +82,10 @@ check(gitignore.includes('node_modules.failed/'), 'node_modules.failed/ must be 
 check(packageJson.scripts?.['release:check'] === 'node scripts/release-gate.mjs', 'release:check script is missing');
 check(packageJson.scripts?.['clean:server'] === 'node scripts/clean-server-build.mjs', 'safe server clean script is missing');
 check(packageJson.scripts?.['build:server']?.startsWith('npm run clean:server &&'), 'server build must clean stale output first');
+check(
+  packageJson.scripts?.['dev:server']?.includes('--tsconfig server/tsconfig.json'),
+  'development server must use the server tsconfig for schema field semantics',
+);
 check(serverDockerfile.includes('COPY scripts/clean-server-build.mjs'), 'server image must copy the safe clean script');
 
 const unitTestPath = 'android/app/src/test/java/com/neuralevolution/operatives/ExampleUnitTest.java';
@@ -126,9 +130,11 @@ check(redisBlock.includes('--requirepass'), 'docker-compose Redis must require a
 check(redisBlock.includes('REDISCLI_AUTH='), 'Redis health check must not expose its password as a command argument');
 check(gameServerBlock.includes('DATABASE_URL:?'), 'docker-compose must require DATABASE_URL');
 check(gameServerBlock.includes('REDIS_URL:?'), 'docker-compose must require authenticated REDIS_URL');
+check(gameServerBlock.includes('TRUST_PROXY_HOPS:'), 'docker-compose must expose explicit proxy-hop configuration');
 
 check(ciWorkflow.includes('postgres:17-alpine'), 'CI must run a PostgreSQL service container');
 check(ciWorkflow.includes('redis:8-alpine'), 'CI must run a Redis service container');
+check(ciWorkflow.includes('npm audit --omit=dev --audit-level=high'), 'CI must audit production dependencies');
 check(ciWorkflow.includes('NODE_ENV: production'), 'CI server smoke test must use production configuration');
 check(ciWorkflow.includes('npm run smoke:server'), 'CI must run the server smoke test');
 check(ciWorkflow.includes('release:check -- --artifacts'), 'CI must validate production artifacts');

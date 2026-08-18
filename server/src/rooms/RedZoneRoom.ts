@@ -85,7 +85,11 @@ export class RedZoneRoom extends Room<{ state: RedZoneState }> {
       client.send('server-event', {
         type: result.applied ? 'feed' : 'error',
         message: result.message,
-        payload: { order: result.order, cooldownMs: result.cooldownMs ?? 0 },
+        payload: {
+          order: result.order,
+          durationMs: result.durationMs ?? 0,
+          cooldownMs: result.cooldownMs ?? 0,
+        },
       } satisfies ServerEventMessage);
     });
     this.onMessage('sync-squad', async (client) => {

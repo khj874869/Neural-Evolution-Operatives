@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "dev:server": "tsx watch server/src/index.ts",
+    "dev:server": "tsx watch --tsconfig server/tsconfig.json server/src/index.ts",
     "dev:all": "concurrently -k -n CLIENT,SERVER -c cyan,green \"npm:dev\" \"npm:dev:server\"",
     "build": "tsc --noEmit && vite build",
     "clean:server": "node scripts/clean-server-build.mjs",

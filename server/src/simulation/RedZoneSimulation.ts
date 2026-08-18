@@ -72,6 +72,7 @@ export interface TacticalCommandResult {
   order: TacticalOrder;
   applied: boolean;
   message: string;
+  durationMs?: number;
   cooldownMs?: number;
 }
 
@@ -264,6 +265,7 @@ export class RedZoneSimulation {
       player.healAvailableAtMs = this.elapsedMs + TACTICAL_HEAL_COOLDOWN_MS;
       return {
         order: parsed.order, applied: true,
+        cooldownMs: TACTICAL_HEAL_COOLDOWN_MS,
         message: `Support 응급 치료 승인 // HP +${TACTICAL_HEAL_AMOUNT}`,
       };
     }
@@ -281,16 +283,23 @@ export class RedZoneSimulation {
       player.focusTargetId = target.id;
       return {
         order: parsed.order, applied: true,
+        durationMs: TACTICAL_ORDER_DURATION_MS,
         message: `집중 공격 표식 승인 // ${target.kind.toUpperCase()}`,
       };
     }
     if (parsed.order === 'SCAVENGE') {
       return {
         order: parsed.order, applied: true,
+        durationMs: TACTICAL_ORDER_DURATION_MS,
         message: `자원 회수 프로토콜 승인 // ${TACTICAL_ORDER_DURATION_MS / 1_000}초`,
       };
     }
-    return { order: parsed.order, applied: true, message: `전술 명령 승인 // ${parsed.order}` };
+    return {
+      order: parsed.order,
+      applied: true,
+      durationMs: TACTICAL_ORDER_DURATION_MS,
+      message: `전술 명령 승인 // ${parsed.order}`,
+    };
   }
 
   tick(deltaMs: number): void {

@@ -8,6 +8,7 @@ import { InMemoryPlayerRepository } from '../src/persistence/InMemoryPlayerRepos
 
 const config: ServerConfig = {
   host: '127.0.0.1', port: 2567, corsOrigin: 'http://localhost:5173',
+  trustProxyHops: 1,
   jwtSecret: 'test-secret-that-is-long-enough-for-tests', nodeEnv: 'test',
   releaseChannel: 'alpha', commitSha: 'abcdef0',
   aiModel: 'gpt-5.6-terra', aiDailyTurnLimit: 12, aiTimeoutMs: 8_000, aiModerationEnabled: true,
@@ -155,6 +156,10 @@ describe('game account API', () => {
       .expect(429);
     expect(limited.body).toMatchObject({ error: 'RATE_LIMITED', requestId: expect.any(String) });
     expect(limited.headers['retry-after']).toBeTypeOf('string');
+    await request(app).post('/api/auth/guest')
+      .set('x-forwarded-for', '203.0.113.42')
+      .send({ deviceId: 'web:rate-limit-different-client' })
+      .expect(200);
   });
 
   it('accepts explicit alpha feedback idempotently and protects the operations console', async () => {

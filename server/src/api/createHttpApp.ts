@@ -85,6 +85,7 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     (request, response) => String(response.locals.playerId ?? requestAddress(request)),
   );
   app.disable('x-powered-by');
+  if (deps.config.trustProxyHops > 0) app.set('trust proxy', deps.config.trustProxyHops);
   app.use(cors({ origin: deps.config.corsOrigin.split(',').map((origin) => origin.trim()), credentials: false }));
   app.use((_request, response, next) => {
     const requestId = randomUUID();
@@ -440,5 +441,5 @@ function fixedWindowRateLimit(
 }
 
 function requestAddress(request: Request): string {
-  return request.socket.remoteAddress || request.ip || 'unknown';
+  return request.ip || request.socket.remoteAddress || 'unknown';
 }
