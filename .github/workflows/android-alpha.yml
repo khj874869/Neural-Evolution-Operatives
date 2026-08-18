@@ -27,7 +27,6 @@ jobs:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/neo-alpha-release.jks
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -79,6 +78,7 @@ jobs:
           else
             echo "ANDROID_SIGNED_RELEASE=false" >> "$GITHUB_ENV"
           fi
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/neo-alpha-release.jks" >> "$GITHUB_ENV"
           echo "ANDROID_VERSION_CODE=$((10400 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
       - run: npm run release:check
       - run: npm run check

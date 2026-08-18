@@ -115,6 +115,14 @@ check(
   androidWorkflow.includes(`ANDROID_VERSION_CODE=$((${expectedVersionCode} + GITHUB_RUN_NUMBER))`),
   'Android workflow must provide a SemVer-based monotonic versionCode',
 );
+check(
+  !androidWorkflow.includes('ANDROID_KEYSTORE_PATH: ${{ runner.temp }}'),
+  'Android workflow must not use runner context in job-level environment variables',
+);
+check(
+  androidWorkflow.includes('ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/neo-alpha-release.jks'),
+  'Android workflow must persist its keystore path from the runner environment',
+);
 check(androidWorkflow.includes('release:check -- --client-artifacts'), 'Android workflow must validate built client artifacts');
 
 const postgresBlock = serviceBlock(compose, 'postgres');
