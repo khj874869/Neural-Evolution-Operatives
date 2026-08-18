@@ -179,6 +179,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('server-extraction', this.handleServerExtraction, this);
     gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
     gameEvents.on('network-status', this.handleNetworkStatus, this);
+    gameEvents.on('network-operation-fallback', this.handleNetworkOperationFallback, this);
     gameEvents.on('neural-link-request', this.requestNeuralLink, this);
     gameEvents.on('suspend-world-input', this.suspendWorldInput, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -193,6 +194,7 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.off('server-extraction', this.handleServerExtraction, this);
       gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
       gameEvents.off('network-status', this.handleNetworkStatus, this);
+      gameEvents.off('network-operation-fallback', this.handleNetworkOperationFallback, this);
       gameEvents.off('neural-link-request', this.requestNeuralLink, this);
       gameEvents.off('suspend-world-input', this.suspendWorldInput, this);
       this.scale.off('resize', this.handleResize, this);
@@ -1449,6 +1451,11 @@ export class WorldScene extends Phaser.Scene {
 
   private handleResize(gameSize: Phaser.Structs.Size): void {
     this.stormOverlay.setSize(gameSize.width, gameSize.height);
+  }
+
+  private handleNetworkOperationFallback(operationId: OperationId): void {
+    if (operationId === this.operationId) return;
+    this.scene.restart();
   }
 
   private handleNetworkSnapshot(snapshot: NetworkSnapshot): void {

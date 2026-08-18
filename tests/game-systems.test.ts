@@ -17,6 +17,7 @@ import { clientPlatform } from '../src/release';
 import { createClientErrorReport, sanitizeErrorMessage } from '../src/game/telemetry/ClientTelemetry';
 import {
   activeOperationId, evaluateOperation, isOperationUnlocked, operationStageBrief, operationStageIndex,
+  resolveUnlockedOperationId,
 } from '../packages/shared/src/operations';
 import {
   EXTRACTION_POINT, findSectorSpawnPosition, isCircleBlocked, isLineBlocked, PLAYER_COLLISION_RADIUS,
@@ -278,6 +279,17 @@ describe('operation ashfall campaign', () => {
     expect(evaluateOperation('operation-ashfall', {
       collected: 20, dataCollected: 12, kills: 16, relaysDestroyed: 3, bossDefeated: false, extracted: false,
     })).toMatchObject({ stage: 'WARDEN', title: '신호포식자 헤카톤' });
+  });
+});
+
+describe('authoritative operation selection', () => {
+  it('falls back immediately when local progress requests a server-locked operation', () => {
+    expect(resolveUnlockedOperationId('operation-ashfall', [])).toBe('operation-zero');
+  });
+
+  it('preserves requested operations that the server profile has unlocked', () => {
+    expect(resolveUnlockedOperationId('operation-ashfall', ['operation-zero'])).toBe('operation-ashfall');
+    expect(resolveUnlockedOperationId('operation-zero', [])).toBe('operation-zero');
   });
 });
 

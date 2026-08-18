@@ -121,6 +121,13 @@ export function isOperationUnlocked(id: OperationId, completed: readonly Operati
   return completed.includes('operation-zero');
 }
 
+export function resolveUnlockedOperationId(
+  requested: OperationId,
+  completed: readonly OperationId[],
+): OperationId {
+  return isOperationUnlocked(requested, completed) ? requested : activeOperationId(completed);
+}
+
 export function evaluateOperation(id: OperationId, progress: OperationProgress): OperationStatus {
   if (id === 'operation-ashfall') return evaluateAshfall(progress);
   return evaluateZero(progress);

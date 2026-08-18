@@ -8,7 +8,9 @@ import type { ReleaseChannel } from '../../../packages/shared/src/release';
 import { CLIENT_RELEASE, clientPlatform } from '../../release';
 import { gameEvents } from '../events';
 import type { ClientErrorReport } from '../telemetry/ClientTelemetry';
-import { isOperationId, type OperationId } from '../../../packages/shared/src/operations';
+import {
+  isOperationId, resolveUnlockedOperationId, type OperationId,
+} from '../../../packages/shared/src/operations';
 import type { GearId } from '../../../packages/shared/src/gear';
 import type {
   ContractBoard, ContractId, ContractReward,
@@ -119,12 +121,20 @@ export class GameServerClient {
       });
       this.token = auth.token;
       this.analyticsConsentSynced = false;
+      const resolvedOperationId = resolveUnlockedOperationId(
+        operationId,
+        auth.profile.campaign.completedOperations,
+      );
+      this.operationId = resolvedOperationId;
       gameEvents.emit('network-profile', auth.profile);
+      if (resolvedOperationId !== operationId) {
+        gameEvents.emit('network-operation-fallback', resolvedOperationId, operationId);
+      }
       await this.syncAnalyticsConsent().catch(() => {
         // Gameplay remains available, but analytics transmission stays disabled.
         this.analyticsConsentSynced = false;
       });
-      await this.joinOperation(operationId, epoch);
+      await this.joinOperation(resolvedOperationId, epoch);
       await this.flushAnalytics();
       void this.track('session_start', {
         mode: 'online', serverVersion: this.releaseInfo?.version ?? 'unknown',
@@ -137,7 +147,7 @@ export class GameServerClient {
       this.connected = false;
       if (this.token) {
         gameEvents.emit('network-status', 'reconnecting', '작전 세션 복구 준비 중');
-        void this.beginFreshRecovery(operationId, epoch);
+        void this.beginFreshRecovery(this.operationId, epoch);
       } else {
         gameEvents.emit('network-status', 'offline', '서버 없음 · 로컬 모드');
       }
