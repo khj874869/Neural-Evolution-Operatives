@@ -79,7 +79,7 @@ jobs:
           else
             echo "ANDROID_SIGNED_RELEASE=false" >> "$GITHUB_ENV"
           fi
-          echo "ANDROID_VERSION_CODE=$((10300 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_CODE=$((10400 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
       - run: npm run release:check
       - run: npm run check
       - run: npm run mobile:sync

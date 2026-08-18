@@ -599,11 +599,45 @@ function renderAlphaInfo(): void {
       <article><span>ERROR REPORTING</span><b>${settings.analyticsConsent ? 'ENABLED' : 'OPTED OUT'}</b><small>대화 원문·스택 미전송</small></article>
     </div>
     <div class="alpha-notice"><b>알파 테스트 범위</b><p>Operation Zero 완료, 서버 재접속, 모바일 터치·게임패드, 발열과 프레임 저하를 중점 확인합니다. 보급소는 플랫폼 샌드박스가 연결될 때까지 숨겨집니다.</p></div>
+    <form class="alpha-feedback-form" id="alphaFeedbackForm">
+      <div class="alpha-feedback-heading">
+        <div><b>현장 피드백</b><p>한 줄이어도 좋습니다. 지금 플레이를 계속하거나 그만둘 이유를 알려주세요.</p></div>
+        <label>평가
+          <select id="alphaFeedbackRating" aria-label="게임 경험 평가">
+            <option value="5">5 · 매우 좋음</option>
+            <option value="4">4 · 좋음</option>
+            <option value="3">3 · 보통</option>
+            <option value="2">2 · 아쉬움</option>
+            <option value="1">1 · 진행 어려움</option>
+          </select>
+        </label>
+      </div>
+      <div class="alpha-feedback-fields">
+        <label>분류
+          <select id="alphaFeedbackCategory">
+            <option value="controls">조작</option>
+            <option value="performance">성능·발열</option>
+            <option value="connection">연결·복구</option>
+            <option value="progression">성장·계약</option>
+            <option value="ai">오퍼레이터 AI</option>
+            <option value="other">기타</option>
+          </select>
+        </label>
+        <label class="alpha-feedback-message">내용
+          <textarea id="alphaFeedbackMessage" maxlength="800" minlength="4" placeholder="예: 첫 보스까지는 재미있었지만 모바일 조준이 너무 민감했습니다." required></textarea>
+        </label>
+      </div>
+      <div class="alpha-feedback-submit">
+        <small>제출 시 평가·메시지와 아래의 비식별 빌드 진단값이 서버에 저장됩니다. 개인정보·연락처는 입력하지 마세요. 계정 삭제 시 함께 삭제됩니다.</small>
+        <button class="primary" type="submit" id="submitAlphaFeedback">서버로 제출</button>
+      </div>
+      <p class="alpha-feedback-status" id="alphaFeedbackStatus" role="status"></p>
+    </form>
     <pre class="diagnostic-preview">${escapeHtml(JSON.stringify(diagnostics, null, 2))}</pre>
     <div class="settings-actions alpha-actions">
       <button id="copyDiagnostics">진단 정보 복사</button>
       <button id="alphaPrivacy">오류 수집 설정</button>
-      ${CLIENT_RELEASE.feedbackUrl ? '<button class="primary" id="openFeedback">피드백 보내기</button>' : ''}
+      ${CLIENT_RELEASE.feedbackUrl ? '<button class="primary" id="openFeedback">외부 설문 열기</button>' : ''}
     </div>`;
   modalContent.querySelector<HTMLButtonElement>('#copyDiagnostics')?.addEventListener('click', async () => {
     const text = JSON.stringify(diagnostics, null, 2);
@@ -617,6 +651,57 @@ function renderAlphaInfo(): void {
     }
   });
   modalContent.querySelector<HTMLButtonElement>('#alphaPrivacy')?.addEventListener('click', renderPrivacyCenter);
+  modalContent.querySelector<HTMLFormElement>('#alphaFeedbackForm')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = modalContent.querySelector<HTMLButtonElement>('#submitAlphaFeedback');
+    const status = modalContent.querySelector<HTMLElement>('#alphaFeedbackStatus');
+    const message = modalContent.querySelector<HTMLTextAreaElement>('#alphaFeedbackMessage')?.value.trim() ?? '';
+    const category = modalContent.querySelector<HTMLSelectElement>('#alphaFeedbackCategory')?.value as
+      'controls' | 'performance' | 'connection' | 'progression' | 'ai' | 'other';
+    const rating = Number(modalContent.querySelector<HTMLSelectElement>('#alphaFeedbackRating')?.value ?? 0);
+    if (message.length < 4) {
+      if (status) status.textContent = '내용을 네 글자 이상 입력해주세요.';
+      return;
+    }
+    if (!network.accountAvailable) {
+      if (status) status.textContent = '서버 계정 연결 후 제출할 수 있습니다. 진단 정보 복사로 내용을 보관할 수 있습니다.';
+      return;
+    }
+    if (button) {
+      button.disabled = true;
+      button.textContent = '제출 중…';
+    }
+    if (status) status.textContent = '';
+    try {
+      await network.submitAlphaFeedback({
+        category,
+        rating,
+        message,
+        diagnostics: {
+          appVersion: diagnostics.appVersion,
+          channel: diagnostics.releaseChannel,
+          platform: diagnostics.platform,
+          connected: diagnostics.connected,
+          reconnects: diagnostics.reconnects,
+          serverVersion: diagnostics.server?.version ?? 'unavailable',
+          qualityMode: diagnostics.performance.qualityMode,
+          performanceTier: diagnostics.performance.tier,
+          fps: Math.round(diagnostics.performance.fps),
+        },
+      });
+      const textarea = modalContent.querySelector<HTMLTextAreaElement>('#alphaFeedbackMessage');
+      if (textarea) textarea.value = '';
+      if (status) status.textContent = '제출 완료. 이 피드백은 다음 빌드 우선순위에 반영됩니다.';
+      showToast('알파 피드백이 제출되었습니다.');
+    } catch {
+      if (status) status.textContent = '제출하지 못했습니다. 연결 상태를 확인하고 다시 시도해주세요.';
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = '서버로 제출';
+      }
+    }
+  });
   modalContent.querySelector<HTMLButtonElement>('#openFeedback')?.addEventListener('click', () => {
     if (CLIENT_RELEASE.feedbackUrl) window.open(CLIENT_RELEASE.feedbackUrl, '_blank', 'noopener,noreferrer');
   });

@@ -2,6 +2,10 @@ import { Pool, type PoolClient } from 'pg';
 import type { PlayerProfile } from '../../../packages/shared/src/protocol.js';
 import type { FunnelEventName, FunnelProperties } from '../../../packages/shared/src/analytics.js';
 import type { CommercePlatform, StoreProductId } from '../../../packages/shared/src/commerce.js';
+import type {
+  AlphaFeedbackReceipt, AlphaFeedbackSubmission, AlphaOpsSnapshot,
+} from '../../../packages/shared/src/alphaOps.js';
+import { aggregateAlphaOps } from '../ops/AlphaOpsAggregator.js';
 import { PurchaseReceiptConflictError, type PlayerRepository, type ProfileMutation } from './PlayerRepository.js';
 import { createPlayerProfile, normalizePlayerProfile } from './profileFactory.js';
 
@@ -42,6 +46,19 @@ export class PostgresPlayerRepository implements PlayerRepository {
       );
       CREATE INDEX IF NOT EXISTS idx_analytics_event_created
         ON analytics_events(event_name, created_at DESC);
+      CREATE TABLE IF NOT EXISTS alpha_feedback (
+        id BIGSERIAL PRIMARY KEY,
+        player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+        idempotency_key VARCHAR(128) NOT NULL,
+        category VARCHAR(32) NOT NULL,
+        rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+        message VARCHAR(800) NOT NULL,
+        diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(player_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_alpha_feedback_created
+        ON alpha_feedback(created_at DESC);
       CREATE TABLE IF NOT EXISTS commerce_receipts (
         platform VARCHAR(16) NOT NULL,
         transaction_id VARCHAR(180) NOT NULL,
@@ -105,10 +122,94 @@ export class PostgresPlayerRepository implements PlayerRepository {
     }
   }
 
-  async recordAnalytics(playerId: string, event: FunnelEventName, properties: FunnelProperties): Promise<void> {
+  async recordAnalytics(
+    playerId: string,
+    event: FunnelEventName,
+    properties: FunnelProperties,
+    createdAt = new Date(),
+  ): Promise<void> {
     await this.pool.query(
-      'INSERT INTO analytics_events(player_id, event_name, properties) VALUES ($1, $2, $3::jsonb)',
-      [playerId, event, JSON.stringify(properties)],
+      'INSERT INTO analytics_events(player_id, event_name, properties, created_at) VALUES ($1, $2, $3::jsonb, $4)',
+      [playerId, event, JSON.stringify(properties), createdAt.toISOString()],
+    );
+  }
+
+  async recordAlphaFeedback(
+    playerId: string,
+    idempotencyKey: string,
+    submission: AlphaFeedbackSubmission,
+    createdAt = new Date(),
+  ): Promise<AlphaFeedbackReceipt> {
+    const inserted = await this.pool.query<{ created_at: Date }>(`
+      INSERT INTO alpha_feedback(
+        player_id, idempotency_key, category, rating, message, diagnostics, created_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+      ON CONFLICT(player_id, idempotency_key) DO NOTHING
+      RETURNING created_at
+    `, [
+      playerId,
+      idempotencyKey,
+      submission.category,
+      submission.rating,
+      submission.message,
+      JSON.stringify(submission.diagnostics),
+      createdAt.toISOString(),
+    ]);
+    if (inserted.rows[0]) {
+      return { accepted: true, replayed: false, submittedAt: inserted.rows[0].created_at.toISOString() };
+    }
+    const existing = await this.pool.query<{ created_at: Date }>(
+      'SELECT created_at FROM alpha_feedback WHERE player_id = $1 AND idempotency_key = $2',
+      [playerId, idempotencyKey],
+    );
+    if (!existing.rows[0]) throw new Error('FEEDBACK_WRITE_FAILED');
+    return { accepted: true, replayed: true, submittedAt: existing.rows[0].created_at.toISOString() };
+  }
+
+  async getAlphaOpsSnapshot(windowDays: number, now = new Date()): Promise<AlphaOpsSnapshot> {
+    const windowStart = new Date(now.getTime() - windowDays * 86_400_000);
+    const [profiles, events, feedback] = await Promise.all([
+      this.pool.query<{ player_id: string; created_at: Date }>(
+        'SELECT id::text AS player_id, created_at FROM players',
+      ),
+      this.pool.query<{ player_id: string; event_name: FunnelEventName; created_at: Date }>(`
+        SELECT player_id::text, event_name, created_at
+        FROM analytics_events
+        WHERE event_name = 'session_start' OR created_at >= $1
+      `, [windowStart.toISOString()]),
+      this.pool.query<{
+        category: AlphaFeedbackSubmission['category'];
+        rating: number;
+        message: string;
+        diagnostics: AlphaFeedbackSubmission['diagnostics'];
+        created_at: Date;
+      }>(`
+        SELECT category, rating, message, diagnostics, created_at
+        FROM alpha_feedback
+        WHERE created_at >= $1
+        ORDER BY created_at DESC
+      `, [windowStart.toISOString()]),
+    ]);
+    return aggregateAlphaOps(
+      profiles.rows.map((profile) => ({
+        playerId: profile.player_id,
+        createdAt: profile.created_at.toISOString(),
+      })),
+      events.rows.map((event) => ({
+        playerId: event.player_id,
+        event: event.event_name,
+        createdAt: event.created_at.toISOString(),
+      })),
+      feedback.rows.map((entry) => ({
+        category: entry.category,
+        rating: entry.rating,
+        message: entry.message,
+        diagnostics: entry.diagnostics,
+        createdAt: entry.created_at.toISOString(),
+      })),
+      windowDays,
+      now,
     );
   }
 

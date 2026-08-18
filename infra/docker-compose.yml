@@ -41,6 +41,7 @@ services:
       REDIS_URL: ${REDIS_URL:?Set REDIS_URL to the authenticated internal Redis URL}
       RELEASE_CHANNEL: ${RELEASE_CHANNEL:-alpha}
       COMMIT_SHA: ${COMMIT_SHA:-unknown}
+      OPS_ADMIN_TOKEN: ${OPS_ADMIN_TOKEN:-}
     ports:
       - "2567:2567"
     depends_on:

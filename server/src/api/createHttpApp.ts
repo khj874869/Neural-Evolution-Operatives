@@ -2,7 +2,7 @@ import cors from 'cors';
 import express, {
   type NextFunction, type Request, type RequestHandler, type Response,
 } from 'express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { ServerConfig } from '../config/env.js';
 import { EconomyError, EconomyService } from '../economy/EconomyService.js';
@@ -15,6 +15,8 @@ import { APP_VERSION } from '../../../packages/shared/src/release.js';
 import { GEAR_IDS } from '../../../packages/shared/src/gear.js';
 import { PersonaError, PersonaService } from '../ai/PersonaService.js';
 import { CONTRACT_IDS } from '../../../packages/shared/src/contracts.js';
+import { ALPHA_FEEDBACK_CATEGORIES } from '../../../packages/shared/src/alphaOps.js';
+import { renderAlphaOpsConsole } from '../ops/renderAlphaOpsConsole.js';
 
 export interface ApiDependencies {
   config: ServerConfig;
@@ -50,6 +52,17 @@ const analyticsSchema = z.object({
     z.union([z.string().max(120), z.number().finite(), z.boolean()]),
   ).refine((value) => Object.keys(value).length <= 12, 'Too many analytics properties').default({}),
 });
+const alphaFeedbackSchema = z.object({
+  category: z.enum(ALPHA_FEEDBACK_CATEGORIES),
+  rating: z.number().int().min(1).max(5),
+  message: z.string().trim().min(4).max(800),
+  diagnostics: z.record(
+    z.string().min(1).max(32),
+    z.union([z.string().max(120), z.number().finite(), z.boolean()]),
+  ).refine((value) => Object.keys(value).length <= 12, 'Too many diagnostic properties').default({}),
+});
+const opsWindowSchema = z.coerce.number().int()
+  .refine((value) => [7, 14, 30].includes(value), 'Window must be 7, 14, or 30 days');
 const deleteAccountSchema = z.object({ confirmation: z.literal('DELETE') });
 const aiConsentSchema = z.object({ consent: z.boolean() });
 const analyticsConsentSchema = z.object({ consent: z.boolean() });
@@ -114,6 +127,22 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     });
   });
 
+  app.get('/ops', (_request, response) => {
+    if (!deps.config.opsAdminToken) return response.status(404).send('Not found');
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader(
+      'Content-Security-Policy',
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    );
+    return response.type('html').send(renderAlphaOpsConsole());
+  });
+
+  app.get('/api/ops/alpha', requireOpsAdmin(deps.config), async (request, response) => {
+    const windowDays = opsWindowSchema.parse(request.query.days ?? 7);
+    response.setHeader('Cache-Control', 'no-store');
+    response.json(await deps.repository.getAlphaOpsSnapshot(windowDays));
+  });
+
   app.post('/api/auth/guest', guestRateLimit, async (request, response) => {
     const body = deviceSchema.parse(request.body);
     const profile = await deps.repository.getOrCreateGuest(body.deviceId);
@@ -136,6 +165,7 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
       dataUse: {
         required: ['인증 식별자', '게임 진행도', '구매 검증 기록'],
         optional: ['동의한 경우의 진행·오류 분석 이벤트'],
+        voluntaryFeedback: '알파 피드백을 직접 제출한 경우 평가, 메시지, 빌드 진단 정보가 저장되며 계정 삭제 시 함께 삭제됩니다.',
         ai: profile.ai.consentedAt
           ? '동의한 딥 토크 원문은 응답 생성 동안 외부 AI 제공자에게 전송될 수 있으며, 게임 서버에는 요약 기억과 마지막 응답이 저장됩니다.'
           : '외부 AI 전송 동의가 꺼져 있어 대화는 기기 및 게임 서버의 규칙 기반 페르소나로 처리됩니다.',
@@ -299,6 +329,16 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     response.status(202).json({ accepted: true });
   });
 
+  app.post('/api/alpha/feedback', requirePlayer(deps.tokens), async (request, response) => {
+    const body = alphaFeedbackSchema.parse(request.body);
+    const receipt = await deps.repository.recordAlphaFeedback(
+      response.locals.playerId as string,
+      idempotencyKey(request),
+      body,
+    );
+    response.status(receipt.replayed ? 200 : 201).json(receipt);
+  });
+
   app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
     if (error instanceof SyntaxError && 'status' in error && error.status === 400) {
       return response.status(400).json({ error: 'INVALID_JSON' });
@@ -333,6 +373,27 @@ function requirePlayer(tokens: TokenService) {
       response.status(401).json({ error: 'INVALID_TOKEN' });
     }
   };
+}
+
+function requireOpsAdmin(config: ServerConfig) {
+  return (request: Request, response: Response, next: NextFunction): void => {
+    if (!config.opsAdminToken) {
+      response.status(404).json({ error: 'NOT_FOUND' });
+      return;
+    }
+    const provided = request.header('x-ops-token');
+    if (!provided || !tokensMatch(provided, config.opsAdminToken)) {
+      response.status(401).json({ error: 'OPS_AUTH_REQUIRED' });
+      return;
+    }
+    next();
+  };
+}
+
+function tokensMatch(provided: string, expected: string): boolean {
+  const providedDigest = createHash('sha256').update(provided).digest();
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(providedDigest, expectedDigest);
 }
 
 function idempotencyKey(request: Request): string {

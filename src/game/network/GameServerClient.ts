@@ -13,6 +13,9 @@ import type { GearId } from '../../../packages/shared/src/gear';
 import type {
   ContractBoard, ContractId, ContractReward,
 } from '../../../packages/shared/src/contracts';
+import type {
+  AlphaFeedbackReceipt, AlphaFeedbackSubmission,
+} from '../../../packages/shared/src/alphaOps';
 
 const REQUEST_TIMEOUT_MS = 8_000;
 
@@ -300,6 +303,17 @@ export class GameServerClient {
     this.connected = false;
     this.token = undefined;
     this.analyticsConsentSynced = false;
+  }
+
+  async submitAlphaFeedback(
+    submission: AlphaFeedbackSubmission,
+    requestId = crypto.randomUUID(),
+  ): Promise<AlphaFeedbackReceipt> {
+    return this.authorized<AlphaFeedbackReceipt>('/api/alpha/feedback', {
+      method: 'POST',
+      headers: { 'idempotency-key': requestId },
+      body: JSON.stringify(submission),
+    });
   }
 
   async track(event: FunnelEventName, properties: FunnelProperties = {}): Promise<void> {

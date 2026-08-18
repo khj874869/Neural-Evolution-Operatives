@@ -11,6 +11,7 @@ const config: ServerConfig = {
   jwtSecret: 'test-secret-that-is-long-enough-for-tests', nodeEnv: 'test',
   releaseChannel: 'alpha', commitSha: 'abcdef0',
   aiModel: 'gpt-5.6-terra', aiDailyTurnLimit: 12, aiTimeoutMs: 8_000, aiModerationEnabled: true,
+  opsAdminToken: 'test-ops-token-that-is-at-least-32-characters',
 };
 
 describe('game account API', () => {
@@ -45,13 +46,13 @@ describe('game account API', () => {
   it('exposes health without leaking secrets', async () => {
     const health = await request(app).get('/health').expect(200);
     expect(health.body).toEqual({
-      status: 'ok', service: 'neural-evolution-game-server', version: '1.3.0', channel: 'alpha', storage: 'memory',
+      status: 'ok', service: 'neural-evolution-game-server', version: '1.4.0', channel: 'alpha', storage: 'memory',
     });
     expect(health.headers['x-request-id']).toBeTypeOf('string');
-    await request(app).get('/ready').expect(200, { status: 'ready', version: '1.3.0', channel: 'alpha' });
+    await request(app).get('/ready').expect(200, { status: 'ready', version: '1.4.0', channel: 'alpha' });
     const release = await request(app).get('/api/release').expect(200);
     expect(release.body).toMatchObject({
-      version: '1.3.0', channel: 'alpha', commit: 'abcdef0',
+      version: '1.4.0', channel: 'alpha', commit: 'abcdef0',
       commerceAvailable: false, aiAvailable: false, aiDailyTurnLimit: 12,
     });
     expect(new Date(release.body.serverTime).getTime()).not.toBeNaN();
@@ -154,6 +155,66 @@ describe('game account API', () => {
       .expect(429);
     expect(limited.body).toMatchObject({ error: 'RATE_LIMITED', requestId: expect.any(String) });
     expect(limited.headers['retry-after']).toBeTypeOf('string');
+  });
+
+  it('accepts explicit alpha feedback idempotently and protects the operations console', async () => {
+    const auth = await request(app).post('/api/auth/guest').send({ deviceId: 'web:feedback-device-01' }).expect(200);
+    const authorization = `Bearer ${auth.body.token}`;
+    await request(app).post('/api/alpha/feedback').send({
+      category: 'controls', rating: 5, message: '인증 없는 피드백', diagnostics: {},
+    }).expect(401);
+    await request(app).post('/api/alpha/feedback')
+      .set('authorization', authorization)
+      .send({ category: 'controls', rating: 9, message: '범위 밖 평가', diagnostics: {} })
+      .expect(400);
+
+    const payload = {
+      category: 'performance',
+      rating: 3,
+      message: '전투 후반부 프레임 저하가 보입니다.',
+      diagnostics: { appVersion: '1.4.0', platform: 'android', fps: 31 },
+    };
+    const created = await request(app).post('/api/alpha/feedback')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'feedback:api:0001')
+      .send(payload)
+      .expect(201);
+    expect(created.body).toMatchObject({ accepted: true, replayed: false, submittedAt: expect.any(String) });
+    const replayed = await request(app).post('/api/alpha/feedback')
+      .set('authorization', authorization)
+      .set('idempotency-key', 'feedback:api:0001')
+      .send(payload)
+      .expect(200);
+    expect(replayed.body).toMatchObject({ accepted: true, replayed: true, submittedAt: created.body.submittedAt });
+
+    const consolePage = await request(app).get('/ops').expect(200);
+    expect(consolePage.text).toContain('Operations Console');
+    expect(consolePage.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    await request(app).get('/api/ops/alpha?days=7').expect(401, { error: 'OPS_AUTH_REQUIRED' });
+    await request(app).get('/api/ops/alpha?days=7').set('x-ops-token', 'wrong-token').expect(401);
+    const snapshot = await request(app).get('/api/ops/alpha?days=7')
+      .set('x-ops-token', config.opsAdminToken!)
+      .expect(200);
+    expect(snapshot.body).toMatchObject({
+      windowDays: 7,
+      dataMode: 'consented-alpha-telemetry',
+      feedback: { total: 1, averageRating: 3 },
+    });
+    expect(JSON.stringify(snapshot.body)).not.toContain(auth.body.profile.playerId);
+  });
+
+  it('does not expose the operations surface when its secret is not configured', async () => {
+    const disabledConfig = { ...config, opsAdminToken: undefined };
+    const disabledRepository = new InMemoryPlayerRepository();
+    const disabledTokens = new TokenService(disabledConfig.jwtSecret);
+    const disabledApp = createStandaloneHttpApp({
+      config: disabledConfig,
+      repository: disabledRepository,
+      tokens: disabledTokens,
+      economy: new EconomyService(disabledRepository),
+    });
+    await request(disabledApp).get('/ops').expect(404);
+    await request(disabledApp).get('/api/ops/alpha?days=7').expect(404, { error: 'NOT_FOUND' });
   });
 
   it('never grants a purchase while platform receipt verification is not configured', async () => {

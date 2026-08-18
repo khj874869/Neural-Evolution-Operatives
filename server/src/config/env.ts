@@ -16,6 +16,7 @@ export interface ServerConfig {
   aiDailyTurnLimit: number;
   aiTimeoutMs: number;
   aiModerationEnabled: boolean;
+  opsAdminToken?: string;
 }
 
 export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -32,6 +33,10 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
   if (nodeEnv === 'production' && !env.CORS_ORIGIN) {
     throw new Error('CORS_ORIGIN must be explicitly configured in production');
   }
+  const opsAdminToken = env.OPS_ADMIN_TOKEN || undefined;
+  if (opsAdminToken && opsAdminToken.length < 32) {
+    throw new Error('OPS_ADMIN_TOKEN must be at least 32 characters when configured');
+  }
   return {
     host: env.HOST ?? '0.0.0.0',
     port,
@@ -47,6 +52,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     aiDailyTurnLimit: boundedInteger(env.AI_DAILY_TURN_LIMIT, 12, 1, 100),
     aiTimeoutMs: boundedInteger(env.AI_TIMEOUT_MS, 8_000, 1_000, 30_000),
     aiModerationEnabled: env.AI_MODERATION_ENABLED !== 'false',
+    opsAdminToken,
   };
 }
 
