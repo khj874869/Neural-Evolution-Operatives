@@ -1571,7 +1571,9 @@ function renderOperationDebrief(result: {
       <div class="debrief-reward"><span>작전 보너스</span><b>${result.online ? '보스 전리품 서버 확정' : `뉴럴 코어 +${result.bonusCores} · 데이터 +${result.bonusData}`}</b></div>
       <div class="modal-actions">
         <button class="secondary" id="finishOperation">쉘터로 귀환</button>
-        ${result.nextOperationId !== result.operationId ? '<button class="primary" id="nextOperation">다음 작전 즉시 투입</button>' : ''}
+        <button class="primary" id="nextOperation">
+          ${result.nextOperationId !== result.operationId ? '다음 작전 즉시 투입' : '같은 작전 재투입'}
+        </button>
       </div>
     </section>`;
   modalContent.querySelector<HTMLButtonElement>('#finishOperation')?.addEventListener('click', () => {

@@ -14,8 +14,9 @@ import {
 } from '../../../packages/shared/src/world.js';
 import { calculateCombatBonuses, type GearId } from '../../../packages/shared/src/gear.js';
 import {
-  parseTacticalCommand, TACTICAL_FOCUS_DAMAGE_MULTIPLIER, TACTICAL_HEAL_AMOUNT,
-  TACTICAL_HEAL_COOLDOWN_MS, TACTICAL_ORDER_DURATION_MS, TACTICAL_SCAVENGE_RADIUS,
+  parseTacticalCommand, TACTICAL_HEAL_AMOUNT, TACTICAL_HEAL_COOLDOWN_MS,
+  TACTICAL_ORDER_DURATION_MS, tacticalDamageMultiplier, tacticalMoveSpeedMultiplier,
+  tacticalOrderEffect,
   type TacticalOrder,
 } from '../../../packages/shared/src/tactical.js';
 
@@ -363,7 +364,10 @@ export class RedZoneSimulation {
       player.input.dash = false;
       this.dash(player);
     }
-    const flankMultiplier = hasActiveTacticalOrder(player, 'FLANK', this.elapsedMs) ? 1.12 : 1;
+    const flankMultiplier = tacticalMoveSpeedMultiplier(
+      'FLANK',
+      hasActiveTacticalOrder(player, 'FLANK', this.elapsedMs),
+    );
     const speed = 205 * player.bonuses.moveSpeedMultiplier * flankMultiplier;
     const movement = resolveCircleMovement(player, {
       x: player.input.moveX * speed * deltaMs / 1000,
@@ -449,8 +453,8 @@ export class RedZoneSimulation {
       player.hits += 1;
       player.linkCharge = addNeuralCharge(player.linkCharge, 4);
       const tacticalMultiplier = target.id === focusTargetId
-        ? TACTICAL_FOCUS_DAMAGE_MULTIPLIER
-        : hasActiveTacticalOrder(player, 'FLANK', this.elapsedMs) ? 1.12 : 1;
+        ? tacticalDamageMultiplier('FOCUS', true, true)
+        : tacticalDamageMultiplier('FLANK', hasActiveTacticalOrder(player, 'FLANK', this.elapsedMs));
       target.hp = Math.max(0, target.hp - weapon.damage * player.bonuses.damageMultiplier * tacticalMultiplier);
       if (target.hp <= 0) this.defeatEnemy(player, target);
     }
@@ -588,7 +592,7 @@ export class RedZoneSimulation {
 
   private collectNearbyResources(player: InternalPlayer): void {
     const pickupRadius = player.tacticalOrder === 'SCAVENGE' && this.elapsedMs < player.tacticalUntilMs
-      ? Math.max(player.bonuses.pickupRadius, TACTICAL_SCAVENGE_RADIUS)
+      ? Math.max(player.bonuses.pickupRadius, tacticalOrderEffect('SCAVENGE').pickupRadius ?? 0)
       : player.bonuses.pickupRadius;
     for (const resource of this.resources.values()) {
       if (Math.hypot(resource.x - player.x, resource.y - player.y) > pickupRadius) continue;
@@ -823,7 +827,9 @@ function nearestPlayer(
   for (const player of players) {
     if (player.input.paused) continue;
     const distance = Math.hypot(player.x - enemy.x, player.y - enemy.y);
-    const aggroPriority = hasActiveTacticalOrder(player, 'DRAW_AGGRO', elapsedMs) ? 700 : 0;
+    const aggroPriority = hasActiveTacticalOrder(player, 'DRAW_AGGRO', elapsedMs)
+      ? tacticalOrderEffect('DRAW_AGGRO').aggroPriority ?? 0
+      : 0;
     const score = distance - aggroPriority;
     if (score < bestScore) {
       result = player;
@@ -842,9 +848,8 @@ function hasActiveTacticalOrder(
 }
 
 function tacticalDefenseMultiplier(player: InternalPlayer, elapsedMs: number): number {
-  if (hasActiveTacticalOrder(player, 'HOLD', elapsedMs)) return 0.72;
-  if (hasActiveTacticalOrder(player, 'REGROUP', elapsedMs)) return 0.9;
-  return 1;
+  if (!hasActiveTacticalOrder(player, player.tacticalOrder, elapsedMs)) return 1;
+  return tacticalOrderEffect(player.tacticalOrder).defenseMultiplier ?? 1;
 }
 
 function clamp(value: number, min: number, max: number): number {

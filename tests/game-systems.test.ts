@@ -5,7 +5,10 @@ import { AdaptiveDirector, freshTelemetry } from '../src/game/systems/AdaptiveDi
 import { generateMission } from '../src/game/systems/MissionGenerator';
 import { parseTacticalCommand } from '../src/game/systems/TacticalCommand';
 import {
-  isTacticalOrder, TACTICAL_COMMAND_PRESETS,
+  isTacticalOrder, TACTICAL_COMMAND_PRESETS, TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER,
+  TACTICAL_FLANK_MULTIPLIER, TACTICAL_HOLD_DEFENSE_MULTIPLIER,
+  TACTICAL_REGROUP_DEFENSE_MULTIPLIER, tacticalDamageMultiplier,
+  tacticalMoveSpeedMultiplier, tacticalOrderEffect,
 } from '../packages/shared/src/tactical';
 import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/src/squad';
 import { DEFAULT_SETTINGS, loadSettings, sanitizeSettings } from '../src/game/settings';
@@ -65,6 +68,24 @@ describe('tactical command parser', () => {
     }
     expect(isTacticalOrder('DROP_TABLE')).toBe(false);
   });
+
+  it('keeps combat modifiers in one shared tactical effect contract', () => {
+    expect(tacticalOrderEffect('DRAW_AGGRO').defenseMultiplier)
+      .toBe(TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER);
+    expect(tacticalOrderEffect('FLANK')).toMatchObject({
+      moveSpeedMultiplier: TACTICAL_FLANK_MULTIPLIER,
+      damageMultiplier: TACTICAL_FLANK_MULTIPLIER,
+    });
+    expect(tacticalOrderEffect('HOLD').defenseMultiplier).toBe(TACTICAL_HOLD_DEFENSE_MULTIPLIER);
+    expect(tacticalOrderEffect('REGROUP').defenseMultiplier).toBe(TACTICAL_REGROUP_DEFENSE_MULTIPLIER);
+    expect(tacticalOrderEffect('UNKNOWN')).toEqual({});
+    expect(tacticalMoveSpeedMultiplier('FLANK', true)).toBe(TACTICAL_FLANK_MULTIPLIER);
+    expect(tacticalMoveSpeedMultiplier('FLANK', false)).toBe(1);
+    expect(tacticalDamageMultiplier('FLANK', true)).toBe(TACTICAL_FLANK_MULTIPLIER);
+    expect(tacticalDamageMultiplier('FOCUS', true, false)).toBe(1);
+    expect(tacticalDamageMultiplier('FOCUS', true, true))
+      .toBe(tacticalOrderEffect('FOCUS').damageMultiplier);
+  });
 });
 
 describe('offline shelter economy', () => {
@@ -84,6 +105,8 @@ describe('adaptive director', () => {
     expect(profile.weights.stalker).toBeGreaterThan(0.3);
     expect(profile.counterMessage).toContain('장거리');
     expect(profile.weights.jammer).toBeGreaterThan(0);
+    expect(Object.values(profile.weights).reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1);
+    expect(director.pickArchetype(profile, () => 0.99)).toBe('jammer');
   });
 });
 

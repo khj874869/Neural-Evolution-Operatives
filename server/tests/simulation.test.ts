@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EXTRACTION_POINT, RedZoneSimulation } from '../src/simulation/RedZoneSimulation.js';
 import { PLAYER_COLLISION_RADIUS, worldObstacles, worldStageSectors } from '../../packages/shared/src/world.js';
+import { TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER } from '../../packages/shared/src/tactical.js';
 
 describe('authoritative red zone simulation', () => {
   it('accepts ordered inputs and rejects replayed sequences', () => {
@@ -417,7 +418,7 @@ describe('authoritative red zone simulation', () => {
     expect(simulation.applyTacticalCommand('session-aggro', '어그로를 끌어줘').order).toBe('DRAW_AGGRO');
     simulation.tick(50);
     expect(near.hp).toBe(100);
-    expect(aggro.hp).toBeLessThan(100);
+    expect(aggro.hp).toBeCloseTo(100 - 10 * TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER);
 
     simulation.enemies.clear();
     aggro.x = EXTRACTION_POINT.x;

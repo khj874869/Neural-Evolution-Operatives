@@ -1876,3 +1876,150 @@ body:not(.reduced-motion) .map-objective.active { animation: map-signal 1.2s eas
   .release-badge { display: none; }
   .resource { min-width: 32px; padding-inline: 4px; }
 }
+
+/* Short landscape phones need dedicated combat lanes. The Android shell is
+   landscape-first, so portrait-style vertical stacks cannot share this space. */
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 480px),
+  (max-width: 820px) and (orientation: landscape) and (max-height: 480px) {
+  :root { --topbar-height: 52px; --command-height: 58px; }
+
+  .topbar {
+    height: var(--topbar-height);
+    padding-right: max(8px, env(safe-area-inset-right));
+    padding-left: max(8px, env(safe-area-inset-left));
+  }
+  .brand { gap: 7px; }
+  .brand b { font-size: 11px; }
+  .release-badge { padding: 3px 5px; font-size: 6px; }
+  .resources { gap: 1px; }
+  .resource { min-width: 31px; padding: 3px 5px; }
+  .resource b { font-size: 10px; }
+
+  .command-dock {
+    height: var(--command-height);
+    padding: 6px max(6px, env(safe-area-inset-right)) max(6px, env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+  }
+  .command-dock > button,
+  #commandForm button { height: 44px; }
+
+  .squad {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top) + 6px);
+    left: max(8px, env(safe-area-inset-left));
+    width: 150px;
+    padding: 5px;
+  }
+  .squad-title { margin: 1px 4px 4px; font-size: 7px; }
+  .squad .operative-chip ~ .operative-chip,
+  .squad .field-loadout { display: none; }
+  .squad .operative-chip {
+    min-height: 50px;
+    grid-template-columns: 30px 1fr;
+    gap: 6px;
+    padding: 4px;
+  }
+  .squad .op-avatar { width: 30px; height: 30px; }
+  .squad .operative-chip b { font-size: 10px; }
+  .squad .operative-chip small { font-size: 7px; }
+
+  .status-stack {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top) + 84px);
+    bottom: auto;
+    left: max(8px, env(safe-area-inset-left));
+    width: 150px;
+    padding: 5px 8px 6px;
+  }
+  .status-stack::before { margin-bottom: 2px; font-size: 6px; }
+  .bar-label { margin: 2px 0; font-size: 8px; }
+  .bar { height: 5px; }
+
+  .operation-hud {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top) + 6px);
+    right: auto;
+    left: 50%;
+    width: min(300px, calc(100vw - 332px));
+    min-width: 220px;
+    padding: 6px 9px;
+    transform: translateX(-50%);
+  }
+  .operation-hud > div:first-child { gap: 7px; }
+  .operation-hud span { font-size: 8px; white-space: nowrap; }
+  .operation-hud b {
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .operation-hud p,
+  .operation-stage-rail { display: none; }
+  .operation-progress { height: 4px; margin-top: 5px; }
+  .operation-footer { display: block; margin-top: 3px; }
+  .operation-hud small { margin: 0; font-size: 7px; }
+
+  .tactical-map,
+  .tactical-map.boss-active {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top) + 6px);
+    right: max(8px, env(safe-area-inset-right));
+    width: 150px;
+    padding: 6px 7px;
+  }
+  .tactical-map .map-viewport,
+  .tactical-map .map-directive,
+  .tactical-map header span,
+  .tactical-map footer > span { display: none; }
+  .tactical-map header,
+  .tactical-map footer { display: block; font-size: 7px; }
+  .tactical-map footer { margin-top: 4px; }
+  .tactical-map footer b { max-width: none; text-align: left; }
+
+  .neural-link-dock {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top) + 62px);
+    right: max(8px, env(safe-area-inset-right));
+    bottom: auto;
+    width: 150px;
+    height: 44px;
+    grid-template-columns: minmax(0, 1fr) 30px;
+    gap: 5px;
+    padding: 5px 6px;
+  }
+  .neural-link-dock img { display: none; }
+  .neural-link-dock small { font-size: 6px; }
+  .neural-link-dock b { margin-top: 2px; font-size: 7px; }
+  .neural-link-dock i { margin-top: 4px; }
+  .neural-link-dock > strong { font-size: 9px; }
+
+  .weapon-dock {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top) + 62px);
+    bottom: auto;
+    width: 220px;
+    gap: 4px;
+    padding: 5px;
+  }
+  .weapon-dock button { min-height: 44px; padding: 5px 3px; }
+  .weapon-dock b { font-size: 8px; }
+
+  .mobile-controls {
+    right: max(16px, env(safe-area-inset-right));
+    bottom: calc(var(--command-height) + env(safe-area-inset-bottom) + 8px);
+    left: max(16px, env(safe-area-inset-left));
+  }
+
+  .boss-hud {
+    top: calc(var(--topbar-height) + env(safe-area-inset-top) + 6px);
+    width: min(300px, calc(100vw - 332px));
+    min-width: 220px;
+    padding: 5px 9px;
+  }
+  .boss-hud > span { font-size: 6px; }
+  .boss-hud > b { margin: 2px 0 4px; font-size: 11px; }
+  .boss-hud > div { height: 5px; }
+  .boss-hud small { margin-top: 2px; font-size: 6px; }
+  body:has(.boss-hud:not(.hidden)) .operation-hud { visibility: hidden; }
+
+  .battlefield-chrome { inset: calc(var(--topbar-height) + 6px) 8px calc(var(--command-height) + 6px); }
+}
+
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 350px),
+  (max-width: 820px) and (orientation: landscape) and (max-height: 350px) {
+  .squad { display: none; }
+  .status-stack { top: calc(var(--topbar-height) + env(safe-area-inset-top) + 6px); }
+}

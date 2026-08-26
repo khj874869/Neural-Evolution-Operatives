@@ -35,6 +35,74 @@ export const TACTICAL_HEAL_AMOUNT = 24;
 export const TACTICAL_HEAL_COOLDOWN_MS = 40_000;
 export const TACTICAL_FOCUS_DAMAGE_MULTIPLIER = 1.15;
 export const TACTICAL_SCAVENGE_RADIUS = 180;
+export const TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER = 0.78;
+export const TACTICAL_DRAW_AGGRO_PRIORITY = 700;
+export const TACTICAL_FLANK_MULTIPLIER = 1.12;
+export const TACTICAL_HOLD_DEFENSE_MULTIPLIER = 0.72;
+export const TACTICAL_REGROUP_DEFENSE_MULTIPLIER = 0.9;
+
+export interface TacticalOrderEffect {
+  durationMs?: number;
+  defenseMultiplier?: number;
+  moveSpeedMultiplier?: number;
+  damageMultiplier?: number;
+  aggroPriority?: number;
+  pickupRadius?: number;
+  healAmount?: number;
+  cooldownMs?: number;
+}
+
+export const TACTICAL_ORDER_EFFECTS: Readonly<Record<Exclude<TacticalOrder, 'UNKNOWN'>, Readonly<TacticalOrderEffect>>> = {
+  DRAW_AGGRO: {
+    durationMs: TACTICAL_ORDER_DURATION_MS,
+    defenseMultiplier: TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER,
+    aggroPriority: TACTICAL_DRAW_AGGRO_PRIORITY,
+  },
+  FLANK: {
+    durationMs: TACTICAL_ORDER_DURATION_MS,
+    moveSpeedMultiplier: TACTICAL_FLANK_MULTIPLIER,
+    damageMultiplier: TACTICAL_FLANK_MULTIPLIER,
+  },
+  HOLD: {
+    durationMs: TACTICAL_ORDER_DURATION_MS,
+    defenseMultiplier: TACTICAL_HOLD_DEFENSE_MULTIPLIER,
+  },
+  REGROUP: {
+    durationMs: TACTICAL_ORDER_DURATION_MS,
+    defenseMultiplier: TACTICAL_REGROUP_DEFENSE_MULTIPLIER,
+  },
+  HEAL: {
+    healAmount: TACTICAL_HEAL_AMOUNT,
+    cooldownMs: TACTICAL_HEAL_COOLDOWN_MS,
+  },
+  FOCUS: {
+    durationMs: TACTICAL_ORDER_DURATION_MS,
+    damageMultiplier: TACTICAL_FOCUS_DAMAGE_MULTIPLIER,
+  },
+  SCAVENGE: {
+    durationMs: TACTICAL_ORDER_DURATION_MS,
+    pickupRadius: TACTICAL_SCAVENGE_RADIUS,
+  },
+};
+
+const NO_TACTICAL_EFFECT: Readonly<TacticalOrderEffect> = Object.freeze({});
+
+export function tacticalOrderEffect(order: TacticalOrder): Readonly<TacticalOrderEffect> {
+  return order === 'UNKNOWN' ? NO_TACTICAL_EFFECT : TACTICAL_ORDER_EFFECTS[order];
+}
+
+export function tacticalMoveSpeedMultiplier(order: TacticalOrder, active: boolean): number {
+  return active ? tacticalOrderEffect(order).moveSpeedMultiplier ?? 1 : 1;
+}
+
+export function tacticalDamageMultiplier(
+  order: TacticalOrder,
+  active: boolean,
+  focusMatched = false,
+): number {
+  if (!active || order === 'FOCUS' && !focusMatched) return 1;
+  return tacticalOrderEffect(order).damageMultiplier ?? 1;
+}
 
 export const TACTICAL_COMMAND_PRESETS: readonly TacticalCommandPreset[] = [
   { order: 'REGROUP', label: '집결', hint: '분대가 플레이어에게 복귀', command: '모두 내 쪽으로 복귀해' },

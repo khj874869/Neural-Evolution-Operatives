@@ -9,7 +9,9 @@ import { generateMission, type Mission } from '../systems/MissionGenerator';
 import { createPersonaReply } from '../systems/PersonaEngine';
 import {
   parseTacticalCommand, TACTICAL_HEAL_AMOUNT, TACTICAL_HEAL_COOLDOWN_MS,
-  TACTICAL_ORDER_DURATION_MS, type TacticalCommandFeedback, type TacticalOrder,
+  TACTICAL_ORDER_DURATION_MS, tacticalDamageMultiplier, tacticalMoveSpeedMultiplier,
+  tacticalOrderEffect,
+  type TacticalCommandFeedback, type TacticalOrder,
 } from '../systems/TacticalCommand';
 import { isWeaponId, projectileAngles, WEAPON_SPECS, weaponFromSlot, type WeaponId } from '../../../packages/shared/src/combat';
 import type { EnemyKind } from '../../../packages/shared/src/protocol';
@@ -510,8 +512,11 @@ export class WorldScene extends Phaser.Scene {
       this.impactBurst(enemy.x, enemy.y, ENEMY_STATS[enemy.archetype ?? 'raider'].tint, 4);
       gameEvents.emit('sfx', 'hit');
       if (this.networkConnected) return;
-      const damage = (bullet.getData('damage') as number | undefined) ?? (bullet.getData('companion') ? 14 : 19);
-      if (!bullet.getData('companion')) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 4);
+      const companion = Boolean(bullet.getData('companion'));
+      const baseDamage = (bullet.getData('damage') as number | undefined) ?? (companion ? 14 : 19);
+      const focusMatched = !companion && bullet.getData('focusTarget') === enemy;
+      const damage = baseDamage * tacticalDamageMultiplier('FOCUS', focusMatched, focusMatched);
+      if (!companion) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 4);
       enemy.setData('hp', (enemy.getData('hp') as number) - damage);
       this.telemetry.hits += 1;
       enemy.setTintFill(0xffffff);
@@ -552,7 +557,8 @@ export class WorldScene extends Phaser.Scene {
     const horizontal = Math.abs(controller.moveX) > 0.14 ? controller.moveX : digitalHorizontal;
     const vertical = Math.abs(controller.moveY) > 0.14 ? controller.moveY : digitalVertical;
     const movement = new Phaser.Math.Vector2(horizontal, vertical);
-    const movementSpeed = 205 * this.combatBonuses.moveSpeedMultiplier;
+    const movementSpeed = 205 * this.combatBonuses.moveSpeedMultiplier
+      * tacticalMoveSpeedMultiplier('FLANK', this.order === 'FLANK' && time < this.orderUntil);
     if (movement.lengthSq() > 0) {
       movement.normalize().scale(movementSpeed);
       this.player.setVelocity(movement.x, movement.y);
@@ -591,7 +597,11 @@ export class WorldScene extends Phaser.Scene {
     const pointerFire = keyboardEnabled && pointer.isDown;
     if ((pointerFire || assistedFire)
       && time - this.lastShotAt > weapon.cooldownMs * this.combatBonuses.fireCooldownMultiplier) {
-      const target = assistedFire ? this.findNearestEnemy(this.player.x, this.player.y, weapon.range) : undefined;
+      const target = assistedFire
+        ? this.order === 'FOCUS' && time < this.orderUntil
+          ? this.findFocusedEnemy(this.player.x, this.player.y, weapon.range)
+          : this.findNearestEnemy(this.player.x, this.player.y, weapon.range)
+        : undefined;
       this.firePlayerWeapon(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y);
       this.lastShotAt = time;
     }
@@ -723,8 +733,7 @@ export class WorldScene extends Phaser.Scene {
       if (!enemy.active) return true;
       const archetype = enemy.archetype ?? 'raider';
       const stats = ENEMY_STATS[archetype];
-      let target: Phaser.Physics.Arcade.Sprite = this.player;
-      if (this.order === 'DRAW_AGGRO' && this.companions[0]) target = this.companions[0];
+      const target: Phaser.Physics.Arcade.Sprite = this.player;
       const distance = Phaser.Math.Distance.Between(enemy.x, enemy.y, target.x, target.y);
       if ((archetype === 'warden' || archetype === 'harvester') && time > this.bossAbilityAt) {
         this.bossAbilityAt = time + (enemy.getData('hp') < stats.hp * 0.5 ? 2_500 : 3_900);
@@ -752,21 +761,19 @@ export class WorldScene extends Phaser.Scene {
         enemy.setData('attackAt', time + (archetype === 'harvester' ? 1_200
           : archetype === 'warden' ? 1_350
             : archetype === 'relay' || archetype === 'jammer' ? 1_450 : 820));
-        if (target === this.player) {
-          this.damagePlayer(stats.damage);
-          if (archetype === 'jammer') {
-            this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 18);
-            this.impactBurst(this.player.x, this.player.y, stats.tint, 10);
-            this.emitFeed('뉴럴 재머 피격 // 링크 게이지 -18%', true);
-          }
-          if (archetype === 'relay') {
-            this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 12);
-            this.emitFeed('신경 중계기 EMP // 링크 게이지 -12%', true);
-          }
-          if (archetype === 'sapper') {
-            this.radiation = Phaser.Math.Clamp(this.radiation + 8, 0, 100);
-            this.emitFeed('산성 침식탄 피격 // 방사선 +8%', true);
-          }
+        this.damagePlayer(stats.damage);
+        if (archetype === 'jammer') {
+          this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 18);
+          this.impactBurst(this.player.x, this.player.y, stats.tint, 10);
+          this.emitFeed('뉴럴 재머 피격 // 링크 게이지 -18%', true);
+        }
+        if (archetype === 'relay') {
+          this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 12);
+          this.emitFeed('신경 중계기 EMP // 링크 게이지 -12%', true);
+        }
+        if (archetype === 'sapper') {
+          this.radiation = Phaser.Math.Clamp(this.radiation + 8, 0, 100);
+          this.emitFeed('산성 침식탄 피격 // 방사선 +8%', true);
         }
       }
       enemy.setRotation(Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y));
@@ -977,17 +984,23 @@ export class WorldScene extends Phaser.Scene {
   private firePlayerWeapon(fromX: number, fromY: number, toX: number, toY: number): void {
     const spec = WEAPON_SPECS[this.currentWeapon];
     const aimAngle = Phaser.Math.Angle.Between(fromX, fromY, toX, toY);
+    const tacticalActive = this.time.now < this.orderUntil;
+    const damageMultiplier = tacticalDamageMultiplier(this.order, tacticalActive);
+    const focusTarget = this.order === 'FOCUS' && tacticalActive
+      ? this.findFocusedEnemy(fromX, fromY, spec.range)
+      : undefined;
     projectileAngles(aimAngle, this.currentWeapon).forEach((angle, index) => {
       this.fireBullet(
         fromX, fromY,
         fromX + Math.cos(angle) * spec.range,
         fromY + Math.sin(angle) * spec.range,
         false,
-        spec.damage * this.combatBonuses.damageMultiplier,
+        spec.damage * this.combatBonuses.damageMultiplier * damageMultiplier,
         spec.projectileSpeed,
         spec.tint,
         index === 0,
         Math.ceil(spec.range / spec.projectileSpeed * 1_000) + 120,
+        focusTarget,
       );
     });
   }
@@ -1003,12 +1016,14 @@ export class WorldScene extends Phaser.Scene {
     tint = 0x6ee7d1,
     feedback = true,
     lifetime = 900,
+    focusTarget?: EnemySprite,
   ): void {
     const bullet = this.bullets.get(fromX, fromY, 'bullet') as Phaser.Physics.Arcade.Sprite | null;
     if (!bullet) return;
     const angle = Phaser.Math.Angle.Between(fromX, fromY, toX, toY);
     bullet.enableBody(true, fromX, fromY, true, true)
       .setTint(tint).setDepth(4).setData('companion', companion).setData('damage', damage)
+      .setData('focusTarget', focusTarget ?? null)
       .setRotation(angle).setScale(companion ? 0.72 : this.currentWeapon === 'rail' ? 1.18 : 0.92);
     const muzzle = this.acquireEffect(
       fromX + Math.cos(angle) * 18,
@@ -1338,7 +1353,10 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private damagePlayer(amount: number): void {
-    const appliedDamage = amount * this.combatBonuses.damageTakenMultiplier;
+    const tacticalDefense = this.time.now < this.orderUntil
+      ? tacticalOrderEffect(this.order).defenseMultiplier ?? 1
+      : 1;
+    const appliedDamage = amount * this.combatBonuses.damageTakenMultiplier * tacticalDefense;
     this.hp = Math.max(0, this.hp - appliedDamage);
     if (!this.networkConnected) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 6);
     this.telemetry.damageTaken += appliedDamage;

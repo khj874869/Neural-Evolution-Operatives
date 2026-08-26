@@ -47,16 +47,41 @@ export class AdaptiveDirector {
       counterMessage = '위협도가 자동 조정되었습니다. 회복 창구를 확보하세요.';
     }
 
-    return { pressure, spawnCount: Math.min(16, 3 + Math.floor(this.wave * 0.7 + pressure * 4)), weights, counterMessage };
+    return {
+      pressure,
+      spawnCount: Math.min(16, 3 + Math.floor(this.wave * 0.7 + pressure * 4)),
+      weights: normalizeWeights(weights),
+      counterMessage,
+    };
   }
 
   pickArchetype(profile: ThreatProfile, random = Math.random): EnemyArchetype {
-    const roll = random();
+    const weights = normalizeWeights(profile.weights);
+    const roll = Math.min(1 - Number.EPSILON, Math.max(0, random()));
     let cursor = 0;
     for (const type of ['drone', 'raider', 'stalker', 'breaker', 'jammer'] as const) {
-      cursor += Math.max(0, profile.weights[type]);
-      if (roll <= cursor) return type;
+      cursor += weights[type];
+      if (roll < cursor) return type;
     }
     return 'raider';
   }
+}
+
+function normalizeWeights(weights: ThreatProfile['weights']): ThreatProfile['weights'] {
+  const nonNegative: ThreatProfile['weights'] = {
+    drone: Math.max(0, weights.drone),
+    raider: Math.max(0, weights.raider),
+    stalker: Math.max(0, weights.stalker),
+    breaker: Math.max(0, weights.breaker),
+    jammer: Math.max(0, weights.jammer),
+  };
+  const total = Object.values(nonNegative).reduce((sum, weight) => sum + weight, 0);
+  if (total <= 0) return { drone: 0, raider: 1, stalker: 0, breaker: 0, jammer: 0 };
+  return {
+    drone: nonNegative.drone / total,
+    raider: nonNegative.raider / total,
+    stalker: nonNegative.stalker / total,
+    breaker: nonNegative.breaker / total,
+    jammer: nonNegative.jammer / total,
+  };
 }
