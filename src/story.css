@@ -1,0 +1,37 @@
+.story-radio { position: fixed; z-index: 32; left: 50%; bottom: calc(var(--command-height) + 94px); transform: translateX(-50%); width: min(440px, 42vw); padding: 9px 14px; color: #e6f5ee; background: #091c21f2; border: 1px solid #456b70; border-left: 3px solid #7de2cf; box-shadow: 0 8px 32px #0008; pointer-events: auto; }
+.story-radio[hidden] { display: none; }
+.radio-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.radio-heading > span { color: #7de2cf; font: 9px monospace; letter-spacing: .14em; }
+.story-radio button { cursor: pointer; min-height: 32px; padding: 4px 9px; border: 1px solid #597b7a; background: #153039; color: #cce9e5; font-size: 11px; }
+.story-radio button:focus-visible { outline: 2px solid #d8ff7e; outline-offset: 2px; }
+.radio-message strong { display: block; color: #d6ef9d; font: 11px monospace; margin-top: 5px; }
+.radio-message p { margin: 5px 0 8px; font-size: 13px; line-height: 1.65; word-break: keep-all; }
+.radio-next { display: block; margin-left: auto; }
+.story-radio:not(.speaking) { width: auto; padding: 3px 7px; opacity: .85; }
+.story-radio:not(.speaking) .radio-message, .story-radio:not(.speaking) .radio-next { display: none; }
+.campaign-journal article { border-left: 2px solid #78cfbf; padding: 6px 18px 12px; margin: 24px 0; background: #10241d88; }
+.campaign-journal article > span { color: #8cc8b8; font: 10px monospace; letter-spacing: .12em; }
+.campaign-journal h3 { font-size: 20px; margin: 10px 0; }
+.campaign-journal p, .campaign-journal blockquote { font-size: 14px; line-height: 1.8; }
+.campaign-journal blockquote { margin: 8px 0; color: #b6c6bd; }
+.campaign-journal blockquote b { color: #d6ef9d; margin-right: 8px; }
+.debrief-story { text-align: left; padding: 16px; margin: 18px 0; border-left: 2px solid #7de2cf; background: #10241d88; }
+.debrief-story p { font-size: 13px; line-height: 1.7; }
+.debrief-story b { display: block; color: #d6ef9d; font: 11px monospace; margin-bottom: 5px; }
+@media (max-width: 820px) and (min-height: 481px) {
+  .story-radio { bottom: calc(var(--command-height) + 172px); width: calc(100vw - 32px); padding: 6px 10px; }
+  .radio-message p { font-size: 12px; line-height: 1.45; }
+}
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 480px),
+  (max-width: 820px) and (orientation: landscape) and (max-height: 480px) {
+  .story-radio { top: calc(var(--topbar-height) + 6px); bottom: auto; width: min(400px, calc(100vw - 332px)); padding: 5px 8px; }
+  .radio-heading { gap: 3px; }
+  .radio-heading > span { font-size: 7px; letter-spacing: 0; }
+  .radio-message strong { font-size: 10px; margin-top: 3px; }
+  .radio-message p { font-size: 11px; line-height: 1.4; margin: 3px 0; }
+  .story-radio button { min-height: 28px; font-size: 10px; padding: 3px 5px; }
+  .radio-active .operation-hud, .radio-active .weapon-dock { visibility: hidden; }
+  body:has(.boss-hud:not(.hidden)) .story-radio { top: calc(var(--topbar-height) + 74px); }
+  .story-radio:not(.speaking) { top: auto; bottom: calc(var(--command-height) + 6px); }
+  .story-radio:not(.speaking) .radio-heading > span { display: none; }
+}

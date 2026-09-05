@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { WorldScenery } from './WorldScenery';
 import { getOperator } from '../data/operators';
 import { gameEvents, type MobileInputState } from '../events';
 import { GameServerClient, type NetworkSnapshot } from '../network/GameServerClient';
@@ -61,6 +62,7 @@ export class WorldScene extends Phaser.Scene {
   private obstacles!: Phaser.Physics.Arcade.StaticGroup;
   private transientEffects!: Phaser.GameObjects.Group;
   private stageLayer!: Phaser.GameObjects.Graphics;
+  private scenery?: WorldScenery;
   private stageMarkers: Phaser.GameObjects.Arc[] = [];
   private performance!: PerformanceGovernor;
   private lastHudAt = -Infinity;
@@ -128,6 +130,7 @@ export class WorldScene extends Phaser.Scene {
 
   create(): void {
     this.resetRunState();
+    gameEvents.emit('story-run-start');
     this.state = this.registry.get('state') as GameState;
     this.network = this.registry.get('network') as GameServerClient | undefined;
     const settings = this.registry.get('settings') as PlayerSettings | undefined;
@@ -209,6 +212,10 @@ export class WorldScene extends Phaser.Scene {
     this.selectWeapon('carbine');
     this.updateOperation();
     this.updateHud(true);
+    if (!settings?.tutorialComplete || !settings?.consentReviewed) {
+      this.suspendWorldInput();
+      this.scene.pause();
+    }
   }
 
   private resetRunState(): void {
@@ -262,6 +269,7 @@ export class WorldScene extends Phaser.Scene {
 
   update(time: number, delta: number): void {
     if (!this.player.active || this.hp <= 0) return;
+    this.scenery?.update(delta, this.reducedMotion, this.performance.tier === 'low');
     const performance = this.performance.sample(delta);
     if (performance) this.emitPerformance(performance);
     this.updatePlayer(time, delta);
@@ -384,6 +392,7 @@ export class WorldScene extends Phaser.Scene {
     this.extractionRing = this.add.circle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 64, palette.accent, 0.045)
       .setStrokeStyle(2, palette.accent, 0.7).setDepth(1);
     this.stageLayer = this.add.graphics().setDepth(1.2);
+    this.scenery = new WorldScenery(this, this.operationId, this.cover);
     this.add.text(EXTRACTION_POINT.x, EXTRACTION_POINT.y - 88, `${this.operationDefinition.zoneName} // EXTRACTION`, {
       color: `#${palette.accent.toString(16).padStart(6, '0')}`, fontFamily: 'Share Tech Mono', fontSize: '11px',
     }).setOrigin(0.5);
@@ -391,6 +400,7 @@ export class WorldScene extends Phaser.Scene {
 
   private renderStagePresentation(stage: OperationStage): void {
     if (!this.stageLayer) return;
+    this.scenery?.setStage(stage);
     const palette = this.operationDefinition.palette;
     const activeColor = stage === 'WARDEN' ? 0xff4f72 : stage === 'RELAY' ? 0xe678ff : palette.accent;
     this.stageLayer.clear();
@@ -510,7 +520,7 @@ export class WorldScene extends Phaser.Scene {
       if (!bullet.active || !enemy.active) return;
       bullet.disableBody(true, true);
       this.impactBurst(enemy.x, enemy.y, ENEMY_STATS[enemy.archetype ?? 'raider'].tint, 4);
-      gameEvents.emit('sfx', 'hit');
+      gameEvents.emit('sfx', ['breaker', 'relay', 'warden', 'harvester'].includes(enemy.archetype ?? '') ? 'armor-hit' : 'hit');
       if (this.networkConnected) return;
       const companion = Boolean(bullet.getData('companion'));
       const baseDamage = (bullet.getData('damage') as number | undefined) ?? (companion ? 14 : 19);
@@ -1039,7 +1049,8 @@ export class WorldScene extends Phaser.Scene {
     }
     this.physics.moveTo(bullet, toX, toY, speed);
     if (feedback) {
-      gameEvents.emit('sfx', companion ? 'companion-fire' : 'fire');
+      gameEvents.emit('sfx', companion ? 'companion-fire'
+        : this.currentWeapon === 'scatter' ? 'fire-scatter' : this.currentWeapon === 'rail' ? 'fire-rail' : 'fire');
       if (!companion) gameEvents.emit('haptic', 'shot');
     }
     if (!companion) this.telemetry.shots += 1;

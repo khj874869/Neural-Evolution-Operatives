@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import './styles.css';
+import './story.css';
 import { gameConfig } from './game/config';
 import { getOperator, type OperatorRole } from './game/data/operators';
 import { gameEvents, type MobileInputState } from './game/events';
@@ -10,6 +11,7 @@ import type { Mission } from './game/systems/MissionGenerator';
 import type { PlayerProfile } from '../packages/shared/src/protocol';
 import { describeSquadBonuses } from '../packages/shared/src/squad';
 import { SoundEngine, type GameSfx } from './game/systems/SoundEngine';
+import { StoryRadio } from './game/systems/StoryRadio';
 import {
   operationDefinition, operationStageBrief, operationStageIndex,
   type OperationDefinition, type OperationId, type OperationStatus,
@@ -149,7 +151,23 @@ const bossIntroClass = byId<HTMLElement>('bossIntroClass');
 const bossIntroDirective = byId<HTMLElement>('bossIntroDirective');
 const dodgeButton = byId<HTMLButtonElement>('dodgeButton');
 const contractBadge = byId<HTMLElement>('contractBadge');
-let currentModal: 'shelter' | 'contracts' | 'roster' | 'deep-talk' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
+let currentModal: 'shelter' | 'contracts' | 'roster' | 'deep-talk' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'journal' | 'game-over' | 'operation-complete' | null = null;
+const storyRadio = new StoryRadio(() => sound.play('radio'), renderJournal);
+storyRadio.setPaused(!settings.tutorialComplete || !settings.consentReviewed);
+
+function renderJournal(): void {
+  currentModal = 'journal';
+  pauseForModal();
+  const entries = storyRadio.story.journal();
+  modalContent.innerHTML = `<section class="campaign-journal"><span class="eyebrow">RECOVERED TRANSMISSIONS</span>
+    <h2>우리가 되찾은 목소리</h2><p class="subtle">도착한 작전 단계의 무전과 발견 기록입니다. 다음 목표를 달성하면 이야기가 이어집니다.</p>
+    ${entries.length ? entries.map((entry) => `<article><span>${escapeHtml(operationDefinition(entry.operationId).codename)} // ${escapeHtml(operationStageBrief(entry.operationId, entry.stage).district)}</span>
+      <h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.discovery)}</p>
+      ${entry.lines.map((line) => `<blockquote><b>${escapeHtml(line.speaker)}</b> ${escapeHtml(line.text)}</blockquote>`).join('')}</article>`).join('')
+    : '<p>첫 작전에 투입하면 복원한 기록이 이곳에 저장됩니다.</p>'}
+    <button type="button" class="primary" id="closeJournal">전장으로 복귀</button></section>`;
+  modalContent.querySelector('#closeJournal')!.addEventListener('click', closeModal);
+}
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
 let latestProfile: PlayerProfile | null = null;
@@ -527,6 +545,7 @@ function setModalBackgroundInert(active: boolean): void {
 }
 
 function pauseForModal(): void {
+  storyRadio.setPaused(true);
   const focused = document.activeElement;
   if (focused instanceof HTMLElement && !modalBackdrop.contains(focused)) lastFocusedElement = focused;
   setTacticalPaletteOpen(false);
@@ -556,8 +575,9 @@ function closeModal(): void {
   modalBackdrop.setAttribute('aria-hidden', 'true');
   setModalBackgroundInert(false);
   currentModal = null;
+  storyRadio.setPaused(!settings.tutorialComplete || !settings.consentReviewed);
   sound.play('ui');
-  gameEvents.emit('resume-world');
+  if (settings.tutorialComplete && settings.consentReviewed) gameEvents.emit('resume-world');
   const focusTarget = lastFocusedElement;
   lastFocusedElement = null;
   window.requestAnimationFrame(() => {
@@ -623,6 +643,8 @@ function renderSettings(): void {
       ${(['auto', 'high', 'balanced', 'low'] as const).map((value) => `<button data-graphics-quality="${value}" class="${settings.graphicsQuality === value ? 'selected' : ''}">${value === 'auto' ? '자동' : value === 'high' ? '높음' : value === 'balanced' ? '균형' : '낮음'}</button>`).join('')}
     </div></div>
     <div class="settings-actions">
+      <button id="openJournal">작전 기록 읽기</button>
+      <button id="previewSound">타격음 미리 듣기</button>
       <button id="replayTutorial">필드 가이드 열기</button>
       <button id="openPrivacy">개인정보·AI 안내</button>
       <button class="primary" id="closeSettings">설정 완료</button>
@@ -659,6 +681,13 @@ function renderSettings(): void {
     });
   });
   modalContent.querySelector<HTMLButtonElement>('#replayTutorial')?.addEventListener('click', () => renderTutorial(0));
+  modalContent.querySelector<HTMLButtonElement>('#openJournal')?.addEventListener('click', renderJournal);
+  modalContent.querySelector<HTMLButtonElement>('#previewSound')?.addEventListener('click', async () => {
+    if (!settings.sound) { showToast('전투 사운드를 켜면 미리 들을 수 있습니다.'); return; }
+    await sound.unlock();
+    sound.play('fire-scatter');
+    window.setTimeout(() => sound.play('armor-hit'), 240);
+  });
   modalContent.querySelector<HTMLButtonElement>('#openPrivacy')?.addEventListener('click', () => renderPrivacyCenter());
   modalContent.querySelector<HTMLButtonElement>('#closeSettings')?.addEventListener('click', closeModal);
 }
@@ -1556,12 +1585,15 @@ function renderOperationDebrief(result: {
 }): void {
   currentModal = 'operation-complete';
   pauseForModal();
+  const epilogue = storyRadio.story.journal().find((entry) => entry.operationId === result.operationId && entry.stage === 'COMPLETE');
   modalContent.innerHTML = `
     <section class="debrief">
       <span class="eyebrow">OPERATION ${escapeHtml(result.codename)} // MISSION COMPLETE</span>
       <div class="debrief-mark">S</div>
       <h2>${escapeHtml(result.title)}</h2>
       <p>${escapeHtml(result.narrative)}</p>
+      ${epilogue ? `<aside class="debrief-story"><span class="eyebrow">FINAL TRANSMISSION // ${escapeHtml(epilogue.title)}</span>
+        ${epilogue.lines.map((line) => `<p><b>${escapeHtml(line.speaker)}</b> ${escapeHtml(line.text)}</p>`).join('')}</aside>` : ''}
       <div class="debrief-stats">
         <div><span>제거</span><b>${result.kills}</b></div>
         <div><span>회수</span><b>${result.collected}</b></div>
@@ -1688,8 +1720,9 @@ muteButton.addEventListener('click', () => {
   if (settings.sound) sound.play('ui');
 });
 
-window.addEventListener('pointerdown', () => { void sound.unlock(); }, { once: true });
-window.addEventListener('keydown', () => { void sound.unlock(); }, { once: true });
+window.addEventListener('pointerdown', () => { void sound.unlock(); }, { passive: true });
+window.addEventListener('keydown', () => { void sound.unlock(); });
+document.addEventListener('visibilitychange', () => sound.setActive(!document.hidden));
 
 document.querySelectorAll<HTMLButtonElement>('[data-move]').forEach((button) => {
   const direction = button.dataset.move as 'up' | 'down' | 'left' | 'right';
@@ -1734,7 +1767,12 @@ gameEvents.on('neural-link-activated', (operatorId: string, skillName: string) =
   showToast(`${getOperator(operatorId).name} // ${skillName}`);
 });
 gameEvents.on('boss-intro', showBossIntro);
+gameEvents.on('story-run-start', () => storyRadio.startRun());
 gameEvents.on('operation-update', (status: OperationStatus) => {
+  storyRadio.enter(status.operationId, status.stage);
+  storyRadio.setPaused(Boolean(currentModal) || !settings.tutorialComplete || !settings.consentReviewed);
+  sound.setScene(status.operationId, status.stage);
+  if (status.stage !== 'SCAVENGE') sound.play('objective');
   const definition = operationDefinition(status.operationId);
   const stage = operationStageBrief(status.operationId, status.stage);
   const stageNumber = operationStageIndex(status.operationId, status.stage) + 1;
