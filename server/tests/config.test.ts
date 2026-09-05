@@ -3,7 +3,17 @@ import { loadServerConfig } from '../src/config/env.js';
 
 describe('server configuration', () => {
   it('keeps the private operations surface disabled unless a token is configured', () => {
-    expect(loadServerConfig({ NODE_ENV: 'test' }).opsAdminToken).toBeUndefined();
+    const config = loadServerConfig({ NODE_ENV: 'test' });
+    expect(config.opsAdminToken).toBeUndefined();
+    expect(config.trustProxyHops).toBe(0);
+  });
+
+  it('only trusts an explicit bounded number of reverse proxy hops', () => {
+    expect(loadServerConfig({ NODE_ENV: 'test', TRUST_PROXY_HOPS: '1' }).trustProxyHops).toBe(1);
+    expect(() => loadServerConfig({ NODE_ENV: 'test', TRUST_PROXY_HOPS: 'all' }))
+      .toThrow('TRUST_PROXY_HOPS must be an integer from 0 to 3');
+    expect(() => loadServerConfig({ NODE_ENV: 'test', TRUST_PROXY_HOPS: '4' }))
+      .toThrow('TRUST_PROXY_HOPS must be an integer from 0 to 3');
   });
 
   it('rejects weak operations tokens before the server starts', () => {

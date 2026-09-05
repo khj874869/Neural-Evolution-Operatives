@@ -1,18 +1,98 @@
 import Phaser from 'phaser';
 import { OPERATORS } from '../data/operators';
 
+const OPERATOR_FIELD_WIDTH = 96;
+const OPERATOR_FIELD_HEIGHT = 128;
+const OPERATOR_FIELD_FOCUS_Y = 0.18;
+
 export class BootScene extends Phaser.Scene {
   constructor() {
     super('BootScene');
   }
 
   preload(): void {
-    for (const operator of OPERATORS) this.load.image(`operator-${operator.id}`, operator.portrait);
+    this.load.image(
+      'red-zone-ground',
+      `${import.meta.env.BASE_URL}assets/environment/red-zone-ground-v2.png`,
+    );
+    for (const operator of OPERATORS) this.load.image(`operator-source-${operator.id}`, operator.portrait);
   }
 
   create(): void {
     this.createTextures();
+    this.createOperatorFieldTextures();
     this.scene.start('WorldScene');
+  }
+
+  private createOperatorFieldTextures(): void {
+    for (const operator of OPERATORS) {
+      const sourceKey = `operator-source-${operator.id}`;
+      const fieldKey = `operator-${operator.id}`;
+      let converted = false;
+
+      try {
+        if (!this.textures.exists(sourceKey)) throw new Error('Operator portrait was not loaded');
+        const source = this.textures.get(sourceKey).getSourceImage();
+        if (!(source instanceof HTMLImageElement) && !(source instanceof HTMLCanvasElement)) {
+          throw new Error('Operator portrait is not a drawable image');
+        }
+        const sourceWidth = source instanceof HTMLImageElement ? source.naturalWidth : source.width;
+        const sourceHeight = source instanceof HTMLImageElement ? source.naturalHeight : source.height;
+        if (sourceWidth <= 0 || sourceHeight <= 0) throw new Error('Operator portrait has invalid dimensions');
+
+        const fieldTexture = this.textures.createCanvas(fieldKey, OPERATOR_FIELD_WIDTH, OPERATOR_FIELD_HEIGHT);
+        if (!fieldTexture) throw new Error('Operator field texture could not be created');
+        const context = fieldTexture.getContext();
+        const targetRatio = OPERATOR_FIELD_WIDTH / OPERATOR_FIELD_HEIGHT;
+        const sourceRatio = sourceWidth / sourceHeight;
+        const cropWidth = sourceRatio > targetRatio ? sourceHeight * targetRatio : sourceWidth;
+        const cropHeight = sourceRatio > targetRatio ? sourceHeight : sourceWidth / targetRatio;
+        const cropX = (sourceWidth - cropWidth) / 2;
+        const cropY = (sourceHeight - cropHeight) * OPERATOR_FIELD_FOCUS_Y;
+
+        context.clearRect(0, 0, OPERATOR_FIELD_WIDTH, OPERATOR_FIELD_HEIGHT);
+        context.imageSmoothingEnabled = true;
+        context.imageSmoothingQuality = 'high';
+        context.drawImage(
+          source,
+          cropX, cropY, cropWidth, cropHeight,
+          0, 0, OPERATOR_FIELD_WIDTH, OPERATOR_FIELD_HEIGHT,
+        );
+        fieldTexture.refresh();
+        converted = true;
+      } catch (error) {
+        if (this.textures.exists(fieldKey)) this.textures.remove(fieldKey);
+        console.warn(`Field portrait fallback used for ${operator.id}`, error);
+      }
+
+      if (converted) {
+        // The full-resolution portraits remain available to the DOM UI by URL, but no longer occupy Phaser GPU memory.
+        if (this.textures.exists(sourceKey)) this.textures.remove(sourceKey);
+      } else if (this.textures.exists(sourceKey)) {
+        // Preserve playability if a browser cannot create or draw the optimized CanvasTexture.
+        this.textures.renameTexture(sourceKey, fieldKey);
+      } else {
+        this.createFallbackOperatorTexture(fieldKey);
+      }
+    }
+  }
+
+  private createFallbackOperatorTexture(key: string): void {
+    const texture = this.textures.createCanvas(key, OPERATOR_FIELD_WIDTH, OPERATOR_FIELD_HEIGHT);
+    if (!texture) return;
+    const context = texture.getContext();
+    context.fillStyle = '#07100e';
+    context.fillRect(0, 0, OPERATOR_FIELD_WIDTH, OPERATOR_FIELD_HEIGHT);
+    context.strokeStyle = '#9cffbb';
+    context.lineWidth = 4;
+    context.strokeRect(4, 4, OPERATOR_FIELD_WIDTH - 8, OPERATOR_FIELD_HEIGHT - 8);
+    const fallback = this.textures.get('operative').getSourceImage();
+    if (fallback instanceof HTMLImageElement || fallback instanceof HTMLCanvasElement) {
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(fallback, 16, 32, 64, 64);
+    }
+    texture.refresh();
   }
 
   private createTextures(): void {

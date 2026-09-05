@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import './styles.css';
+import './story.css';
 import { gameConfig } from './game/config';
 import { getOperator, type OperatorRole } from './game/data/operators';
 import { gameEvents, type MobileInputState } from './game/events';
@@ -10,9 +11,14 @@ import type { Mission } from './game/systems/MissionGenerator';
 import type { PlayerProfile } from '../packages/shared/src/protocol';
 import { describeSquadBonuses } from '../packages/shared/src/squad';
 import { SoundEngine, type GameSfx } from './game/systems/SoundEngine';
+import { StoryRadio } from './game/systems/StoryRadio';
 import {
-  operationDefinition, type OperationDefinition, type OperationId, type OperationStatus,
+  operationDefinition, operationStageBrief, operationStageIndex,
+  type OperationDefinition, type OperationId, type OperationStatus,
 } from '../packages/shared/src/operations';
+import {
+  nearestWorldSector, nearestWorldStageSector, WORLD_SIZE, worldSectors, worldStageSectors,
+} from '../packages/shared/src/world';
 import { WEAPON_SPECS, type WeaponId } from '../packages/shared/src/combat';
 import {
   RECRUIT_ODDS,
@@ -33,6 +39,9 @@ import { createDeepTalkFallback, operatorMemoryLimit } from '../packages/shared/
 import {
   buildContractBoard, type ContractBoard, type ContractCard, type ContractId, type ContractReward,
 } from '../packages/shared/src/contracts';
+import {
+  parseTacticalCommand, type TacticalCommandFeedback, type TacticalOrder,
+} from '../packages/shared/src/tactical';
 
 declare global {
   interface Window {
@@ -63,10 +72,10 @@ game.registry.set('mobileInput', mobileInput);
 game.registry.set('network', network);
 game.registry.set('settings', settings);
 
-const byId = <T extends HTMLElement>(id: string): T => {
+const byId = <T extends Element>(id: string): T => {
   const element = document.getElementById(id);
   if (!element) throw new Error(`Missing UI element: ${id}`);
-  return element as T;
+  return element as unknown as T;
 };
 
 const resourceHud = byId<HTMLDivElement>('resourceHud');
@@ -82,15 +91,47 @@ const operationTitle = byId<HTMLElement>('operationTitle');
 const operationObjective = byId<HTMLElement>('operationObjective');
 const operationProgress = byId<HTMLElement>('operationProgress');
 const operationCount = byId<HTMLElement>('operationCount');
+const operationStageRail = byId<HTMLElement>('operationStageRail');
+const operationAnnouncement = byId<HTMLElement>('operationAnnouncement');
+const tacticalMap = byId<HTMLElement>('tacticalMap');
+const mapDistrict = byId<HTMLElement>('mapDistrict');
+const mapCoordinates = byId<HTMLElement>('mapCoordinates');
+const mapDirective = byId<HTMLElement>('mapDirective');
+const mapObjectives = byId<HTMLElement>('mapObjectives');
+const mapPlayer = byId<HTMLElement>('mapPlayer');
+const mapRouteLine = byId<SVGLineElement>('mapRouteLine');
+const mapBearing = byId<HTMLElement>('mapBearing');
+const mapTarget = byId<HTMLElement>('mapTarget');
+const stageBanner = byId<HTMLElement>('stageBanner');
+const stageBannerCode = byId<HTMLElement>('stageBannerCode');
+const stageBannerDistrict = byId<HTMLElement>('stageBannerDistrict');
+const stageBannerDirective = byId<HTMLElement>('stageBannerDirective');
 const bossHud = byId<HTMLElement>('bossHud');
+const bossHpProgress = byId<HTMLElement>('bossHpProgress');
 const bossHpBar = byId<HTMLElement>('bossHpBar');
 const bossHpText = byId<HTMLElement>('bossHpText');
 const bossHudName = byId<HTMLElement>('bossHudName');
 const eventFeed = byId<HTMLDivElement>('eventFeed');
 const modalBackdrop = byId<HTMLDivElement>('modalBackdrop');
 const modalContent = byId<HTMLDivElement>('modalContent');
+const closeModalButton = byId<HTMLButtonElement>('closeModal');
+const modalBackgroundRegions = [
+  document.querySelector<HTMLElement>('.topbar'),
+  document.querySelector<HTMLElement>('#game-shell'),
+  document.querySelector<HTMLElement>('.command-dock'),
+  document.querySelector<HTMLElement>('.mobile-controls'),
+].filter((element): element is HTMLElement => element !== null);
 const commandForm = byId<HTMLFormElement>('commandForm');
 const commandInput = byId<HTMLInputElement>('commandInput');
+const tacticalMenuButton = byId<HTMLButtonElement>('tacticalMenuButton');
+const tacticalTriggerLabel = byId<HTMLElement>('tacticalTriggerLabel');
+const tacticalPalette = byId<HTMLElement>('tacticalPalette');
+const closeTacticalPaletteButton = byId<HTMLButtonElement>('closeTacticalPalette');
+const tacticalStatus = byId<HTMLElement>('tacticalStatus');
+const tacticalStatusSource = byId<HTMLElement>('tacticalStatusSource');
+const tacticalStatusLabel = byId<HTMLElement>('tacticalStatusLabel');
+const tacticalStatusDetail = byId<HTMLElement>('tacticalStatusDetail');
+const tacticalStatusProgress = byId<HTMLElement>('tacticalStatusProgress');
 const toast = byId<HTMLDivElement>('toast');
 const storeButton = byId<HTMLButtonElement>('storeButton');
 const releaseBadge = byId<HTMLElement>('releaseBadge');
@@ -110,7 +151,23 @@ const bossIntroClass = byId<HTMLElement>('bossIntroClass');
 const bossIntroDirective = byId<HTMLElement>('bossIntroDirective');
 const dodgeButton = byId<HTMLButtonElement>('dodgeButton');
 const contractBadge = byId<HTMLElement>('contractBadge');
-let currentModal: 'shelter' | 'contracts' | 'roster' | 'deep-talk' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'game-over' | 'operation-complete' | null = null;
+let currentModal: 'shelter' | 'contracts' | 'roster' | 'deep-talk' | 'store' | 'alpha' | 'settings' | 'privacy' | 'tutorial' | 'journal' | 'game-over' | 'operation-complete' | null = null;
+const storyRadio = new StoryRadio(() => sound.play('radio'), renderJournal);
+storyRadio.setPaused(!settings.tutorialComplete || !settings.consentReviewed);
+
+function renderJournal(): void {
+  currentModal = 'journal';
+  pauseForModal();
+  const entries = storyRadio.story.journal();
+  modalContent.innerHTML = `<section class="campaign-journal"><span class="eyebrow">RECOVERED TRANSMISSIONS</span>
+    <h2>우리가 되찾은 목소리</h2><p class="subtle">도착한 작전 단계의 무전과 발견 기록입니다. 다음 목표를 달성하면 이야기가 이어집니다.</p>
+    ${entries.length ? entries.map((entry) => `<article><span>${escapeHtml(operationDefinition(entry.operationId).codename)} // ${escapeHtml(operationStageBrief(entry.operationId, entry.stage).district)}</span>
+      <h3>${escapeHtml(entry.title)}</h3><p>${escapeHtml(entry.discovery)}</p>
+      ${entry.lines.map((line) => `<blockquote><b>${escapeHtml(line.speaker)}</b> ${escapeHtml(line.text)}</blockquote>`).join('')}</article>`).join('')
+    : '<p>첫 작전에 투입하면 복원한 기록이 이곳에 저장됩니다.</p>'}
+    <button type="button" class="primary" id="closeJournal">전장으로 복귀</button></section>`;
+  modalContent.querySelector('#closeJournal')!.addEventListener('click', closeModal);
+}
 let rosterSelection: string | null = null;
 let squadDraft: string[] = [];
 let latestProfile: PlayerProfile | null = null;
@@ -125,6 +182,22 @@ let latestContractBoard: ContractBoard | null = null;
 let currentLinkLeader = '';
 let cutinTimer = 0;
 let bossIntroTimer = 0;
+let stageBannerTimer = 0;
+let tacticalStageKey = '';
+let tacticalMapKey = '';
+let lastFocusedElement: HTMLElement | null = null;
+let tacticalStatusTicker = 0;
+
+type TacticalDisplayMode = 'pending' | 'active' | 'cooldown' | 'blocked' | 'error';
+interface TacticalDisplayState {
+  mode: TacticalDisplayMode;
+  order: TacticalOrder;
+  message: string;
+  source: 'local' | 'server';
+  startedAt: number;
+  endsAt: number;
+}
+let tacticalDisplayState: TacticalDisplayState | null = null;
 
 releaseBadge.textContent = `${CLIENT_RELEASE.channel.toUpperCase()} ${CLIENT_RELEASE.version}`;
 releaseBadge.title = '비공개 테스트 빌드';
@@ -133,6 +206,17 @@ storeButton.classList.toggle('hidden', !CLIENT_RELEASE.commerceEnabled);
 
 const labels = { scrap: '고철', water: '식수', data: '데이터', cores: '코어' } as const;
 const icons = { scrap: '▰', water: '◒', data: '◇', cores: '◈' } as const;
+const compassDirections = ['북', '북동', '동', '남동', '남', '남서', '서', '북서'] as const;
+const tacticalOrderLabels: Record<TacticalOrder, string> = {
+  DRAW_AGGRO: '도발',
+  FLANK: '우회',
+  HOLD: '엄폐',
+  REGROUP: '집결',
+  HEAL: '회복',
+  FOCUS: '집중',
+  SCAVENGE: '회수',
+  UNKNOWN: '미확인',
+};
 const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>> = {
   Vanguard: [{ label: '돌파', value: 88 }, { label: '방어', value: 92 }, { label: '지원', value: 42 }],
   Sniper: [{ label: '화력', value: 96 }, { label: '기동', value: 58 }, { label: '지원', value: 45 }],
@@ -140,16 +224,83 @@ const roleMetrics: Record<OperatorRole, Array<{ label: string; value: number }>>
   Engineer: [{ label: '화력', value: 62 }, { label: '회수', value: 94 }, { label: '지원', value: 78 }],
 };
 const tutorialSteps = [
-  { code: '01 // MOVE', icon: '⌖', title: '레드 존 이동', body: 'PC는 WASD 또는 방향키, 모바일은 왼쪽 방향 패드로 이동합니다. 멈춰 있으면 적응형 AI가 우회 병력을 투입합니다.', keys: ['W', 'A', 'S', 'D'] },
-  { code: '02 // DODGE', icon: '➤', title: '긴급 회피', body: 'PC는 Space, 모바일은 DODGE로 1.8초마다 빠르게 이탈합니다. 게임패드는 B 버튼을 사용합니다.', keys: ['SPACE', 'DODGE'] },
-  { code: '03 // ENGAGE', icon: '◎', title: '조준과 사격', body: 'PC는 마우스로 조준해 클릭하고, 모바일은 FIRE를 누르면 가장 가까운 적을 자동 조준합니다. 게임패드는 오른쪽 스틱과 A/RT를 사용합니다.', keys: ['CLICK', 'FIRE'] },
-  { code: '04 // LOADOUT', icon: '⌁', title: '실시간 무장 전환', body: '카빈은 균형형, 파쇄포는 근거리 산탄, 코일건은 장거리 고화력 무장입니다. PC는 숫자 1·2·3, 모바일은 하단 무장 버튼으로 바꿉니다.', keys: ['1', '2', '3'] },
-  { code: '05 // COMMAND', icon: '◇', title: '자연어 전술 명령', body: '하단 입력창에 “모두 복귀해”, “치료해줘”, “측면으로 우회해”처럼 입력하면 3인 분대가 즉시 전술을 변경합니다.', keys: ['TACTICAL://'] },
-  { code: '06 // NEURAL LINK', icon: '◉', title: '분대 리미트 브레이크', body: '교전으로 링크 게이지를 100% 충전한 뒤 PC는 Q, 모바일은 리더 초상화 버튼을 누르세요. 분대 1번 리더의 역할별 필살기가 발동합니다.', keys: ['Q', '100%'] },
-  { code: '07 // EXTRACT', icon: '⬡', title: '화물 추출', body: '중앙 쉘터 리프트로 돌아와 PC는 E, 모바일은 EXTRACT를 누르세요. 사망하면 현장 화물을 모두 잃습니다.', keys: ['E', 'EXTRACT'] },
-  { code: '08 // FABRICATE', icon: '▣', title: '추출 자원을 전력으로', body: '안전하게 추출한 뒤 쉘터의 전술 장비 제작에서 영구 장비를 만드세요. 최대 2개를 장착해 다음 탐사의 생존·화력·회수 능력을 바꿀 수 있습니다.', keys: ['SHELTER', 'GEAR'] },
-  { code: '09 // DEEP TALK', icon: '◌', title: '기억하는 오퍼레이터', body: '오퍼레이터 화면에서 딥 토크를 열면 캐릭터별 대화와 장기 기억을 확인할 수 있습니다. 외부 AI는 별도 동의가 있을 때만 사용되며 언제든 기억을 삭제할 수 있습니다.', keys: ['OPERATIVES', 'DEEP TALK'] },
-  { code: '10 // CONTRACTS', icon: '◆', title: '매일 바뀌는 생존 계약', body: '계약 보드에는 일일 3개와 주간 2개의 서버 검증 목표가 배치됩니다. 달성한 보상을 직접 수령하고 연속 생존 보너스를 쌓으세요.', keys: ['CONTRACTS', 'CLAIM'] },
+  {
+    code: '01 // PURPOSE', icon: 'N//E', title: '이 게임에서 무엇을 하나요?',
+    body: '3인 오퍼레이터 분대를 이끌고 레드 존을 탐사해 자원을 회수하는 전술 생존 게임입니다. 전투만 잘하는 것보다 언제 더 모으고 언제 철수할지 판단하는 것이 중요합니다.',
+    utility: '5~10분 단위의 짧은 탐사에서 전술 판단, 수집, 성장의 재미를 반복해서 즐길 수 있습니다.',
+    tip: '핵심 루프는 탐사 → 전술 대응 → 안전 추출 → 쉘터 성장입니다. 첫 목표는 자원 8개를 모아 살아서 돌아오는 것입니다.',
+    keys: ['EXPLORE', 'DECIDE', 'EXTRACT'],
+  },
+  {
+    code: '02 // CONTROL', icon: '⌖', title: '살아남는 기본 조작',
+    body: 'PC는 WASD와 마우스, 모바일은 방향 패드와 FIRE, 게임패드는 양쪽 스틱을 사용합니다. Space 또는 DODGE로 1.8초마다 위험 지역을 빠르게 벗어날 수 있습니다.',
+    utility: 'PC·모바일·게임패드 어디서든 같은 저장 흐름과 전투 규칙으로 플레이할 수 있습니다.',
+    tip: '한자리에 오래 머물면 적응형 디렉터가 우회 병력을 보냅니다. 사격하면서 원을 그리듯 계속 이동하세요.',
+    keys: ['WASD', 'AIM', 'FIRE', 'DODGE'],
+  },
+  {
+    code: '03 // NAVIGATION', icon: '△', title: '전술 지도로 다음 구역을 찾으세요',
+    body: '우측 전술 지도에서 빛나는 목표점, 현재 위치와 목표를 잇는 경로선, 방향 화살표와 거리를 확인하세요. 상단 스테이지 레일은 이번 작전의 전체 흐름과 현재 단계를 보여줍니다.',
+    utility: '넓은 레드 존에서도 헤매지 않고 현재 단계에 맞는 자원 지대·중계기·보스 구역·추출 지점으로 이동할 수 있습니다.',
+    tip: '목표가 여러 개면 가장 가까운 활성 구역이 자동 선택됩니다. 중계기를 파괴하면 남은 목표 중 가장 가까운 지점으로 즉시 갱신됩니다.',
+    keys: ['MAP', 'ROUTE', 'DISTANCE', 'STAGE'],
+  },
+  {
+    code: '04 // LOADOUT', icon: '⌁', title: '상황에 맞춰 무장을 바꾸세요',
+    body: '카빈은 안정적인 중거리 전투, 파쇄포는 근접 돌파, 코일건은 장거리 정밀 사격에 특화되어 있습니다. 전투 중에도 즉시 교체할 수 있습니다.',
+    utility: '적의 종류와 거리에 따라 무기를 바꾸면 같은 분대도 전혀 다른 방식으로 운용할 수 있습니다.',
+    tip: '빠른 드론에는 카빈, 몰려오는 적에는 파쇄포, 체력이 높은 지휘 유닛에는 코일건이 효율적입니다.',
+    keys: ['1 CARBINE', '2 SCATTER', '3 COIL'],
+  },
+  {
+    code: '05 // COMMAND', icon: '◇', title: '말로 분대를 지휘하세요',
+    body: '하단 TACTICAL 입력창에 “모두 복귀해”, “치료해줘”, “오른쪽으로 우회해”, “강한 적을 집중 공격해”처럼 자연스럽게 입력하면 분대 행동이 즉시 바뀝니다.',
+    utility: '복잡한 단축키 없이 자연어로 집결·치료·우회·집중 공격 전술을 실행할 수 있습니다.',
+    tip: '분대가 흩어졌다면 “모두 내 쪽으로 복귀”를 먼저 사용하고, 보스전에서는 “강한 적 집중 공격”으로 화력을 모으세요.',
+    keys: ['REGROUP', 'HEAL', 'FLANK', 'FOCUS'],
+  },
+  {
+    code: '06 // NEURAL LINK', icon: '◉', title: '분대 조합을 필살기로 연결하세요',
+    body: '교전으로 링크 게이지를 100% 채운 뒤 Q 또는 리더 초상화를 누르면 1번 슬롯 오퍼레이터의 역할별 뉴럴 링크가 발동합니다.',
+    utility: '분대 리더를 바꿔 방어, 화력, 회복, 기동 중심의 서로 다른 빌드를 만들 수 있습니다.',
+    tip: '보스 등장 직전까지 게이지를 아껴두고, 오퍼레이터 화면에서 원하는 리더를 1번 슬롯에 배치하세요.',
+    keys: ['LEADER SLOT', '100%', 'Q'],
+  },
+  {
+    code: '07 // RISK', icon: '⬡', title: '욕심과 추출 사이를 판단하세요',
+    body: '모은 현장 화물은 중앙 리프트에서 E 또는 EXTRACT를 눌러야 계정 자원이 됩니다. 쓰러지면 이번 탐사에서 모은 화물을 잃습니다.',
+    utility: '안전한 소규모 수익과 위험한 고수익 탐사를 스스로 선택하는 리스크·리워드 플레이가 가능합니다.',
+    tip: '체력이 40% 아래거나 방사능이 상승 중이면 추가 전투보다 추출을 우선하세요. 보라색 데이터는 희귀하지만 욕심은 금물입니다.',
+    keys: ['CARGO', 'E', 'EXTRACT'],
+  },
+  {
+    code: '08 // GROWTH', icon: '▣', title: '회수 자원을 영구 전력으로 바꾸세요',
+    body: '쉘터 모듈을 업그레이드하면 오프라인 생산량이 늘고, 작업장에서 영구 전술 장비를 제작해 최대 2개까지 장착할 수 있습니다.',
+    utility: '플레이하지 않는 시간에도 자원이 쌓이며, 원하는 생존·화력·회수 특성에 맞춰 장기 성장 경로를 설계할 수 있습니다.',
+    tip: '초반에는 작업장과 정수 시설을 먼저 올리고, 첫 장비는 생존 보정 효과를 우선하면 탐사 성공률이 크게 높아집니다.',
+    keys: ['SHELTER', 'UPGRADE', 'GEAR'],
+  },
+  {
+    code: '09 // OPERATIVES', icon: '◈', title: '오퍼레이터를 수집하고 편성하세요',
+    body: '오퍼레이터마다 역할, 희귀도, 뉴럴 링크, 관계 수치가 다릅니다. 3명을 편성해 역할 조합 보너스를 만들고 딥 토크에서 개인 서사와 기억을 확인할 수 있습니다.',
+    utility: '전투 성능을 위한 편성과 캐릭터 관계·스토리 수집을 한 화면에서 함께 즐길 수 있습니다.',
+    tip: 'Vanguard·Engineer·Support 조합은 초반 생존과 자원 회수의 균형이 좋습니다. 외부 AI 대화는 별도 동의가 있을 때만 사용됩니다.',
+    keys: ['ROSTER', 'FORMATION', 'DEEP TALK'],
+  },
+  {
+    code: '10 // ROUTINE', icon: '◆', title: '계약과 오프라인 보상으로 이어가세요',
+    body: '일일 3개·주간 2개의 서버 검증 계약을 달성해 보상을 직접 수령하세요. 쉘터는 접속하지 않은 동안에도 최대 8시간 자원을 생산합니다.',
+    utility: '매일 짧게 접속해도 명확한 목표와 성장 보상을 얻을 수 있고, 주간 목표는 장기 플레이 방향을 제시합니다.',
+    tip: '게임을 시작하면 먼저 계약 보드를 확인하고, 이미 진행 중인 목표에 맞춰 무기와 탐사 전략을 고르세요.',
+    keys: ['DAILY', 'WEEKLY', 'CLAIM'],
+  },
+  {
+    code: '11 // ACCESS', icon: '◎', title: '나에게 맞는 방식으로 플레이하세요',
+    body: '설정에서 HUD 크기, 고대비·적록 보정, 모션 감소, 그래픽 품질, 사운드와 진동을 조절할 수 있습니다. 필드 가이드는 하단 버튼에서 언제든 다시 열 수 있습니다.',
+    utility: '시각·움직임 민감도와 기기 성능에 맞춰 인터페이스를 조절하면서 동일한 게임 진행을 유지할 수 있습니다.',
+    tip: '화면이 복잡하면 HUD를 크게 하고 모션 감소를 켜세요. 개인정보와 외부 AI 사용 여부도 설정에서 언제든 변경할 수 있습니다.',
+    keys: ['SETTINGS', 'ACCESSIBILITY', 'FIELD GUIDE'],
+  },
 ] as const;
 
 function renderPersistentHud(): void {
@@ -176,6 +327,137 @@ function showToast(message: string): void {
   toast.textContent = message;
   toast.classList.add('show');
   window.setTimeout(() => toast.classList.remove('show'), 2600);
+}
+
+function setTacticalPaletteOpen(open: boolean, restoreFocus = false): void {
+  tacticalPalette.classList.toggle('hidden', !open);
+  tacticalMenuButton.setAttribute('aria-expanded', String(open));
+  if (open) {
+    window.requestAnimationFrame(() => {
+      tacticalPalette.querySelector<HTMLButtonElement>('[data-tactical-command]')?.focus();
+    });
+  } else if (restoreFocus) {
+    tacticalMenuButton.focus();
+  }
+}
+
+function resetTacticalStatus(): void {
+  tacticalDisplayState = null;
+  window.clearInterval(tacticalStatusTicker);
+  tacticalStatusTicker = 0;
+  tacticalStatus.dataset.state = 'idle';
+  tacticalMenuButton.dataset.state = 'idle';
+  tacticalTriggerLabel.textContent = '전술';
+  tacticalStatusSource.textContent = 'LINK STANDBY';
+  tacticalStatusLabel.textContent = '분대 명령 대기';
+  tacticalStatusDetail.textContent = '자연어를 입력하거나 빠른 명령을 선택하세요.';
+  tacticalStatusProgress.style.width = '0%';
+  tacticalMenuButton.setAttribute('aria-label', '빠른 전술 명령 열기');
+  tacticalPalette.querySelectorAll<HTMLButtonElement>('[data-tactical-command]').forEach((button) => {
+    button.disabled = false;
+    button.classList.remove('active');
+    button.setAttribute('aria-pressed', 'false');
+  });
+}
+
+function renderTacticalStatus(): void {
+  const state = tacticalDisplayState;
+  if (!state) {
+    resetTacticalStatus();
+    return;
+  }
+  const now = Date.now();
+  if (state.endsAt <= now) {
+    if (state.mode === 'pending') {
+      tacticalDisplayState = {
+        ...state,
+        mode: 'error',
+        message: '전술 링크 응답이 지연되고 있습니다. 연결 상태를 확인한 뒤 다시 시도하세요.',
+        startedAt: now,
+        endsAt: now + 4_500,
+      };
+      renderTacticalStatus();
+      return;
+    }
+    resetTacticalStatus();
+    return;
+  }
+  const label = tacticalOrderLabels[state.order];
+  const remainingMs = Math.max(0, state.endsAt - now);
+  const remainingSeconds = Math.max(1, Math.ceil(remainingMs / 1_000));
+  const timed = state.mode === 'active' || state.mode === 'cooldown' || state.mode === 'blocked';
+  const statusLabels: Record<TacticalDisplayMode, string> = {
+    pending: `${label} 명령 송신`,
+    active: `${label} 전술 적용`,
+    cooldown: `${label} 완료`,
+    blocked: `${label} 재충전`,
+    error: `${label} 명령 거부`,
+  };
+  tacticalStatus.dataset.state = state.mode;
+  tacticalMenuButton.dataset.state = state.mode;
+  tacticalStatusSource.textContent = `${state.source === 'server' ? 'SERVER AUTH' : 'LOCAL CORE'} // ${state.order}`;
+  tacticalStatusLabel.textContent = statusLabels[state.mode];
+  const detailMessage = timed ? state.message.replace(/\s*\/\/\s*\d+초\s*$/, '') : state.message;
+  tacticalStatusDetail.textContent = timed ? `${detailMessage} · ${remainingSeconds}초` : detailMessage;
+  tacticalTriggerLabel.textContent = timed ? `${label} ${remainingSeconds}` : state.mode === 'pending' ? `${label}…` : '재시도';
+  tacticalMenuButton.setAttribute('aria-label', `${statusLabels[state.mode]}. ${tacticalStatusDetail.textContent}`);
+  const totalMs = Math.max(1, state.endsAt - state.startedAt);
+  tacticalStatusProgress.style.width = state.mode === 'pending'
+    ? '52%'
+    : `${Math.max(0, Math.min(100, remainingMs / totalMs * 100))}%`;
+  tacticalPalette.querySelectorAll<HTMLButtonElement>('[data-tactical-command]').forEach((button) => {
+    const selected = button.dataset.tacticalOrder === state.order;
+    button.classList.toggle('active', selected && state.mode !== 'error');
+    button.setAttribute('aria-pressed', String(selected && state.mode !== 'error'));
+    button.disabled = selected && (state.mode === 'cooldown' || state.mode === 'blocked');
+  });
+}
+
+function beginTacticalStatus(order: TacticalOrder): void {
+  const now = Date.now();
+  tacticalDisplayState = {
+    mode: 'pending',
+    order,
+    message: network.connected ? '서버 권위 판정을 기다리는 중입니다.' : '로컬 전술 코어가 명령을 해석하는 중입니다.',
+    source: network.connected ? 'server' : 'local',
+    startedAt: now,
+    endsAt: now + 8_500,
+  };
+  if (!tacticalStatusTicker) tacticalStatusTicker = window.setInterval(renderTacticalStatus, 250);
+  renderTacticalStatus();
+}
+
+function applyTacticalFeedback(feedback: TacticalCommandFeedback): void {
+  const now = Date.now();
+  const cooldownMs = Math.max(0, feedback.cooldownMs ?? 0);
+  const durationMs = Math.max(0, feedback.durationMs ?? 0);
+  const mode: TacticalDisplayMode = cooldownMs > 0
+    ? feedback.applied ? 'cooldown' : 'blocked'
+    : feedback.applied ? 'active' : 'error';
+  const displayMs = cooldownMs || durationMs || 4_500;
+  tacticalDisplayState = {
+    mode,
+    order: feedback.order,
+    message: feedback.message,
+    source: feedback.source,
+    startedAt: now,
+    endsAt: now + displayMs,
+  };
+  if (!tacticalStatusTicker) tacticalStatusTicker = window.setInterval(renderTacticalStatus, 250);
+  renderTacticalStatus();
+  showToast(feedback.message);
+}
+
+function dispatchTacticalCommand(command: string): void {
+  const normalized = command.trim();
+  if (!normalized) return;
+  const parsed = parseTacticalCommand(normalized);
+  beginTacticalStatus(parsed.order);
+  gameEvents.emit('tactical-command', normalized);
+  network.sendTactical(normalized);
+  commandInput.value = '';
+  commandInput.blur();
+  setTacticalPaletteOpen(false);
 }
 
 function showNeuralCutin(operatorId: string, skillName: string): void {
@@ -220,16 +502,62 @@ function escapeHtml(value: string): string {
 }
 
 function addFeed(message: string, danger = false): void {
+  const now = Date.now();
+  const previous = eventFeed.firstElementChild as HTMLElement | null;
+  if (previous?.dataset.message === message && now - Number(previous.dataset.updatedAt ?? 0) < 3_000) {
+    const count = Number(previous.dataset.repeatCount ?? 1) + 1;
+    previous.dataset.repeatCount = String(count);
+    previous.dataset.updatedAt = String(now);
+    previous.textContent = `> ${message} ×${count}`;
+    if (danger) previous.classList.add('danger');
+    return;
+  }
   const line = document.createElement('div');
   line.textContent = `> ${message}`;
   if (danger) line.className = 'danger';
+  line.dataset.message = message;
+  line.dataset.repeatCount = '1';
+  line.dataset.updatedAt = String(now);
   eventFeed.prepend(line);
   while (eventFeed.children.length > 5) eventFeed.lastElementChild?.remove();
 }
 
+const modalFocusableSelector = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function modalFocusableElements(): HTMLElement[] {
+  return [...modalBackdrop.querySelectorAll<HTMLElement>(modalFocusableSelector)]
+    .filter((element) => element.getClientRects().length > 0 && element.getAttribute('aria-hidden') !== 'true');
+}
+
+function setModalBackgroundInert(active: boolean): void {
+  modalBackgroundRegions.forEach((region) => {
+    region.inert = active;
+    if (active) region.setAttribute('aria-hidden', 'true');
+    else region.removeAttribute('aria-hidden');
+  });
+}
+
 function pauseForModal(): void {
+  storyRadio.setPaused(true);
+  const focused = document.activeElement;
+  if (focused instanceof HTMLElement && !modalBackdrop.contains(focused)) lastFocusedElement = focused;
+  setTacticalPaletteOpen(false);
+  window.clearTimeout(stageBannerTimer);
+  stageBanner.classList.remove('active');
+  stageBanner.setAttribute('aria-hidden', 'true');
+  gameEvents.emit('suspend-world-input');
   if (game.scene.isActive('WorldScene')) game.scene.pause('WorldScene');
+  setModalBackgroundInert(true);
+  modalBackdrop.setAttribute('aria-hidden', 'false');
   modalBackdrop.classList.remove('hidden');
+  window.requestAnimationFrame(() => closeModalButton.focus());
 }
 
 function closeModal(): void {
@@ -244,9 +572,17 @@ function closeModal(): void {
     applySettings();
   }
   modalBackdrop.classList.add('hidden');
+  modalBackdrop.setAttribute('aria-hidden', 'true');
+  setModalBackgroundInert(false);
   currentModal = null;
+  storyRadio.setPaused(!settings.tutorialComplete || !settings.consentReviewed);
   sound.play('ui');
-  gameEvents.emit('resume-world');
+  if (settings.tutorialComplete && settings.consentReviewed) gameEvents.emit('resume-world');
+  const focusTarget = lastFocusedElement;
+  lastFocusedElement = null;
+  window.requestAnimationFrame(() => {
+    if (focusTarget?.isConnected) focusTarget.focus();
+  });
   if (closing === 'privacy' && !settings.tutorialComplete) window.setTimeout(() => renderTutorial(0), 180);
 }
 
@@ -307,7 +643,9 @@ function renderSettings(): void {
       ${(['auto', 'high', 'balanced', 'low'] as const).map((value) => `<button data-graphics-quality="${value}" class="${settings.graphicsQuality === value ? 'selected' : ''}">${value === 'auto' ? '자동' : value === 'high' ? '높음' : value === 'balanced' ? '균형' : '낮음'}</button>`).join('')}
     </div></div>
     <div class="settings-actions">
-      <button id="replayTutorial">튜토리얼 다시 보기</button>
+      <button id="openJournal">작전 기록 읽기</button>
+      <button id="previewSound">타격음 미리 듣기</button>
+      <button id="replayTutorial">필드 가이드 열기</button>
       <button id="openPrivacy">개인정보·AI 안내</button>
       <button class="primary" id="closeSettings">설정 완료</button>
     </div>`;
@@ -343,6 +681,13 @@ function renderSettings(): void {
     });
   });
   modalContent.querySelector<HTMLButtonElement>('#replayTutorial')?.addEventListener('click', () => renderTutorial(0));
+  modalContent.querySelector<HTMLButtonElement>('#openJournal')?.addEventListener('click', renderJournal);
+  modalContent.querySelector<HTMLButtonElement>('#previewSound')?.addEventListener('click', async () => {
+    if (!settings.sound) { showToast('전투 사운드를 켜면 미리 들을 수 있습니다.'); return; }
+    await sound.unlock();
+    sound.play('fire-scatter');
+    window.setTimeout(() => sound.play('armor-hit'), 240);
+  });
   modalContent.querySelector<HTMLButtonElement>('#openPrivacy')?.addEventListener('click', () => renderPrivacyCenter());
   modalContent.querySelector<HTMLButtonElement>('#closeSettings')?.addEventListener('click', closeModal);
 }
@@ -357,7 +702,7 @@ function renderPrivacyCenter(): void {
     <div class="privacy-grid">
       <article><b>필수 게임 데이터</b><p>게스트 식별자, 재화, 쉘터, 오퍼레이터, 편성과 구매 검증 기록을 계정 유지와 부정 지급 방지에 사용합니다.</p></article>
       <article><b>선택 분석 데이터</b><p>동의한 경우 튜토리얼·작전·보급소 진행과 익명화된 오류 종류만 기록합니다. 설정에서 즉시 철회할 수 있습니다.</p></article>
-      <article><b>AI 처리 범위</b><p>전술 명령은 기기에서 처리합니다. 딥 토크는 별도 동의 시 입력 원문과 선택 오퍼레이터의 최근 요약 기억만 서버 중계로 외부 AI에 전송하며, 키는 앱에 포함하지 않습니다.</p></article>
+      <article><b>AI 처리 범위</b><p>전술 명령은 기기 입력과 온라인 서버 권위 판정을 함께 사용합니다. 딥 토크는 별도 동의 시 입력 원문과 선택 오퍼레이터의 최근 요약 기억만 서버 중계로 외부 AI에 전송하며, 키는 앱에 포함하지 않습니다.</p></article>
     </div>
     <div class="consent-panel">선택 분석 데이터: <b>${settings.analyticsConsent ? '허용됨' : '사용 안 함'}</b><br />
       외부 AI 딥 토크: <b>${settings.aiConsent ? '허용됨' : '규칙 기반만 사용'}</b><br />
@@ -388,13 +733,16 @@ function renderPrivacyCenter(): void {
     button.disabled = true;
     button.textContent = '내보내는 중...';
     try {
-      const payload = network.connected
+      const accountAvailable = network.accountAvailable;
+      const { endpointConfigured } = network.getDiagnostics();
+      if (!accountAvailable && endpointConfigured) throw new Error('ACCOUNT_RECONNECT_REQUIRED');
+      const payload = accountAvailable
         ? await network.exportAccount()
         : { schemaVersion: 1, exportedAt: new Date().toISOString(), mode: 'local', profile: state.snapshot() };
       downloadJson(`neural-operatives-data-${new Date().toISOString().slice(0, 10)}.json`, payload);
-      showToast('계정 데이터 내보내기 완료');
+      showToast(accountAvailable ? '서버 계정 데이터 내보내기 완료' : '로컬 모드 데이터 내보내기 완료');
     } catch {
-      showToast('데이터를 내보내지 못했습니다. 연결 상태를 확인하세요.');
+      showToast('데이터를 내보내지 못했습니다. 서버 재연결 후 다시 시도하세요.');
       button.disabled = false;
       button.textContent = '내 데이터 JSON 내보내기';
     }
@@ -407,13 +755,16 @@ function renderPrivacyCenter(): void {
     deleteButton.disabled = true;
     deleteButton.textContent = '삭제 중...';
     try {
-      if (network.connected) await network.deleteAccount();
+      const accountAvailable = network.accountAvailable;
+      const { endpointConfigured } = network.getDiagnostics();
+      if (accountAvailable) await network.deleteAccount();
+      else if (endpointConfigured) throw new Error('ACCOUNT_RECONNECT_REQUIRED');
       clearLocalAccount();
       window.location.reload();
     } catch {
       deleteButton.disabled = false;
       deleteButton.textContent = '계정 영구 삭제';
-      showToast('계정을 삭제하지 못했습니다. 서버 연결을 확인하세요.');
+      showToast('계정을 삭제하지 못했습니다. 서버 재연결 후 다시 시도하세요.');
     }
   });
   modalContent.querySelector<HTMLButtonElement>('#privacyDone')?.addEventListener('click', renderSettings);
@@ -569,22 +920,79 @@ function clearLocalAccount(): void {
 function renderTutorial(step: number): void {
   const safeStep = Math.max(0, Math.min(tutorialSteps.length - 1, step));
   const tutorial = tutorialSteps[safeStep];
+  const continuing = currentModal === 'tutorial' && !modalBackdrop.classList.contains('hidden');
   currentModal = 'tutorial';
-  pauseForModal();
+  if (!continuing) pauseForModal();
   modalContent.innerHTML = `
-    <div class="tutorial-card">
-      <div class="tutorial-progress">${tutorialSteps.map((_item, index) => `<i class="${index <= safeStep ? 'active' : ''}"></i>`).join('')}</div>
-      <span class="eyebrow">FIELD OPERATIONS TUTORIAL // ${tutorial.code}</span>
-      <div class="tutorial-icon">${tutorial.icon}</div>
-      <h2>${tutorial.title}</h2>
-      <p>${tutorial.body}</p>
-      <div class="tutorial-keys">${tutorial.keys.map((key) => `<kbd>${key}</kbd>`).join('')}</div>
-      <div class="tutorial-actions">
-        <button id="skipTutorial">건너뛰기</button>
-        <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? '작전 투입' : '다음 단계'}</button>
-      </div>
+    <div class="field-guide">
+      <aside class="guide-rail">
+        <div class="guide-identity">
+          <span>N//E FIELD MANUAL</span>
+          <b>OPERATIVE<br />ONBOARDING</b>
+          <small>전술 생존부터 장기 성장까지</small>
+        </div>
+        <nav aria-label="필드 가이드 목차">
+          ${tutorialSteps.map((item, index) => `
+            <button data-tutorial-step="${index}" class="${index === safeStep ? 'active' : ''}" ${index === safeStep ? 'aria-current="step"' : ''}>
+              <span>${String(index + 1).padStart(2, '0')}</span>
+              <b>${item.title}</b>
+              <small>${item.code.split('//')[1]?.trim() ?? item.code}</small>
+            </button>`).join('')}
+        </nav>
+        <div class="guide-loop">
+          <span>CORE GAME LOOP</span>
+          <div><b>탐사</b><i>→</i><b>전술</b><i>→</i><b>추출</b><i>→</i><b>성장</b></div>
+        </div>
+      </aside>
+      <section class="guide-stage">
+        <div class="guide-progress">
+          <span>FIELD GUIDE // ${tutorial.code}</span>
+          <b>${String(safeStep + 1).padStart(2, '0')} <i>/ ${String(tutorialSteps.length).padStart(2, '0')}</i></b>
+        </div>
+        <div class="guide-progress-track"><i style="width:${(safeStep + 1) / tutorialSteps.length * 100}%"></i></div>
+        <div class="guide-hero">
+          <div class="guide-visual" aria-hidden="true">
+            <span>${tutorial.icon}</span>
+            <b>${String(safeStep + 1).padStart(2, '0')}</b>
+          </div>
+          <div>
+            <span class="eyebrow">OPERATIVE KNOWLEDGE MODULE</span>
+            <h2 tabindex="-1">${tutorial.title}</h2>
+            <p>${tutorial.body}</p>
+          </div>
+        </div>
+        <div class="guide-utility">
+          <span>이렇게 활용하세요</span>
+          <strong>${tutorial.utility}</strong>
+        </div>
+        <div class="guide-note">
+          <span>FIELD NOTE</span>
+          <p>${tutorial.tip}</p>
+        </div>
+        <div class="tutorial-keys">${tutorial.keys.map((key) => `<kbd>${key}</kbd>`).join('')}</div>
+        <div class="tutorial-actions">
+          <button id="closeGuide">가이드 닫기</button>
+          <button id="previousTutorial" ${safeStep === 0 ? 'disabled' : ''}>이전</button>
+          <button class="primary" id="nextTutorial">${safeStep === tutorialSteps.length - 1 ? (settings.tutorialComplete ? '작전으로 돌아가기' : '작전 투입') : '다음 모듈'}</button>
+        </div>
+      </section>
     </div>`;
-  modalContent.querySelector<HTMLButtonElement>('#skipTutorial')?.addEventListener('click', closeModal);
+  modalContent.querySelectorAll<HTMLButtonElement>('[data-tutorial-step]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = Number(button.dataset.tutorialStep);
+      if (Number.isInteger(target)) {
+        sound.play('ui');
+        renderTutorial(target);
+      }
+    });
+  });
+  modalContent.querySelector<HTMLButtonElement>('#closeGuide')?.addEventListener('click', closeModal);
+  modalContent.querySelector<HTMLButtonElement>('#previousTutorial')?.addEventListener('click', () => {
+    if (safeStep > 0) {
+      sound.play('ui');
+      renderTutorial(safeStep - 1);
+    }
+  });
   modalContent.querySelector<HTMLButtonElement>('#nextTutorial')?.addEventListener('click', () => {
     sound.play('ui');
     if (safeStep < tutorialSteps.length - 1) {
@@ -595,6 +1003,12 @@ function renderTutorial(step: number): void {
     applySettings();
     void network.track('tutorial_complete', { steps: tutorialSteps.length });
     closeModal();
+  });
+  window.requestAnimationFrame(() => {
+    modalContent.querySelector<HTMLElement>('[aria-current="step"]')?.scrollIntoView({
+      block: 'nearest', inline: 'center', behavior: settings.reducedMotion ? 'auto' : 'smooth',
+    });
+    if (continuing) modalContent.querySelector<HTMLHeadingElement>('.guide-stage h2')?.focus({ preventScroll: true });
   });
 }
 
@@ -1171,12 +1585,15 @@ function renderOperationDebrief(result: {
 }): void {
   currentModal = 'operation-complete';
   pauseForModal();
+  const epilogue = storyRadio.story.journal().find((entry) => entry.operationId === result.operationId && entry.stage === 'COMPLETE');
   modalContent.innerHTML = `
     <section class="debrief">
       <span class="eyebrow">OPERATION ${escapeHtml(result.codename)} // MISSION COMPLETE</span>
       <div class="debrief-mark">S</div>
       <h2>${escapeHtml(result.title)}</h2>
       <p>${escapeHtml(result.narrative)}</p>
+      ${epilogue ? `<aside class="debrief-story"><span class="eyebrow">FINAL TRANSMISSION // ${escapeHtml(epilogue.title)}</span>
+        ${epilogue.lines.map((line) => `<p><b>${escapeHtml(line.speaker)}</b> ${escapeHtml(line.text)}</p>`).join('')}</aside>` : ''}
       <div class="debrief-stats">
         <div><span>제거</span><b>${result.kills}</b></div>
         <div><span>회수</span><b>${result.collected}</b></div>
@@ -1186,7 +1603,9 @@ function renderOperationDebrief(result: {
       <div class="debrief-reward"><span>작전 보너스</span><b>${result.online ? '보스 전리품 서버 확정' : `뉴럴 코어 +${result.bonusCores} · 데이터 +${result.bonusData}`}</b></div>
       <div class="modal-actions">
         <button class="secondary" id="finishOperation">쉘터로 귀환</button>
-        ${result.nextOperationId !== result.operationId ? '<button class="primary" id="nextOperation">다음 작전 즉시 투입</button>' : ''}
+        <button class="primary" id="nextOperation">
+          ${result.nextOperationId !== result.operationId ? '다음 작전 즉시 투입' : '같은 작전 재투입'}
+        </button>
       </div>
     </section>`;
   modalContent.querySelector<HTMLButtonElement>('#finishOperation')?.addEventListener('click', () => {
@@ -1215,23 +1634,83 @@ function renderOperationDebrief(result: {
 
 commandForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const command = commandInput.value.trim();
-  if (!command) return;
-  gameEvents.emit('tactical-command', command);
-  network.sendTactical(command);
-  commandInput.value = '';
-  commandInput.blur();
+  dispatchTacticalCommand(commandInput.value);
+});
+tacticalMenuButton.addEventListener('click', () => {
+  setTacticalPaletteOpen(tacticalPalette.classList.contains('hidden'));
+});
+closeTacticalPaletteButton.addEventListener('click', () => setTacticalPaletteOpen(false, true));
+tacticalPalette.querySelectorAll<HTMLButtonElement>('[data-tactical-command]').forEach((button) => {
+  button.addEventListener('click', () => {
+    dispatchTacticalCommand(button.dataset.tacticalCommand ?? '');
+    tacticalMenuButton.focus();
+  });
+});
+commandInput.addEventListener('focus', () => {
+  commandForm.classList.add('input-active');
+  setTacticalPaletteOpen(false);
+  gameEvents.emit('text-input-active', true);
+});
+commandInput.addEventListener('blur', () => {
+  commandForm.classList.remove('input-active');
+  gameEvents.emit('text-input-active', false);
+});
+commandInput.addEventListener('keydown', (event) => {
+  event.stopPropagation();
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    commandInput.blur();
+  }
+});
+document.addEventListener('pointerdown', (event) => {
+  if (tacticalPalette.classList.contains('hidden')) return;
+  const target = event.target;
+  if (target instanceof Node && (tacticalPalette.contains(target) || commandForm.contains(target))) return;
+  setTacticalPaletteOpen(false);
 });
 
 byId('shelterButton').addEventListener('click', renderShelter);
 byId('contractsButton').addEventListener('click', () => { void renderContracts(); });
 byId('rosterButton').addEventListener('click', renderRoster);
 storeButton.addEventListener('click', () => { void renderStore(); });
+byId('guideButton').addEventListener('click', () => renderTutorial(0));
 byId('alphaButton').addEventListener('click', renderAlphaInfo);
 byId('settingsButton').addEventListener('click', renderSettings);
-byId('closeModal').addEventListener('click', closeModal);
+closeModalButton.addEventListener('click', closeModal);
 modalBackdrop.addEventListener('click', (event) => {
   if (event.target === modalBackdrop && currentModal !== 'game-over') closeModal();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !tacticalPalette.classList.contains('hidden')) {
+    event.preventDefault();
+    setTacticalPaletteOpen(false, true);
+    return;
+  }
+  if (modalBackdrop.classList.contains('hidden')) return;
+  if (event.key === 'Escape') {
+    if (currentModal === 'game-over') return;
+    event.preventDefault();
+    closeModal();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = modalFocusableElements();
+  if (focusable.length === 0) {
+    event.preventDefault();
+    closeModalButton.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const focusOutsideModal = !(active instanceof HTMLElement) || !modalBackdrop.contains(active);
+  if (event.shiftKey && (active === first || focusOutsideModal)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || focusOutsideModal)) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 const muteButton = byId<HTMLButtonElement>('muteButton');
@@ -1241,8 +1720,9 @@ muteButton.addEventListener('click', () => {
   if (settings.sound) sound.play('ui');
 });
 
-window.addEventListener('pointerdown', () => { void sound.unlock(); }, { once: true });
-window.addEventListener('keydown', () => { void sound.unlock(); }, { once: true });
+window.addEventListener('pointerdown', () => { void sound.unlock(); }, { passive: true });
+window.addEventListener('keydown', () => { void sound.unlock(); });
+document.addEventListener('visibilitychange', () => sound.setActive(!document.hidden));
 
 document.querySelectorAll<HTMLButtonElement>('[data-move]').forEach((button) => {
   const direction = button.dataset.move as 'up' | 'down' | 'left' | 'right';
@@ -1281,11 +1761,41 @@ gameEvents.on('operator-reply', (operator: ReturnType<typeof getOperator>, reply
   showToast(`${operator.name} // ${reply}`);
   renderPersistentHud();
 });
+gameEvents.on('tactical-result', (feedback: TacticalCommandFeedback) => applyTacticalFeedback(feedback));
 gameEvents.on('neural-link-activated', (operatorId: string, skillName: string) => {
   showNeuralCutin(operatorId, skillName);
   showToast(`${getOperator(operatorId).name} // ${skillName}`);
 });
 gameEvents.on('boss-intro', showBossIntro);
+gameEvents.on('story-run-start', () => storyRadio.startRun());
+gameEvents.on('operation-update', (status: OperationStatus) => {
+  storyRadio.enter(status.operationId, status.stage);
+  storyRadio.setPaused(Boolean(currentModal) || !settings.tutorialComplete || !settings.consentReviewed);
+  sound.setScene(status.operationId, status.stage);
+  if (status.stage !== 'SCAVENGE') sound.play('objective');
+  const definition = operationDefinition(status.operationId);
+  const stage = operationStageBrief(status.operationId, status.stage);
+  const stageNumber = operationStageIndex(status.operationId, status.stage) + 1;
+  operationAnnouncement.textContent = `작전 단계 ${stageNumber}: ${stage.label}. ${stage.district}. ${stage.directive}`;
+  window.clearTimeout(stageBannerTimer);
+  if (status.stage === 'WARDEN' || status.stage === 'COMPLETE') {
+    stageBanner.classList.remove('active');
+    stageBanner.setAttribute('aria-hidden', 'true');
+    return;
+  }
+  stageBannerCode.textContent = `STAGE ${stageNumber.toString().padStart(2, '0')} // ${stage.label}`;
+  stageBannerDistrict.textContent = stage.district;
+  stageBannerDirective.textContent = stage.directive;
+  stageBanner.style.setProperty('--stage-accent', `#${definition.palette.accent.toString(16).padStart(6, '0')}`);
+  stageBanner.setAttribute('aria-hidden', 'false');
+  stageBanner.classList.remove('active');
+  void stageBanner.offsetWidth;
+  stageBanner.classList.add('active');
+  stageBannerTimer = window.setTimeout(() => {
+    stageBanner.classList.remove('active');
+    stageBanner.setAttribute('aria-hidden', 'true');
+  }, settings.reducedMotion ? 1_050 : 2_800);
+});
 gameEvents.on('state-changed', renderPersistentHud);
 gameEvents.on('game-over', renderGameOver);
 gameEvents.on('operation-complete', (result: {
@@ -1335,6 +1845,7 @@ gameEvents.on('performance-sample', (sample: PerformanceSample) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    gameEvents.emit('suspend-world-input');
     game.loop.sleep();
   } else {
     game.loop.wake();
@@ -1354,10 +1865,13 @@ gameEvents.on('hud-update', (hud: {
   linkCharge: number;
   linkLeader: string;
   dashCooldownMs: number;
+  position: { x: number; y: number };
+  activeObjectiveIds: string[];
   boss: { hp: number; maxHp: number; name: string } | null;
 }) => {
-  hpText.textContent = `${Math.ceil(hud.hp)}%`;
-  hpBar.style.width = `${hud.hp}%`;
+  const safeHp = Math.max(0, Math.min(100, Number.isFinite(hud.hp) ? hud.hp : 0));
+  hpText.textContent = `${Math.ceil(safeHp)}%`;
+  hpBar.style.width = `${safeHp}%`;
   radiationText.textContent = hud.radiation > 75 ? '위험' : hud.radiation > 30 ? '상승' : '안정';
   radiationBar.style.width = `${hud.radiation}%`;
   missionText.innerHTML = `<strong>${hud.operation.code}</strong> · ${hud.operation.title}`;
@@ -1365,11 +1879,67 @@ gameEvents.on('hud-update', (hud: {
   operationTitle.textContent = hud.operation.title;
   operationObjective.textContent = hud.operation.objective;
   operationProgress.style.width = `${Math.min(100, hud.operation.target <= 0 ? 0 : hud.operation.current / hud.operation.target * 100)}%`;
-  operationCount.textContent = hud.operation.stage === 'WARDEN' ? 'BOSS SIGNAL LOCKED'
-    : hud.operation.stage === 'RELAY' ? 'DESTROY NEURAL RELAYS'
-    : hud.operation.stage === 'EXTRACT' ? 'RETURN TO SHELTER LIFT'
+  const definition = operationDefinition(hud.operation.operationId);
+  const activeStageIndex = operationStageIndex(hud.operation.operationId, hud.operation.stage);
+  const activeStage = operationStageBrief(hud.operation.operationId, hud.operation.stage);
+  const stageKey = `${hud.operation.operationId}:${hud.operation.stage}`;
+  if (tacticalStageKey !== stageKey) {
+    tacticalStageKey = stageKey;
+    operationStageRail.innerHTML = definition.stages.map((stage, index) => `
+      <i class="${index < activeStageIndex ? 'complete' : index === activeStageIndex ? 'active' : ''}"
+        title="${stage.label} // ${stage.district}" aria-hidden="true"><span>${index + 1}</span></i>
+    `).join('');
+    operationStageRail.setAttribute(
+      'aria-label',
+      `작전 스테이지 ${activeStageIndex + 1}/${definition.stages.length}: ${activeStage.label}, ${activeStage.district}`,
+    );
+  }
+  const px = Math.max(0, Math.min(WORLD_SIZE, Number.isFinite(hud.position.x) ? hud.position.x : WORLD_SIZE / 2));
+  const py = Math.max(0, Math.min(WORLD_SIZE, Number.isFinite(hud.position.y) ? hud.position.y : WORLD_SIZE / 2));
+  const sector = nearestWorldSector(hud.operation.operationId, { x: px, y: py });
+  const stageSectors = worldStageSectors(hud.operation.operationId, hud.operation.stage);
+  const liveTargetIds = new Set(hud.activeObjectiveIds);
+  const liveTargets = stageSectors.filter((item) => liveTargetIds.has(item.id));
+  const target = liveTargets.length > 0
+    ? liveTargets.reduce((nearest, candidate) => (
+      Math.hypot(candidate.x - px, candidate.y - py) < Math.hypot(nearest.x - px, nearest.y - py)
+        ? candidate
+        : nearest
+    ))
+    : nearestWorldStageSector(hud.operation.operationId, hud.operation.stage, { x: px, y: py });
+  const deltaX = target.x - px;
+  const deltaY = target.y - py;
+  const distance = Math.hypot(deltaX, deltaY);
+  const bearing = (Math.atan2(deltaX, -deltaY) * 180 / Math.PI + 360) % 360;
+  const direction = compassDirections[Math.round(bearing / 45) % compassDirections.length];
+  mapDistrict.textContent = `${sector.code} // ${sector.label}`;
+  mapCoordinates.textContent = `X ${Math.round(px).toString().padStart(4, '0')} · Y ${Math.round(py).toString().padStart(4, '0')}`;
+  mapDirective.textContent = activeStage.directive;
+  mapTarget.textContent = `${direction} ${target.label} · ${Math.round(distance)}m`;
+  mapTarget.title = `${target.label}까지 ${Math.round(distance)}m`;
+  mapTarget.setAttribute('aria-label', `${direction}, ${target.label}까지 ${Math.round(distance)}미터`);
+  mapBearing.style.transform = `rotate(${bearing}deg)`;
+  mapPlayer.style.left = `${px / WORLD_SIZE * 100}%`;
+  mapPlayer.style.top = `${py / WORLD_SIZE * 100}%`;
+  mapRouteLine.setAttribute('x1', String(px / WORLD_SIZE * 100));
+  mapRouteLine.setAttribute('y1', String(py / WORLD_SIZE * 100));
+  mapRouteLine.setAttribute('x2', String(target.x / WORLD_SIZE * 100));
+  mapRouteLine.setAttribute('y2', String(target.y / WORLD_SIZE * 100));
+  const mapKey = `${stageKey}:${[...liveTargetIds].sort().join(',')}:${target.id}`;
+  if (tacticalMapKey !== mapKey) {
+    tacticalMapKey = mapKey;
+    mapObjectives.innerHTML = worldSectors(hud.operation.operationId).map((item) => `
+      <i class="map-objective ${item.kind} ${liveTargetIds.has(item.id) ? 'active' : ''} ${item.id === target.id ? 'target' : ''}"
+        style="left:${item.x / WORLD_SIZE * 100}%;top:${item.y / WORLD_SIZE * 100}%"
+        title="${item.code} // ${item.label}"></i>
+    `).join('');
+  }
+  operationCount.textContent = hud.operation.stage === 'WARDEN' ? '보스 신호 고정'
+    : hud.operation.stage === 'RELAY' ? '신경 중계기 파괴'
+    : hud.operation.stage === 'EXTRACT' ? '쉘터 리프트로 복귀'
       : `${Math.min(hud.operation.current, hud.operation.target)} / ${hud.operation.target}`;
-  const charge = Math.max(0, Math.min(100, Math.floor(hud.linkCharge)));
+  const rawCharge = Number.isFinite(hud.linkCharge) ? hud.linkCharge : 0;
+  const charge = Math.max(0, Math.min(100, Math.floor(rawCharge)));
   neuralLinkBar.style.width = `${charge}%`;
   neuralLinkChargeText.textContent = `${charge}%`;
   neuralLinkButton.disabled = charge < 100;
@@ -1383,13 +1953,21 @@ gameEvents.on('hud-update', (hud: {
     neuralLinkSkillText.textContent = neuralLinkSkill(hud.linkLeader).name;
   }
   bossHud.classList.toggle('hidden', !hud.boss);
+  tacticalMap.classList.toggle('boss-active', Boolean(hud.boss));
   if (hud.boss) {
+    const bossMaxHp = Math.max(1, Number.isFinite(hud.boss.maxHp) ? hud.boss.maxHp : 1);
+    const bossHp = Math.max(0, Math.min(bossMaxHp, Number.isFinite(hud.boss.hp) ? hud.boss.hp : 0));
     bossHudName.textContent = hud.boss.name;
-    bossHpBar.style.width = `${Math.max(0, hud.boss.hp / hud.boss.maxHp * 100)}%`;
-    bossHpText.textContent = `${Math.ceil(hud.boss.hp)} / ${hud.boss.maxHp}`;
+    bossHpBar.style.width = `${bossHp / bossMaxHp * 100}%`;
+    bossHpText.textContent = `${Math.ceil(bossHp)} / ${Math.ceil(bossMaxHp)}`;
+    bossHpProgress.setAttribute('aria-label', `${hud.boss.name} 체력`);
+    bossHpProgress.setAttribute('aria-valuemax', String(Math.ceil(bossMaxHp)));
+    bossHpProgress.setAttribute('aria-valuenow', String(Math.ceil(bossHp)));
+    bossHpProgress.setAttribute('aria-valuetext', `${Math.ceil(bossHp)} / ${Math.ceil(bossMaxHp)}`);
   }
 });
 
+resetTacticalStatus();
 applySettings();
 renderPersistentHud();
 if (state.offlineReward.elapsedMinutes >= 2) {

@@ -26,16 +26,35 @@
       <section id="game-shell">
         <div id="game"></div>
         <div id="scanlines"></div>
+        <div class="battlefield-chrome" aria-hidden="true">
+          <i class="field-corner field-corner-nw"></i>
+          <i class="field-corner field-corner-ne"></i>
+          <i class="field-corner field-corner-sw"></i>
+          <i class="field-corner field-corner-se"></i>
+          <div class="combat-orbit"></div>
+          <div class="field-mode">
+            <span>RED ZONE // LIVE</span>
+            <b>TACTICAL OPTICS ACTIVE</b>
+          </div>
+          <div class="field-grid-ref">
+            <span>SECTOR 07</span>
+            <b>GRID 12.44</b>
+          </div>
+        </div>
         <aside class="squad glass" id="squadHud"></aside>
-        <section class="operation-hud glass" id="operationHud" aria-live="polite">
+        <section class="operation-hud glass" id="operationHud">
           <div><span id="operationCode">OP-00 // SALVAGE</span><b id="operationTitle">죽은 도시의 신호</b></div>
           <p id="operationObjective">현장 자원을 회수하십시오.</p>
           <div class="operation-progress"><i id="operationProgress"></i></div>
-          <small id="operationCount">0 / 8</small>
+          <div class="operation-footer">
+            <div class="operation-stage-rail" id="operationStageRail" aria-label="작전 스테이지"></div>
+            <small id="operationCount">0 / 8</small>
+          </div>
         </section>
-        <section class="boss-hud hidden" id="bossHud" aria-live="assertive">
+        <div class="sr-only" id="operationAnnouncement" role="status" aria-live="polite" aria-atomic="true"></div>
+        <section class="boss-hud hidden" id="bossHud" aria-label="보스 상태">
           <span>MOTHERBRAIN COMMAND UNIT</span><b id="bossHudName">감시자 케르베로스</b>
-          <div><i id="bossHpBar"></i></div><small id="bossHpText">520 / 520</small>
+          <div id="bossHpProgress" role="progressbar" aria-label="보스 체력" aria-valuemin="0" aria-valuemax="520" aria-valuenow="520"><i id="bossHpBar"></i></div><small id="bossHpText">520 / 520</small>
         </section>
         <div class="weapon-dock glass" id="weaponDock" aria-label="무기 선택">
           <button data-weapon="carbine" class="selected"><kbd>1</kbd><span><b>CARBINE</b><small>균형형</small></span></button>
@@ -54,6 +73,27 @@
           <div class="bar radiation"><i id="radiationBar"></i></div>
         </div>
         <div class="event-feed glass" id="eventFeed"></div>
+        <aside class="tactical-map glass" id="tacticalMap" aria-label="전술 지도">
+          <header><span>TACTICAL MAP</span><b id="mapDistrict">구역 동기화 중</b></header>
+          <div class="map-viewport" id="mapViewport">
+            <i class="map-axis map-axis-x"></i><i class="map-axis map-axis-y"></i>
+            <svg class="map-route-vector" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+              <line id="mapRouteLine" x1="50" y1="50" x2="50" y2="50"></line>
+            </svg>
+            <div id="mapObjectives"></div>
+            <i class="map-player" id="mapPlayer"></i>
+          </div>
+          <footer>
+            <span id="mapCoordinates">X 1200 · Y 1200</span>
+            <b class="map-target"><i id="mapBearing">↑</i><span id="mapTarget">목표 계산 중</span></b>
+          </footer>
+          <p class="map-directive" id="mapDirective">목표 경로 계산 중</p>
+        </aside>
+        <section class="stage-banner" id="stageBanner" aria-hidden="true">
+          <span id="stageBannerCode">STAGE 01 // 탐색</span>
+          <strong id="stageBannerDistrict">침수 상가</strong>
+          <p id="stageBannerDirective">폐허의 회수 신호를 따라 자원 거점을 확보하십시오.</p>
+        </section>
         <div class="crosshair">+</div>
       </section>
 
@@ -62,15 +102,46 @@
         <button id="contractsButton" class="contracts-button"><span>◆</span> 계약<em id="contractBadge" class="hidden">0</em></button>
         <button id="rosterButton"><span>◈</span> 오퍼레이터</button>
         <button id="storeButton"><span>▣</span> 보급소</button>
+        <button id="guideButton"><span>?</span> 가이드</button>
         <button id="alphaButton"><span>⌁</span> 알파 정보</button>
         <form id="commandForm">
-          <span class="prompt">TACTICAL://</span>
-          <input id="commandInput" maxlength="100" autocomplete="off" placeholder="예: 방패병 시선 끌어줘, 내가 우회할게" />
+          <button class="tactical-trigger" id="tacticalMenuButton" type="button" aria-expanded="false" aria-controls="tacticalPalette">
+            <span aria-hidden="true">◇</span><b id="tacticalTriggerLabel">전술</b>
+          </button>
+          <input id="commandInput" maxlength="100" autocomplete="off" aria-label="자연어 전술 명령" placeholder="예: 방패병 시선 끌어줘, 내가 우회할게" />
           <button type="submit">전송</button>
         </form>
         <button id="muteButton" aria-label="사운드 전환">SFX ON</button>
         <button id="settingsButton" aria-label="게임 설정"><span>⚙</span> 설정</button>
       </nav>
+
+      <aside class="tactical-palette glass hidden" id="tacticalPalette" aria-label="빠른 전술 명령">
+        <header>
+          <div><span>TACTICAL QUICKLINK</span><strong>분대 명령 콘솔</strong></div>
+          <button id="closeTacticalPalette" type="button" aria-label="전술 명령 콘솔 닫기">×</button>
+        </header>
+        <div class="tactical-status" id="tacticalStatus" data-state="idle" role="status" aria-live="polite" aria-atomic="true">
+          <span id="tacticalStatusSource">LINK STANDBY</span>
+          <strong id="tacticalStatusLabel">분대 명령 대기</strong>
+          <b id="tacticalStatusDetail">자연어를 입력하거나 빠른 명령을 선택하세요.</b>
+          <i><em id="tacticalStatusProgress"></em></i>
+        </div>
+        <div class="tactical-presets">
+          <button type="button" data-tactical-command="모두 내 쪽으로 복귀해" data-tactical-order="REGROUP">
+            <span>01</span><strong>집결</strong><small>분대 복귀</small>
+          </button>
+          <button type="button" data-tactical-command="강한 적을 집중 공격해" data-tactical-order="FOCUS">
+            <span>02</span><strong>집중</strong><small>강적 우선</small>
+          </button>
+          <button type="button" data-tactical-command="주변 자원을 찾아 회수해" data-tactical-order="SCAVENGE">
+            <span>03</span><strong>회수</strong><small>자원 탐색</small>
+          </button>
+          <button type="button" data-tactical-command="루멘, 지금 치료해줘" data-tactical-order="HEAL">
+            <span>04</span><strong>회복</strong><small>Support 치료</small>
+          </button>
+        </div>
+        <p>직접 입력: 집결·회복·우회·엄폐·도발·집중 공격·자원 회수를 자연어로 지시할 수 있습니다.</p>
+      </aside>
 
       <div class="mobile-controls" aria-label="모바일 조작">
         <div class="dpad">
@@ -86,8 +157,8 @@
         </div>
       </div>
 
-      <div class="modal-backdrop hidden" id="modalBackdrop">
-        <section class="modal glass" role="dialog" aria-modal="true">
+      <div class="modal-backdrop hidden" id="modalBackdrop" aria-hidden="true">
+        <section class="modal glass" role="dialog" aria-modal="true" aria-label="게임 메뉴 및 정보">
           <button class="close" id="closeModal" aria-label="닫기">×</button>
           <div id="modalContent"></div>
         </section>

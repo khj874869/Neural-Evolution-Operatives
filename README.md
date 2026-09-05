@@ -79,13 +79,15 @@ PostgreSQL·Redis까지 포함한 전체 백엔드는 Docker로 실행합니다.
 
 ```bash
 cp .env.example .env
-# .env의 JWT_SECRET을 32자 이상의 무작위 값으로 설정
+# .env의 JWT_SECRET, POSTGRES_PASSWORD, REDIS_PASSWORD를 강한 무작위 값으로 설정
+# DATABASE_URL=postgresql://neo:<POSTGRES_PASSWORD>@postgres:5432/neural_evolution
+# REDIS_URL=redis://:<REDIS_PASSWORD>@redis:6379
 # 운영 콘솔이 필요하면 OPS_ADMIN_TOKEN도 별도의 32자 이상 무작위 값으로 설정
 docker compose -f infra/docker-compose.yml up --build -d
 npm run dev
 ```
 
-Docker 서버를 시작하려면 `JWT_SECRET`을 반드시 설정해야 합니다. 공개 환경에 배포하기 전에는 `POSTGRES_PASSWORD`, `CORS_ORIGIN`도 운영값으로 바꾸세요. `.env.example`에는 비밀값을 넣지 않습니다.
+Docker 서버를 시작하려면 `JWT_SECRET`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `DATABASE_URL`, `REDIS_URL`을 반드시 설정해야 합니다. 공개 환경에 배포하기 전에는 `CORS_ORIGIN`도 실제 클라이언트 주소로 제한하세요. 단일 리버스 프록시 뒤에서는 `TRUST_PROXY_HOPS=1`로 설정하고, 프록시가 클라이언트 전달 헤더를 덮어쓰도록 구성해야 사용자별 요청 제한이 정확히 적용됩니다. 로컬·직접 노출 환경은 기본값 `0`을 유지합니다. `.env.example`에는 비밀값을 넣지 않습니다.
 
 외부 AI 딥 토크를 알파에서 시험할 때만 서버 환경에 `OPENAI_API_KEY`를 넣습니다. 기본 모델과 호출·안전 상한은 `OPENAI_MODEL`, `AI_DAILY_TURN_LIMIT`, `AI_TIMEOUT_MS`, `AI_MODERATION_ENABLED`로 조정합니다. 키가 없거나 제공자가 응답하지 않아도 로컬 페르소나 코어가 대화를 이어갑니다.
 
@@ -99,7 +101,7 @@ npm run build
 npm run build:server
 ```
 
-Android 내부 테스트 프로젝트를 동기화하고 디버그 APK를 만들려면 Android SDK/JDK 17 환경에서 실행합니다.
+Android 내부 테스트 프로젝트를 동기화하고 디버그 APK를 만들려면 Android SDK와 JDK 21 환경에서 실행합니다. Capacitor 8이 생성하는 Android 소스가 Java 21을 사용하므로 JDK 17이나 현재 Gradle과 호환되지 않는 JDK 25 대신 JDK 21로 고정합니다.
 
 ```bash
 npm run mobile:sync
@@ -127,7 +129,7 @@ npm run smoke:soak -- http://localhost:2567 16 120000
 | 무기 전환 | 숫자 `1`·`2`·`3` | 화면 하단 무기 버튼 |
 | 뉴럴 링크 | 게이지 100%에서 `Q` | 게이지 100%에서 리더 초상화 |
 | 화물 추출 | 중앙 리프트에서 `E` | 중앙 리프트에서 `EXTRACT` |
-| 동료 명령 | 하단 전술 입력창 | 하단 전술 입력창 |
+| 동료 명령 | 하단 `전술` 퀵바 또는 자연어 입력 | 하단 `전술` 퀵바 또는 자연어 입력 |
 | 쉘터/로스터 | 하단 메뉴 | 하단 메뉴 |
 | 생존 계약 | 하단 `계약` | 하단 `계약` |
 | 보급소 | 하단 `보급소` | 하단 `보급소` |
@@ -142,6 +144,8 @@ npm run smoke:soak -- http://localhost:2567 16 120000
 루멘, 지금 치료해줘
 저격수에게 집중 사격
 ```
+
+`전술` 버튼은 집결·집중·회수·회복 프리셋을 열고, 서버가 명령을 승인하거나 거부한 이유와 9초 효과·회복 재충전 시간을 버튼에 계속 표시합니다. 자연어 입력 중에는 WASD·숫자키가 전장 조작으로 전달되지 않습니다.
 
 ## 구조
 

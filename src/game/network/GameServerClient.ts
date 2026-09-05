@@ -8,7 +8,9 @@ import type { ReleaseChannel } from '../../../packages/shared/src/release';
 import { CLIENT_RELEASE, clientPlatform } from '../../release';
 import { gameEvents } from '../events';
 import type { ClientErrorReport } from '../telemetry/ClientTelemetry';
-import { isOperationId, type OperationId } from '../../../packages/shared/src/operations';
+import {
+  isOperationId, resolveUnlockedOperationId, type OperationId,
+} from '../../../packages/shared/src/operations';
 import type { GearId } from '../../../packages/shared/src/gear';
 import type {
   ContractBoard, ContractId, ContractReward,
@@ -16,6 +18,11 @@ import type {
 import type {
   AlphaFeedbackReceipt, AlphaFeedbackSubmission,
 } from '../../../packages/shared/src/alphaOps';
+import {
+  isTacticalOrder, type TacticalCommandFeedback,
+} from '../../../packages/shared/src/tactical';
+
+const REQUEST_TIMEOUT_MS = 8_000;
 
 export interface NetworkSnapshot {
   localSessionId: string;
@@ -66,6 +73,8 @@ export class GameServerClient {
   private token?: string;
   private readonly endpoint: string;
   private analyticsConsent = false;
+  private analyticsConsentSynced = false;
+  private analyticsConsentSync: Promise<void> = Promise.resolve();
   private readonly analyticsQueue: Array<{ event: FunnelEventName; properties: FunnelProperties }> = [];
   private readonly recentErrorFingerprints = new Map<string, number>();
   private releaseInfo: ServerReleaseInfo | null = null;
@@ -82,8 +91,15 @@ export class GameServerClient {
 
   setAnalyticsConsent(consented: boolean): void {
     this.analyticsConsent = consented;
+    this.analyticsConsentSynced = false;
     if (!consented) this.analyticsQueue.length = 0;
-    else void this.flushAnalytics();
+    if (!this.token) return;
+    void this.syncAnalyticsConsent()
+      .then(() => this.flushAnalytics())
+      .catch(() => {
+        // Fail closed: telemetry stays queued until a later successful consent sync.
+        this.analyticsConsentSynced = false;
+      });
   }
 
   get accountAvailable(): boolean {
@@ -104,19 +120,34 @@ export class GameServerClient {
         method: 'POST', body: JSON.stringify({ deviceId: deviceId() }),
       });
       this.token = auth.token;
+      this.analyticsConsentSynced = false;
+      const resolvedOperationId = resolveUnlockedOperationId(
+        operationId,
+        auth.profile.campaign.completedOperations,
+      );
+      this.operationId = resolvedOperationId;
       gameEvents.emit('network-profile', auth.profile);
-      await this.joinOperation(operationId, epoch);
+      if (resolvedOperationId !== operationId) {
+        gameEvents.emit('network-operation-fallback', resolvedOperationId, operationId);
+      }
+      await this.syncAnalyticsConsent().catch(() => {
+        // Gameplay remains available, but analytics transmission stays disabled.
+        this.analyticsConsentSynced = false;
+      });
+      await this.joinOperation(resolvedOperationId, epoch);
       await this.flushAnalytics();
       void this.track('session_start', {
         mode: 'online', serverVersion: this.releaseInfo?.version ?? 'unknown',
       });
-      void this.claimOffline();
+      void this.claimOffline().catch(() => {
+        // Offline rewards are optional; a transient sync failure must not surface as an unhandled error.
+      });
     } catch {
       if (epoch !== this.lifecycleEpoch) return;
       this.connected = false;
       if (this.token) {
         gameEvents.emit('network-status', 'reconnecting', '작전 세션 복구 준비 중');
-        void this.beginFreshRecovery(operationId, epoch);
+        void this.beginFreshRecovery(this.operationId, epoch);
       } else {
         gameEvents.emit('network-status', 'offline', '서버 없음 · 로컬 모드');
       }
@@ -124,9 +155,9 @@ export class GameServerClient {
   }
 
   async switchOperation(operationId: OperationId): Promise<void> {
-    if (!this.endpoint || !this.token) return;
-    const epoch = ++this.lifecycleEpoch;
     this.operationId = operationId;
+    const epoch = ++this.lifecycleEpoch;
+    if (!this.endpoint || !this.token) return;
     const previousRoom = this.room;
     this.room = undefined;
     this.connected = false;
@@ -284,6 +315,7 @@ export class GameServerClient {
     await previousRoom?.leave().catch(() => undefined);
     this.connected = false;
     this.token = undefined;
+    this.analyticsConsentSynced = false;
   }
 
   async submitAlphaFeedback(
@@ -300,7 +332,7 @@ export class GameServerClient {
   async track(event: FunnelEventName, properties: FunnelProperties = {}): Promise<void> {
     if (!this.analyticsConsent || !this.endpoint) return;
     const payload = { event, properties: this.enrichAnalytics(properties) };
-    if (!this.token) {
+    if (!this.token || !this.analyticsConsentSynced) {
       this.enqueueAnalytics(payload);
       return;
     }
@@ -373,11 +405,26 @@ export class GameServerClient {
     room.onStateChange((state: unknown) => this.emitSnapshot(state));
     room.onMessage<ServerEventMessage>('server-event', (event) => {
       gameEvents.emit('feed', event.message, event.type === 'error');
+      const tacticalOrder = event.payload?.order;
+      if (isTacticalOrder(tacticalOrder)) {
+        const durationMs = finiteDuration(event.payload?.durationMs);
+        const cooldownMs = finiteDuration(event.payload?.cooldownMs);
+        gameEvents.emit('tactical-result', {
+          order: tacticalOrder,
+          applied: event.type !== 'error',
+          message: event.message,
+          source: 'server',
+          ...(durationMs > 0 ? { durationMs } : {}),
+          ...(cooldownMs > 0 ? { cooldownMs } : {}),
+        } satisfies TacticalCommandFeedback);
+      }
       if (event.type === 'extraction') {
         gameEvents.emit('sfx', 'extract');
         gameEvents.emit('haptic', 'success');
         gameEvents.emit('server-extraction', event.payload ?? {});
-        void this.refreshProfile();
+        void this.refreshProfile().catch(() => {
+          // The authoritative extraction already succeeded; the next profile sync can retry naturally.
+        });
       }
       if (event.type === 'mission' && event.payload?.bossDefeated) gameEvents.emit('boss-defeated');
       if (event.type === 'neural-link' && typeof event.payload?.operatorId === 'string' && typeof event.payload?.skillName === 'string') {
@@ -398,7 +445,9 @@ export class GameServerClient {
       this.lastReconnectAt = new Date().toISOString();
       gameEvents.emit('network-status', 'online', `ROOM ${room.roomId.slice(0, 6)} · SESSION RESTORED`);
       gameEvents.emit('feed', '뉴럴 링크 복구 완료 // 현장 상태를 유지했습니다.');
-      void this.refreshProfile();
+      void this.refreshProfile().catch(() => {
+        // Reconnection remains usable even when the profile refresh is briefly unavailable.
+      });
     });
     room.onLeave(() => {
       if (this.room !== room || epoch !== this.lifecycleEpoch) return;
@@ -463,7 +512,8 @@ export class GameServerClient {
   }
 
   private async flushAnalytics(): Promise<void> {
-    if (!this.analyticsConsent || !this.endpoint || !this.token || !this.analyticsQueue.length) return;
+    if (!this.analyticsConsent || !this.analyticsConsentSynced
+      || !this.endpoint || !this.token || !this.analyticsQueue.length) return;
     const pending = this.analyticsQueue.splice(0);
     for (const payload of pending) {
       try {
@@ -488,13 +538,51 @@ export class GameServerClient {
     });
   }
 
+  private syncAnalyticsConsent(): Promise<void> {
+    const token = this.token;
+    const consent = this.analyticsConsent;
+    if (!token) {
+      this.analyticsConsentSynced = false;
+      return Promise.resolve();
+    }
+    this.analyticsConsentSynced = false;
+    const sync = this.analyticsConsentSync
+      .catch(() => undefined)
+      .then(async () => {
+        if (this.token !== token) return;
+        const response = await this.authorized<{ profile: PlayerProfile }>('/api/profile/analytics-consent', {
+          method: 'PUT', body: JSON.stringify({ consent }),
+        });
+        if (this.token !== token || this.analyticsConsent !== consent) return;
+        this.analyticsConsentSynced = true;
+        gameEvents.emit('network-profile', response.profile);
+      });
+    this.analyticsConsentSync = sync;
+    return sync;
+  }
+
   private async request<T>(path: string, init: RequestInit): Promise<T> {
-    const response = await fetch(`${this.endpoint}${path}`, {
-      ...init,
-      headers: { 'content-type': 'application/json', ...init.headers },
-    });
-    if (!response.ok) throw new Error(`SERVER_${response.status}`);
-    return response.json() as Promise<T>;
+    const controller = new AbortController();
+    const sourceSignal = init.signal;
+    const abortFromSource = () => controller.abort(sourceSignal?.reason);
+    if (sourceSignal?.aborted) abortFromSource();
+    else sourceSignal?.addEventListener('abort', abortFromSource, { once: true });
+    const timeout = globalThis.setTimeout(
+      () => controller.abort(new Error('REQUEST_TIMEOUT')),
+      REQUEST_TIMEOUT_MS,
+    );
+    try {
+      const response = await fetch(`${this.endpoint}${path}`, {
+        ...init,
+        signal: controller.signal,
+        headers: { 'content-type': 'application/json', ...init.headers },
+      });
+      if (!response.ok) throw new Error(`SERVER_${response.status}`);
+      return response.json() as Promise<T>;
+    } finally {
+      globalThis.clearTimeout(timeout);
+      sourceSignal?.removeEventListener('abort', abortFromSource);
+    }
   }
 
   private emitSnapshot(rawState: unknown): void {
@@ -507,6 +595,7 @@ export class GameServerClient {
       enemies: Map<string, NetworkSnapshot['enemies'][number]>;
       resources: Map<string, NetworkSnapshot['resources'][number]>;
     };
+    if (!isOperationId(state.operationId) || state.operationId !== this.operationId) return;
     const mapValues = <T extends object>(map: Map<string, T>): Array<T & { id: string }> => {
       const values: Array<T & { id: string }> = [];
       map?.forEach((value, id) => values.push({ ...plain(value), id } as T & { id: string }));
@@ -515,7 +604,7 @@ export class GameServerClient {
     gameEvents.emit('network-snapshot', {
       localSessionId: this.room?.sessionId ?? '',
       stormActive: Boolean(state.stormActive),
-      operationId: isOperationId(state.operationId) ? state.operationId : 'operation-zero',
+      operationId: state.operationId,
       relaysDestroyed: Number(state.relaysDestroyed ?? 0),
       bossDefeated: Boolean(state.bossDefeated),
       players: mapValues(state.players),
@@ -523,6 +612,10 @@ export class GameServerClient {
       resources: mapValues(state.resources),
     } satisfies NetworkSnapshot);
   }
+}
+
+function finiteDuration(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
 
 function deviceId(): string {

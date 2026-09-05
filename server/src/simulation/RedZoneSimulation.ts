@@ -8,10 +8,17 @@ import {
   evaluateOperation, operationDefinition, type OperationId,
 } from '../../../packages/shared/src/operations.js';
 import {
-  EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
-  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
+  EXTRACTION_POINT, findOpenPosition, findSectorSpawnPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, worldStageSectors,
+  type WorldObstacle,
 } from '../../../packages/shared/src/world.js';
 import { calculateCombatBonuses, type GearId } from '../../../packages/shared/src/gear.js';
+import {
+  parseTacticalCommand, TACTICAL_HEAL_AMOUNT, TACTICAL_HEAL_COOLDOWN_MS,
+  TACTICAL_ORDER_DURATION_MS, tacticalDamageMultiplier, tacticalMoveSpeedMultiplier,
+  tacticalOrderEffect,
+  type TacticalOrder,
+} from '../../../packages/shared/src/tactical.js';
 
 export { EXTRACTION_POINT, WORLD_SIZE };
 
@@ -62,6 +69,14 @@ export type SimulationEvent =
   }
   | { type: 'death'; playerSessionId: string; message: string };
 
+export interface TacticalCommandResult {
+  order: TacticalOrder;
+  applied: boolean;
+  message: string;
+  durationMs?: number;
+  cooldownMs?: number;
+}
+
 interface InternalPlayer extends SimPlayer {
   gear: GearId[];
   input: GameInputMessage;
@@ -73,6 +88,11 @@ interface InternalPlayer extends SimPlayer {
   reportedKills: number;
   salvageCollected: number;
   collected: ResourceWallet;
+  invulnerableUntilMs: number;
+  tacticalOrder: TacticalOrder;
+  tacticalUntilMs: number;
+  healAvailableAtMs: number;
+  focusTargetId?: string;
 }
 
 const ENEMY_STATS: Record<EnemyKind, { hp: number; speed: number; damage: number }> = {
@@ -89,8 +109,12 @@ const ENEMY_STATS: Record<EnemyKind, { hp: number; speed: number; damage: number
 
 const EMPTY_INPUT: GameInputMessage = {
   sequence: 0, moveX: 0, moveY: 0, aimAngle: 0, fire: false, extract: false,
-  weapon: 'carbine', activateLink: false, dash: false,
+  weapon: 'carbine', activateLink: false, dash: false, paused: false,
 };
+const MAX_WAVE_ENEMIES = 48;
+const MAX_TOTAL_ENEMIES = 56;
+const MAX_FIELD_RESOURCES = 72;
+const RESPAWN_GRACE_MS = 3_000;
 
 export class RedZoneSimulation {
   readonly players = new Map<string, InternalPlayer>();
@@ -105,6 +129,7 @@ export class RedZoneSimulation {
   private bossSpawned = false;
   private bossDefeated = false;
   private relaysSpawned = false;
+  private readonly completedPlayerIds = new Set<string>();
   private readonly obstacles: readonly WorldObstacle[];
   relaysDestroyed = 0;
 
@@ -150,6 +175,10 @@ export class RedZoneSimulation {
       reportedKills: 0,
       salvageCollected: 0,
       collected: emptyWallet(),
+      invulnerableUntilMs: 0,
+      tacticalOrder: 'REGROUP',
+      tacticalUntilMs: 0,
+      healAvailableAtMs: 0,
     };
     this.players.set(sessionId, player);
     if (this.enemies.size === 0) this.spawnWave(4);
@@ -201,9 +230,77 @@ export class RedZoneSimulation {
       weapon: isWeaponId(input.weapon) ? input.weapon : 'carbine',
       activateLink: Boolean(input.activateLink),
       dash: Boolean(input.dash),
+      paused: Boolean(input.paused),
     };
     player.lastSequence = input.sequence;
     return true;
+  }
+
+  applyTacticalCommand(sessionId: string, input: string): TacticalCommandResult {
+    const player = this.players.get(sessionId);
+    const parsed = parseTacticalCommand(input);
+    if (!player) return { order: parsed.order, applied: false, message: '전술 링크 대상이 존재하지 않습니다.' };
+    if (parsed.order === 'UNKNOWN') {
+      return { order: parsed.order, applied: false, message: '전술 명령을 해석하지 못했습니다.' };
+    }
+
+    if (parsed.order === 'HEAL') {
+      const hasSupport = player.squad.some((operatorId) => neuralLinkSkill(operatorId).role === 'Support');
+      if (!hasSupport) {
+        return {
+          order: parsed.order, applied: false,
+          message: '치료 명령 거부 // Support 오퍼레이터를 분대에 편성하십시오.',
+        };
+      }
+      const cooldownMs = Math.max(0, player.healAvailableAtMs - this.elapsedMs);
+      if (cooldownMs > 0) {
+        return {
+          order: parsed.order, applied: false, cooldownMs,
+          message: `치료 링크 재충전 // ${Math.ceil(cooldownMs / 1_000)}초`,
+        };
+      }
+      if (player.hp >= 100) {
+        return { order: parsed.order, applied: false, message: '치료 명령 보류 // 생체 신호가 이미 안정적입니다.' };
+      }
+      player.hp = clamp(player.hp + TACTICAL_HEAL_AMOUNT, 0, 100);
+      player.healAvailableAtMs = this.elapsedMs + TACTICAL_HEAL_COOLDOWN_MS;
+      return {
+        order: parsed.order, applied: true,
+        cooldownMs: TACTICAL_HEAL_COOLDOWN_MS,
+        message: `Support 응급 치료 승인 // HP +${TACTICAL_HEAL_AMOUNT}`,
+      };
+    }
+
+    player.tacticalOrder = parsed.order;
+    player.tacticalUntilMs = this.elapsedMs + TACTICAL_ORDER_DURATION_MS;
+    player.focusTargetId = undefined;
+    if (parsed.order === 'FOCUS') {
+      const target = this.findFocusTarget(player);
+      if (!target) {
+        player.tacticalOrder = 'REGROUP';
+        player.tacticalUntilMs = 0;
+        return { order: parsed.order, applied: false, message: '집중 공격 가능한 적대 신호가 없습니다.' };
+      }
+      player.focusTargetId = target.id;
+      return {
+        order: parsed.order, applied: true,
+        durationMs: TACTICAL_ORDER_DURATION_MS,
+        message: `집중 공격 표식 승인 // ${target.kind.toUpperCase()}`,
+      };
+    }
+    if (parsed.order === 'SCAVENGE') {
+      return {
+        order: parsed.order, applied: true,
+        durationMs: TACTICAL_ORDER_DURATION_MS,
+        message: `자원 회수 프로토콜 승인 // ${TACTICAL_ORDER_DURATION_MS / 1_000}초`,
+      };
+    }
+    return {
+      order: parsed.order,
+      applied: true,
+      durationMs: TACTICAL_ORDER_DURATION_MS,
+      message: `전술 명령 승인 // ${parsed.order}`,
+    };
   }
 
   tick(deltaMs: number): void {
@@ -227,10 +324,11 @@ export class RedZoneSimulation {
     }).stage);
     if (stages.includes('RELAY') && !this.relaysSpawned) this.spawnRelays();
     if (stages.includes('WARDEN') && !this.bossSpawned) this.spawnBoss();
-    if (this.players.size && this.waveElapsedMs >= 12_000) {
+    const activePlayers = [...this.players.values()].filter((player) => !player.input.paused);
+    if (activePlayers.length && !this.bossDefeated && this.waveElapsedMs >= 12_000) {
       this.waveElapsedMs = 0;
       const pressure = Math.min(10, 3 + Math.floor(this.elapsedMs / 45_000));
-      this.spawnWave(pressure + this.players.size);
+      this.spawnWave(pressure + activePlayers.length);
     }
   }
 
@@ -244,11 +342,33 @@ export class RedZoneSimulation {
 
   private updatePlayer(player: InternalPlayer, deltaMs: number): void {
     player.dashCooldownMs = Math.max(0, player.dashCooldownMs - deltaMs);
+    player.hp = clamp(player.hp, 0, 100);
+    if (player.hp <= 0) {
+      this.respawn(player);
+      return;
+    }
+    if (this.elapsedMs >= player.tacticalUntilMs) {
+      player.tacticalOrder = 'REGROUP';
+      player.focusTargetId = undefined;
+    }
+    if (player.input.paused) {
+      player.input.moveX = 0;
+      player.input.moveY = 0;
+      player.input.fire = false;
+      player.input.extract = false;
+      player.input.activateLink = false;
+      player.input.dash = false;
+      return;
+    }
     if (player.input.dash) {
       player.input.dash = false;
       this.dash(player);
     }
-    const speed = 205 * player.bonuses.moveSpeedMultiplier;
+    const flankMultiplier = tacticalMoveSpeedMultiplier(
+      'FLANK',
+      hasActiveTacticalOrder(player, 'FLANK', this.elapsedMs),
+    );
+    const speed = 205 * player.bonuses.moveSpeedMultiplier * flankMultiplier;
     const movement = resolveCircleMovement(player, {
       x: player.input.moveX * speed * deltaMs / 1000,
       y: player.input.moveY * speed * deltaMs / 1000,
@@ -263,11 +383,19 @@ export class RedZoneSimulation {
       : -deltaMs * 0.0025;
     player.radiation = clamp(player.radiation + radiationDelta, 0, 100);
     if (player.radiation >= 100) {
-      player.hp -= 4 * player.bonuses.damageTakenMultiplier;
+      player.hp = clamp(
+        player.hp - 4 * player.bonuses.damageTakenMultiplier * tacticalDefenseMultiplier(player, this.elapsedMs),
+        0,
+        100,
+      );
       player.radiation = 82;
     }
     if (player.bonuses.regenPerSecond > 0 && player.hp > 0) {
-      player.hp = Math.min(100, player.hp + player.bonuses.regenPerSecond * deltaMs / 1000);
+      player.hp = clamp(player.hp + player.bonuses.regenPerSecond * deltaMs / 1000, 0, 100);
+    }
+    if (player.hp <= 0) {
+      this.respawn(player);
+      return;
     }
     const weapon = WEAPON_SPECS[player.input.weapon];
     if (player.input.activateLink) {
@@ -301,26 +429,39 @@ export class RedZoneSimulation {
     player.shots += angles.length;
     for (const shotAngle of angles) {
       let target: SimEnemy | undefined;
+      let focusedTarget: SimEnemy | undefined;
       let targetDistance = weapon.range;
+      const focusTargetId = player.tacticalOrder === 'FOCUS' && this.elapsedMs < player.tacticalUntilMs
+        ? player.focusTargetId
+        : undefined;
       for (const enemy of this.enemies.values()) {
         const distance = Math.hypot(enemy.x - player.x, enemy.y - player.y);
-        if (distance >= targetDistance) continue;
+        if (distance >= weapon.range) continue;
         const angle = Math.atan2(enemy.y - player.y, enemy.x - player.x);
         if (Math.abs(normalizeAngle(angle - shotAngle)) > 0.16) continue;
         if (isLineBlocked(player, enemy, this.obstacles)) continue;
+        if (enemy.id === focusTargetId) {
+          focusedTarget = enemy;
+          continue;
+        }
+        if (distance >= targetDistance) continue;
         target = enemy;
         targetDistance = distance;
       }
+      target = focusedTarget ?? target;
       if (!target) continue;
       player.hits += 1;
       player.linkCharge = addNeuralCharge(player.linkCharge, 4);
-      target.hp -= weapon.damage * player.bonuses.damageMultiplier;
+      const tacticalMultiplier = target.id === focusTargetId
+        ? tacticalDamageMultiplier('FOCUS', true, true)
+        : tacticalDamageMultiplier('FLANK', hasActiveTacticalOrder(player, 'FLANK', this.elapsedMs));
+      target.hp = Math.max(0, target.hp - weapon.damage * player.bonuses.damageMultiplier * tacticalMultiplier);
       if (target.hp <= 0) this.defeatEnemy(player, target);
     }
   }
 
   private updateEnemy(enemy: SimEnemy, deltaMs: number): void {
-    const target = nearestPlayer(enemy, this.players.values());
+    const target = nearestPlayer(enemy, this.players.values(), this.elapsedMs);
     if (!target) return;
     const stats = ENEMY_STATS[enemy.kind];
     const dx = target.x - enemy.x;
@@ -360,11 +501,18 @@ export class RedZoneSimulation {
     } else {
       enemy.attackCooldownMs -= deltaMs;
       if (enemy.attackCooldownMs <= 0) {
-        target.hp -= stats.damage * target.bonuses.damageTakenMultiplier;
-        target.linkCharge = addNeuralCharge(target.linkCharge, 6);
-        if (enemy.kind === 'jammer') target.linkCharge = Math.max(0, target.linkCharge - 18);
-        if (enemy.kind === 'relay') target.linkCharge = Math.max(0, target.linkCharge - 12);
-        if (enemy.kind === 'sapper') target.radiation = clamp(target.radiation + 8, 0, 100);
+        if (this.elapsedMs >= target.invulnerableUntilMs) {
+          target.hp = clamp(
+            target.hp - stats.damage * target.bonuses.damageTakenMultiplier
+              * tacticalDefenseMultiplier(target, this.elapsedMs),
+            0,
+            100,
+          );
+          target.linkCharge = addNeuralCharge(target.linkCharge, 6);
+          if (enemy.kind === 'jammer') target.linkCharge = Math.max(0, target.linkCharge - 18);
+          if (enemy.kind === 'relay') target.linkCharge = Math.max(0, target.linkCharge - 12);
+          if (enemy.kind === 'sapper') target.radiation = clamp(target.radiation + 8, 0, 100);
+        }
         enemy.attackCooldownMs = enemy.kind === 'harvester' ? 1_200
           : enemy.kind === 'warden' ? 1_350
             : enemy.kind === 'relay' || enemy.kind === 'jammer' ? 1_450 : 820;
@@ -377,10 +525,15 @@ export class RedZoneSimulation {
     if (enemy.abilityCooldownMs > 0) return;
     const pattern = enemy.abilityPattern ?? 0;
     if (pattern % 2 === 0) {
-      if (Math.hypot(target.x - enemy.x, target.y - enemy.y) <= 380) {
+      if (this.elapsedMs >= target.invulnerableUntilMs
+        && Math.hypot(target.x - enemy.x, target.y - enemy.y) <= 380) {
         target.linkCharge = Math.max(0, target.linkCharge - 28);
         target.radiation = clamp(target.radiation + 16, 0, 100);
-        target.hp -= 8 * target.bonuses.damageTakenMultiplier;
+        target.hp = clamp(
+          target.hp - 8 * target.bonuses.damageTakenMultiplier * tacticalDefenseMultiplier(target, this.elapsedMs),
+          0,
+          100,
+        );
       }
       this.events.push({ type: 'feed', message: '헤카톤 EMP 맥동 // 링크 차단 및 방사선 상승' });
     } else {
@@ -400,7 +553,9 @@ export class RedZoneSimulation {
     if (enemy.kind === 'relay') {
       this.relaysDestroyed += 1;
       const dataId = `resource-${this.nextEntityId++}`;
-      this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x, y: enemy.y, value: 6 });
+      if (this.resources.size < MAX_FIELD_RESOURCES) {
+        this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x, y: enemy.y, value: 6 });
+      }
       this.events.push({ type: 'feed', message: `신경 중계기 파괴 // ${this.relaysDestroyed}/3` });
       return;
     }
@@ -409,8 +564,12 @@ export class RedZoneSimulation {
       const coreId = `resource-${this.nextEntityId++}`;
       const dataId = `resource-${this.nextEntityId++}`;
       const ashfall = enemy.kind === 'harvester';
-      this.resources.set(coreId, { id: coreId, kind: 'cores', x: enemy.x - 14, y: enemy.y, value: ashfall ? 3 : 2 });
-      this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x + 14, y: enemy.y, value: ashfall ? 28 : 18 });
+      if (this.resources.size < MAX_FIELD_RESOURCES) {
+        this.resources.set(coreId, { id: coreId, kind: 'cores', x: enemy.x - 14, y: enemy.y, value: ashfall ? 3 : 2 });
+      }
+      if (this.resources.size < MAX_FIELD_RESOURCES) {
+        this.resources.set(dataId, { id: dataId, kind: 'data', x: enemy.x + 14, y: enemy.y, value: ashfall ? 28 : 18 });
+      }
       this.events.push({
         type: 'boss-defeated', playerSessionId: player.id, operationId: this.operationId,
         message: `${operationDefinition(this.operationId).bossName} 파괴 // 작전 화물을 확보하고 즉시 추출하십시오.`,
@@ -420,18 +579,23 @@ export class RedZoneSimulation {
     const kind: ResourceKind = enemy.kind === 'jammer' ? 'data'
       : this.random() < 0.22 ? (this.random() < 0.5 ? 'water' : 'data') : 'scrap';
     const resourceId = `resource-${this.nextEntityId++}`;
-    this.resources.set(resourceId, {
-      id: resourceId,
-      kind,
-      x: enemy.x,
-      y: enemy.y,
-      value: enemy.kind === 'breaker' ? 8 : 1 + Math.floor(this.random() * 4),
-    });
+    if (this.resources.size < MAX_FIELD_RESOURCES) {
+      this.resources.set(resourceId, {
+        id: resourceId,
+        kind,
+        x: enemy.x,
+        y: enemy.y,
+        value: enemy.kind === 'breaker' ? 8 : 1 + Math.floor(this.random() * 4),
+      });
+    }
   }
 
   private collectNearbyResources(player: InternalPlayer): void {
+    const pickupRadius = player.tacticalOrder === 'SCAVENGE' && this.elapsedMs < player.tacticalUntilMs
+      ? Math.max(player.bonuses.pickupRadius, tacticalOrderEffect('SCAVENGE').pickupRadius ?? 0)
+      : player.bonuses.pickupRadius;
     for (const resource of this.resources.values()) {
-      if (Math.hypot(resource.x - player.x, resource.y - player.y) > player.bonuses.pickupRadius) continue;
+      if (Math.hypot(resource.x - player.x, resource.y - player.y) > pickupRadius) continue;
       player.cargo[resource.kind] += resource.value;
       player.salvageCollected += resource.value;
       player.collected[resource.kind] += resource.value;
@@ -446,7 +610,7 @@ export class RedZoneSimulation {
     player.linkCharge = 0;
 
     if (skill.role === 'Vanguard') {
-      player.hp = Math.min(100, player.hp + 15);
+      player.hp = clamp(player.hp + 15, 0, 100);
       for (const enemy of [...this.enemies.values()]) {
         if (Math.hypot(enemy.x - player.x, enemy.y - player.y) > 260) continue;
         enemy.hp -= 55;
@@ -462,7 +626,7 @@ export class RedZoneSimulation {
         if (enemy.hp <= 0) this.defeatEnemy(player, enemy);
       }
     } else if (skill.role === 'Support') {
-      player.hp = Math.min(100, player.hp + 45);
+      player.hp = clamp(player.hp + 45, 0, 100);
       player.radiation = Math.max(0, player.radiation - 45);
     } else {
       player.cargo.scrap += 12;
@@ -488,6 +652,8 @@ export class RedZoneSimulation {
     player.cargo = emptyWallet();
     player.reportedKills = player.kills;
     player.extractionNumber += 1;
+    const operationComplete = this.bossDefeated && !this.completedPlayerIds.has(player.playerId);
+    if (operationComplete) this.completedPlayerIds.add(player.playerId);
     this.events.push({
       type: 'extraction',
       playerSessionId: player.id,
@@ -495,7 +661,7 @@ export class RedZoneSimulation {
       cargo,
       extractionNumber: player.extractionNumber,
       operationId: this.operationId,
-      operationComplete: this.bossDefeated,
+      operationComplete,
       kills,
     });
   }
@@ -506,7 +672,24 @@ export class RedZoneSimulation {
     player.cargo = emptyWallet();
     player.x = EXTRACTION_POINT.x;
     player.y = EXTRACTION_POINT.y + 130;
+    player.invulnerableUntilMs = this.elapsedMs + RESPAWN_GRACE_MS;
     this.events.push({ type: 'death', playerSessionId: player.id, message: '현장 화물 소실 // 오퍼레이터가 생체 신호를 회수했습니다.' });
+  }
+
+  private findFocusTarget(player: InternalPlayer): SimEnemy | undefined {
+    let target: SimEnemy | undefined;
+    let targetScore = Number.NEGATIVE_INFINITY;
+    for (const enemy of this.enemies.values()) {
+      const distance = Math.hypot(enemy.x - player.x, enemy.y - player.y);
+      if (distance > 620 || isLineBlocked(player, enemy, this.obstacles)) continue;
+      const bossPriority = enemy.kind === 'warden' || enemy.kind === 'harvester' ? 10_000 : 0;
+      const objectivePriority = enemy.kind === 'relay' ? 5_000 : 0;
+      const score = bossPriority + objectivePriority + enemy.hp - distance * 0.02;
+      if (score <= targetScore) continue;
+      target = enemy;
+      targetScore = score;
+    }
+    return target;
   }
 
   private updateStorm(): void {
@@ -518,16 +701,20 @@ export class RedZoneSimulation {
   }
 
   private spawnWave(count: number): void {
-    const campers = [...this.players.values()].some((player) => player.stationaryMs > 11_000 || (player.shots > 8 && player.hits / player.shots > 0.58));
-    for (let index = 0; index < count; index += 1) {
+    const activePlayers = [...this.players.values()].filter((player) => !player.input.paused);
+    const availableSlots = Math.max(0, MAX_WAVE_ENEMIES - this.enemies.size);
+    const spawnCount = Math.min(count, availableSlots);
+    if (!activePlayers.length || spawnCount <= 0) return;
+    const campers = activePlayers.some((player) => player.stationaryMs > 11_000 || (player.shots > 8 && player.hits / player.shots > 0.58));
+    for (let index = 0; index < spawnCount; index += 1) {
       const roll = this.random();
-      const highLink = [...this.players.values()].some((player) => player.linkCharge >= 60);
+      const highLink = activePlayers.some((player) => player.linkCharge >= 60);
       const ashfall = this.operationId === 'operation-ashfall';
       const kind: EnemyKind = ashfall && roll < 0.18 ? 'sapper'
         : highLink && roll < 0.2 ? 'jammer'
         : campers && roll < 0.38 ? 'stalker'
           : roll < 0.38 ? 'drone' : roll < 0.72 ? 'raider' : roll < 0.88 ? 'stalker' : roll < 0.96 ? 'jammer' : 'breaker';
-      const center = [...this.players.values()][index % Math.max(1, this.players.size)] ?? { x: EXTRACTION_POINT.x, y: EXTRACTION_POINT.y };
+      const center = activePlayers[index % activePlayers.length];
       const angle = this.random() * Math.PI * 2;
       const distance = 430 + this.random() * 220;
       const id = `enemy-${this.nextEntityId++}`;
@@ -551,7 +738,13 @@ export class RedZoneSimulation {
     this.bossSpawned = true;
     const definition = operationDefinition(this.operationId);
     const id = `enemy-${this.nextEntityId++}`;
-    const position = findOpenPosition({
+    const arena = worldStageSectors(this.operationId, 'WARDEN')[0];
+    const position = arena ? findSectorSpawnPosition(
+      arena,
+      enemyCollisionRadius(definition.bossKind),
+      this.obstacles,
+      [...this.players.values()],
+    ) : findOpenPosition({
       x: clamp(player.x + 560, 80, WORLD_SIZE - 80),
       y: clamp(player.y - 220, 80, WORLD_SIZE - 80),
     }, enemyCollisionRadius(definition.bossKind), this.obstacles);
@@ -576,6 +769,7 @@ export class RedZoneSimulation {
   }
 
   private spawnEnemyNear(target: InternalPlayer, kind: EnemyKind, distance: number): void {
+    if (this.enemies.size >= MAX_TOTAL_ENEMIES) return;
     const angle = this.random() * Math.PI * 2;
     const id = `enemy-${this.nextEntityId++}`;
     const position = findOpenPosition({
@@ -591,9 +785,21 @@ export class RedZoneSimulation {
   }
 
   private spawnResourceCache(): void {
-    const kinds: ResourceKind[] = ['scrap', 'scrap', 'scrap', 'water', 'data'];
+    if (this.resources.size >= MAX_FIELD_RESOURCES) return;
+    const kinds: ResourceKind[] = this.operationId === 'operation-ashfall'
+      ? ['scrap', 'scrap', 'water', 'data', 'data', 'data']
+      : ['scrap', 'scrap', 'scrap', 'water', 'data'];
     const id = `resource-${this.nextEntityId++}`;
-    const position = findOpenPosition({
+    const salvageSectors = worldStageSectors(this.operationId, 'SCAVENGE');
+    const sector = this.random() < 0.72
+      ? salvageSectors[Math.floor(this.random() * salvageSectors.length)]
+      : undefined;
+    const angle = this.random() * Math.PI * 2;
+    const distance = sector ? Math.sqrt(this.random()) * sector.radius * 0.76 : 0;
+    const position = findOpenPosition(sector ? {
+      x: sector.x + Math.cos(angle) * distance,
+      y: sector.y + Math.sin(angle) * distance,
+    } : {
       x: 80 + this.random() * (WORLD_SIZE - 160),
       y: 80 + this.random() * (WORLD_SIZE - 160),
     }, 12, this.obstacles);
@@ -611,17 +817,39 @@ function emptyWallet(): ResourceWallet {
   return { scrap: 0, water: 0, data: 0, cores: 0 };
 }
 
-function nearestPlayer(enemy: SimEnemy, players: Iterable<InternalPlayer>): InternalPlayer | undefined {
+function nearestPlayer(
+  enemy: SimEnemy,
+  players: Iterable<InternalPlayer>,
+  elapsedMs: number,
+): InternalPlayer | undefined {
   let result: InternalPlayer | undefined;
-  let distance = Number.POSITIVE_INFINITY;
+  let bestScore = Number.POSITIVE_INFINITY;
   for (const player of players) {
-    const candidate = Math.hypot(player.x - enemy.x, player.y - enemy.y);
-    if (candidate < distance) {
+    if (player.input.paused) continue;
+    const distance = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+    const aggroPriority = hasActiveTacticalOrder(player, 'DRAW_AGGRO', elapsedMs)
+      ? tacticalOrderEffect('DRAW_AGGRO').aggroPriority ?? 0
+      : 0;
+    const score = distance - aggroPriority;
+    if (score < bestScore) {
       result = player;
-      distance = candidate;
+      bestScore = score;
     }
   }
   return result;
+}
+
+function hasActiveTacticalOrder(
+  player: InternalPlayer,
+  order: TacticalOrder,
+  elapsedMs: number,
+): boolean {
+  return player.tacticalOrder === order && elapsedMs < player.tacticalUntilMs;
+}
+
+function tacticalDefenseMultiplier(player: InternalPlayer, elapsedMs: number): number {
+  if (!hasActiveTacticalOrder(player, player.tacticalOrder, elapsedMs)) return 1;
+  return tacticalOrderEffect(player.tacticalOrder).defenseMultiplier ?? 1;
 }
 
 function clamp(value: number, min: number, max: number): number {

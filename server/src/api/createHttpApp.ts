@@ -1,5 +1,7 @@
 import cors from 'cors';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, {
+  type NextFunction, type Request, type RequestHandler, type Response,
+} from 'express';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { ServerConfig } from '../config/env.js';
@@ -63,6 +65,7 @@ const opsWindowSchema = z.coerce.number().int()
   .refine((value) => [7, 14, 30].includes(value), 'Window must be 7, 14, or 30 days');
 const deleteAccountSchema = z.object({ confirmation: z.literal('DELETE') });
 const aiConsentSchema = z.object({ consent: z.boolean() });
+const analyticsConsentSchema = z.object({ consent: z.boolean() });
 const personaChatSchema = z.object({
   operatorId: z.string().min(1).max(32).regex(/^[a-z0-9-]+$/),
   message: z.string().trim().min(1).max(280),
@@ -74,7 +77,15 @@ const contractIdSchema = z.enum(CONTRACT_IDS);
 export function configureHttpApp(app: express.Application, deps: ApiDependencies): void {
   const commerce = deps.commerce ?? new CommerceService(deps.repository);
   const persona = deps.persona ?? new PersonaService(deps.repository);
+  const apiRateLimit = fixedWindowRateLimit(300, 60_000, (request) => requestAddress(request));
+  const guestRateLimit = fixedWindowRateLimit(20, 60_000, (request) => requestAddress(request));
+  const analyticsRateLimit = fixedWindowRateLimit(
+    120,
+    60_000,
+    (request, response) => String(response.locals.playerId ?? requestAddress(request)),
+  );
   app.disable('x-powered-by');
+  if (deps.config.trustProxyHops > 0) app.set('trust proxy', deps.config.trustProxyHops);
   app.use(cors({ origin: deps.config.corsOrigin.split(',').map((origin) => origin.trim()), credentials: false }));
   app.use((_request, response, next) => {
     const requestId = randomUUID();
@@ -87,6 +98,7 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     next();
   });
   app.use(express.json({ limit: '32kb' }));
+  app.use('/api', apiRateLimit);
 
   app.get('/health', async (_request, response) => {
     response.json({
@@ -132,7 +144,7 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     response.json(await deps.repository.getAlphaOpsSnapshot(windowDays));
   });
 
-  app.post('/api/auth/guest', async (request, response) => {
+  app.post('/api/auth/guest', guestRateLimit, async (request, response) => {
     const body = deviceSchema.parse(request.body);
     const profile = await deps.repository.getOrCreateGuest(body.deviceId);
     response.status(200).json({ token: deps.tokens.issue(profile.playerId, profile.deviceId), profile });
@@ -247,6 +259,21 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     response.json({ profile });
   });
 
+  app.put('/api/profile/analytics-consent', requirePlayer(deps.tokens), async (request, response) => {
+    const body = analyticsConsentSchema.parse(request.body);
+    const result = await deps.repository.mutate(
+      response.locals.playerId as string,
+      idempotencyKey(request),
+      'analytics_consent',
+      (profile) => {
+        profile.privacy.analyticsConsentedAt = body.consent
+          ? profile.privacy.analyticsConsentedAt ?? new Date().toISOString()
+          : null;
+      },
+    );
+    response.json({ profile: result.profile });
+  });
+
   app.post('/api/persona/chat', requirePlayer(deps.tokens), async (request, response) => {
     const body = personaChatSchema.parse(request.body);
     const result = await persona.chat(
@@ -291,9 +318,15 @@ export function configureHttpApp(app: express.Application, deps: ApiDependencies
     response.json(result);
   });
 
-  app.post('/api/analytics/events', requirePlayer(deps.tokens), async (request, response) => {
+  app.post('/api/analytics/events', requirePlayer(deps.tokens), analyticsRateLimit, async (request, response) => {
     const body = analyticsSchema.parse(request.body);
-    await deps.repository.recordAnalytics(response.locals.playerId as string, body.event, body.properties);
+    const playerId = response.locals.playerId as string;
+    const profile = await deps.repository.getById(playerId);
+    if (!profile) return response.status(404).json({ error: 'PLAYER_NOT_FOUND' });
+    if (!profile.privacy.analyticsConsentedAt) {
+      return response.status(403).json({ error: 'ANALYTICS_CONSENT_REQUIRED' });
+    }
+    await deps.repository.recordAnalytics(playerId, body.event, body.properties);
     response.status(202).json({ accepted: true });
   });
 
@@ -369,4 +402,44 @@ function idempotencyKey(request: Request): string {
   if (!header) return randomUUID();
   if (!/^[a-zA-Z0-9:_-]{8,128}$/.test(header)) throw new EconomyError('INVALID_IDEMPOTENCY_KEY', 400);
   return header;
+}
+
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+
+function fixedWindowRateLimit(
+  limit: number,
+  windowMs: number,
+  keyFor: (request: Request, response: Response) => string,
+): RequestHandler {
+  const buckets = new Map<string, RateLimitBucket>();
+  let nextPruneAt = Date.now() + windowMs;
+  return (request, response, next): void => {
+    const now = Date.now();
+    if (now >= nextPruneAt) {
+      for (const [key, bucket] of buckets) {
+        if (bucket.resetAt <= now) buckets.delete(key);
+      }
+      nextPruneAt = now + windowMs;
+    }
+    const key = keyFor(request, response);
+    const existing = buckets.get(key);
+    const bucket = !existing || existing.resetAt <= now
+      ? { count: 0, resetAt: now + windowMs }
+      : existing;
+    if (bucket.count >= limit) {
+      response.setHeader('Retry-After', Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)));
+      response.status(429).json({ error: 'RATE_LIMITED', requestId: response.locals.requestId });
+      return;
+    }
+    bucket.count += 1;
+    buckets.set(key, bucket);
+    next();
+  };
+}
+
+function requestAddress(request: Request): string {
+  return request.ip || request.socket.remoteAddress || 'unknown';
 }

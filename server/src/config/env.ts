@@ -5,6 +5,7 @@ export interface ServerConfig {
   host: string;
   port: number;
   corsOrigin: string;
+  trustProxyHops: number;
   jwtSecret: string;
   databaseUrl?: string;
   redisUrl?: string;
@@ -41,6 +42,7 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     host: env.HOST ?? '0.0.0.0',
     port,
     corsOrigin: env.CORS_ORIGIN ?? 'http://localhost:5173',
+    trustProxyHops: parseTrustProxyHops(env.TRUST_PROXY_HOPS),
     jwtSecret,
     databaseUrl: env.DATABASE_URL || undefined,
     redisUrl: env.REDIS_URL || undefined,
@@ -54,6 +56,15 @@ export function loadServerConfig(env: NodeJS.ProcessEnv = process.env): ServerCo
     aiModerationEnabled: env.AI_MODERATION_ENABLED !== 'false',
     opsAdminToken,
   };
+}
+
+function parseTrustProxyHops(value: string | undefined): number {
+  if (value === undefined || value === '') return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 3) {
+    throw new Error('TRUST_PROXY_HOPS must be an integer from 0 to 3');
+  }
+  return parsed;
 }
 
 function sanitizeCommitSha(value: string | undefined): string {

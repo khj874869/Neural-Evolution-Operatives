@@ -1,0 +1,6 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NEO presentation workbench (development only)</title>
+<style>body{margin:0;background:#07100e;color:#eff;font:13px monospace}nav{display:flex;flex-wrap:wrap;gap:5px;padding:8px}button,select{background:#193c3e;color:#eff;border:1px solid #6baaa0;padding:8px}#view{height:75vh}#result{white-space:pre-wrap;padding:10px}</style>
+<nav><select id="operation" aria-label="작전"><option value="operation-zero">죽은 도시</option><option value="operation-ashfall">ASHFALL</option></select><select id="sector" aria-label="구역"></select><button id="sound">무기음 검증</button></nav>
+<div id="view"></div><div id="result" role="status"></div>
+<script type="module" src="./presentation.ts"></script></html>

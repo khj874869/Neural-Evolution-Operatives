@@ -49,6 +49,8 @@ npm run smoke:soak -- https://SERVER 16 120000
 
 GitHub Actions의 `Android Private Alpha` 워크플로를 수동 실행하고 HTTPS 서버 URL과 선택 피드백 URL을 입력합니다.
 
+로컬과 CI Android 빌드는 JDK 21을 사용합니다. Capacitor 동기화가 Java 21 컴파일 설정을 다시 생성하므로 다른 Java 버전으로 낮춰 우회하지 않습니다.
+
 서명 AAB를 만들려면 저장소 Actions secrets에 다음 값을 등록합니다.
 
 - `ANDROID_KEYSTORE_BASE64`

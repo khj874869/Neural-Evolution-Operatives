@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { WorldScenery } from './WorldScenery';
 import { getOperator } from '../data/operators';
 import { gameEvents, type MobileInputState } from '../events';
 import { GameServerClient, type NetworkSnapshot } from '../network/GameServerClient';
@@ -7,7 +8,12 @@ import type { PlayerSettings } from '../settings';
 import { AdaptiveDirector, freshTelemetry, type CombatTelemetry } from '../systems/AdaptiveDirector';
 import { generateMission, type Mission } from '../systems/MissionGenerator';
 import { createPersonaReply } from '../systems/PersonaEngine';
-import { parseTacticalCommand, type TacticalOrder } from '../systems/TacticalCommand';
+import {
+  parseTacticalCommand, TACTICAL_HEAL_AMOUNT, TACTICAL_HEAL_COOLDOWN_MS,
+  TACTICAL_ORDER_DURATION_MS, tacticalDamageMultiplier, tacticalMoveSpeedMultiplier,
+  tacticalOrderEffect,
+  type TacticalCommandFeedback, type TacticalOrder,
+} from '../systems/TacticalCommand';
 import { isWeaponId, projectileAngles, WEAPON_SPECS, weaponFromSlot, type WeaponId } from '../../../packages/shared/src/combat';
 import type { EnemyKind } from '../../../packages/shared/src/protocol';
 import {
@@ -18,8 +24,9 @@ import {
   type OperationDefinition, type OperationId, type OperationStage, type OperationStatus,
 } from '../../../packages/shared/src/operations';
 import {
-  EXTRACTION_POINT, findOpenPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
-  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, type WorldObstacle,
+  EXTRACTION_POINT, findOpenPosition, findSectorSpawnPosition, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  RELAY_POSITIONS, resolveCircleMovement, WORLD_SIZE, worldObstacles, worldRoutes,
+  worldSectors, worldStageSectors, type WorldObstacle,
 } from '../../../packages/shared/src/world';
 import { calculateCombatBonuses } from '../../../packages/shared/src/gear';
 import type { SquadBonuses } from '../../../packages/shared/src/squad';
@@ -54,6 +61,9 @@ export class WorldScene extends Phaser.Scene {
   private resources!: Phaser.Physics.Arcade.Group;
   private obstacles!: Phaser.Physics.Arcade.StaticGroup;
   private transientEffects!: Phaser.GameObjects.Group;
+  private stageLayer!: Phaser.GameObjects.Graphics;
+  private scenery?: WorldScenery;
+  private stageMarkers: Phaser.GameObjects.Arc[] = [];
   private performance!: PerformanceGovernor;
   private lastHudAt = -Infinity;
   private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -65,6 +75,7 @@ export class WorldScene extends Phaser.Scene {
   private radiation = 0;
   private fieldCargo: Resources = { scrap: 0, water: 0, data: 0, cores: 0 };
   private missionKills = 0;
+  private operationKills = 0;
   private lastShotAt = 0;
   private companionShotAt = 0;
   private waveAt = 0;
@@ -73,6 +84,7 @@ export class WorldScene extends Phaser.Scene {
   private stormOverlay!: Phaser.GameObjects.Rectangle;
   private order: TacticalOrder = 'REGROUP';
   private orderUntil = 0;
+  private lastHealAt = -Infinity;
   private extractionRing!: Phaser.GameObjects.Arc;
   private network?: GameServerClient;
   private networkConnected = false;
@@ -106,6 +118,7 @@ export class WorldScene extends Phaser.Scene {
   private dashCooldownMs = 0;
   private dashNetworkPending = false;
   private extractRequested = false;
+  private textInputActive = false;
   private gamepadConnected = false;
   private gamepadButtons = new Set<number>();
   private readonly serverEnemies = new Map<string, EnemySprite>();
@@ -116,6 +129,8 @@ export class WorldScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.resetRunState();
+    gameEvents.emit('story-run-start');
     this.state = this.registry.get('state') as GameState;
     this.network = this.registry.get('network') as GameServerClient | undefined;
     const settings = this.registry.get('settings') as PlayerSettings | undefined;
@@ -159,6 +174,7 @@ export class WorldScene extends Phaser.Scene {
     this.scale.on('resize', this.handleResize, this);
 
     gameEvents.on('tactical-command', this.handleTacticalCommand, this);
+    gameEvents.on('text-input-active', this.handleTextInputActive, this);
     gameEvents.on('resume-world', this.resumeWorld, this);
     gameEvents.on('squad-changed', this.spawnCompanions, this);
     gameEvents.on('loadout-changed', this.refreshCombatBonuses, this);
@@ -168,9 +184,12 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.on('server-extraction', this.handleServerExtraction, this);
     gameEvents.on('network-snapshot', this.handleNetworkSnapshot, this);
     gameEvents.on('network-status', this.handleNetworkStatus, this);
+    gameEvents.on('network-operation-fallback', this.handleNetworkOperationFallback, this);
     gameEvents.on('neural-link-request', this.requestNeuralLink, this);
+    gameEvents.on('suspend-world-input', this.suspendWorldInput, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       gameEvents.off('tactical-command', this.handleTacticalCommand, this);
+      gameEvents.off('text-input-active', this.handleTextInputActive, this);
       gameEvents.off('resume-world', this.resumeWorld, this);
       gameEvents.off('squad-changed', this.spawnCompanions, this);
       gameEvents.off('loadout-changed', this.refreshCombatBonuses, this);
@@ -180,7 +199,9 @@ export class WorldScene extends Phaser.Scene {
       gameEvents.off('server-extraction', this.handleServerExtraction, this);
       gameEvents.off('network-snapshot', this.handleNetworkSnapshot, this);
       gameEvents.off('network-status', this.handleNetworkStatus, this);
+      gameEvents.off('network-operation-fallback', this.handleNetworkOperationFallback, this);
       gameEvents.off('neural-link-request', this.requestNeuralLink, this);
+      gameEvents.off('suspend-world-input', this.suspendWorldInput, this);
       this.scale.off('resize', this.handleResize, this);
     });
 
@@ -191,10 +212,64 @@ export class WorldScene extends Phaser.Scene {
     this.selectWeapon('carbine');
     this.updateOperation();
     this.updateHud(true);
+    if (!settings?.tutorialComplete || !settings?.consentReviewed) {
+      this.suspendWorldInput();
+      this.scene.pause();
+    }
+  }
+
+  private resetRunState(): void {
+    this.companions = [];
+    this.stageMarkers = [];
+    this.lastHudAt = -Infinity;
+    this.director = new AdaptiveDirector();
+    this.telemetry = freshTelemetry();
+    this.hp = 100;
+    this.radiation = 0;
+    this.fieldCargo = { scrap: 0, water: 0, data: 0, cores: 0 };
+    this.missionKills = 0;
+    this.operationKills = 0;
+    this.lastShotAt = 0;
+    this.companionShotAt = 0;
+    this.waveAt = 0;
+    this.stormAt = 0;
+    this.stormActive = false;
+    this.order = 'REGROUP';
+    this.orderUntil = 0;
+    this.lastHealAt = -Infinity;
+    this.networkConnected = false;
+    this.networkSessionId = '';
+    this.networkSequence = 0;
+    this.lastNetworkInputAt = 0;
+    this.currentWeapon = 'carbine';
+    this.operationCollected = 0;
+    this.operationDataCollected = 0;
+    this.operationRelaysDestroyed = 0;
+    this.operationRelaysSpawned = false;
+    this.operationBossSpawned = false;
+    this.operationBossDefeated = false;
+    this.operationExtracted = false;
+    this.operationComplete = false;
+    this.operationStage = undefined;
+    this.lastNetworkCargo = 0;
+    this.bossAbilityAt = 0;
+    this.bossIntroShown = false;
+    this.neuralLinkCharge = 0;
+    this.linkRequested = false;
+    this.linkLeader = 'aegis-07';
+    this.dashCooldownMs = 0;
+    this.dashNetworkPending = false;
+    this.extractRequested = false;
+    this.textInputActive = false;
+    this.gamepadConnected = false;
+    this.gamepadButtons.clear();
+    this.serverEnemies.clear();
+    this.serverResources.clear();
   }
 
   update(time: number, delta: number): void {
     if (!this.player.active || this.hp <= 0) return;
+    this.scenery?.update(delta, this.reducedMotion, this.performance.tier === 'low');
     const performance = this.performance.sample(delta);
     if (performance) this.emitPerformance(performance);
     this.updatePlayer(time, delta);
@@ -210,10 +285,21 @@ export class WorldScene extends Phaser.Scene {
 
   private drawWorld(): void {
     const palette = this.operationDefinition.palette;
+    const groundTexture = this.add.tileSprite(0, 0, WORLD_SIZE, WORLD_SIZE, 'red-zone-ground')
+      .setOrigin(0)
+      .setDepth(-7)
+      .setAlpha(this.operationId === 'operation-ashfall' ? 0.68 : 0.58)
+      .setTint(this.operationId === 'operation-ashfall' ? 0xd6a184 : 0xb7d1c8);
     const ground = this.add.graphics();
-    ground.fillStyle(palette.ground).fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
-    ground.lineStyle(1, palette.grid, 0.42);
+    ground.fillStyle(palette.ground, this.operationId === 'operation-ashfall' ? 0.46 : 0.56)
+      .fillRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+    ground.lineStyle(1, palette.grid, 0.34);
     for (let axis = 0; axis <= WORLD_SIZE; axis += 80) {
+      ground.lineBetween(axis, 0, axis, WORLD_SIZE);
+      ground.lineBetween(0, axis, WORLD_SIZE, axis);
+    }
+    ground.lineStyle(1, palette.accent, 0.12);
+    for (let axis = 0; axis <= WORLD_SIZE; axis += 400) {
       ground.lineBetween(axis, 0, axis, WORLD_SIZE);
       ground.lineBetween(0, axis, WORLD_SIZE, axis);
     }
@@ -221,7 +307,28 @@ export class WorldScene extends Phaser.Scene {
     ground.strokeCircle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 130);
     ground.setDepth(-5);
 
+    for (const route of worldRoutes(this.operationId)) {
+      const routeColor = route.stage === 'WARDEN' ? 0xff4f72 : palette.accent;
+      for (let index = 1; index < route.points.length; index += 1) {
+        const from = route.points[index - 1];
+        const to = route.points[index];
+        ground.lineStyle(12, palette.ground, 0.72).lineBetween(from.x, from.y, to.x, to.y);
+        ground.lineStyle(2, routeColor, 0.12).lineBetween(from.x, from.y, to.x, to.y);
+      }
+    }
+
     const seed = new Phaser.Math.RandomDataGenerator([this.operationDefinition.codename]);
+    for (let index = 0; index < 18; index += 1) {
+      const x = seed.between(140, WORLD_SIZE - 140);
+      const y = seed.between(140, WORLD_SIZE - 140);
+      const radius = seed.between(58, 180);
+      ground.fillStyle(
+        this.operationId === 'operation-ashfall' ? 0x8f351f : 0x40684e,
+        seed.realInRange(0.025, 0.065),
+      ).fillCircle(x, y, radius);
+      ground.lineStyle(1, palette.accent, seed.realInRange(0.04, 0.1))
+        .strokeCircle(x, y, radius + seed.between(8, 24));
+    }
     for (let index = 0; index < 64; index += 1) {
       const x = seed.between(90, WORLD_SIZE - 90);
       const y = seed.between(90, WORLD_SIZE - 90);
@@ -230,6 +337,25 @@ export class WorldScene extends Phaser.Scene {
       ground.lineStyle(seed.between(1, 3), scarColor, seed.realInRange(0.05, 0.13))
         .strokeCircle(x, y, seed.between(12, 52));
       ground.lineBetween(x - seed.between(8, 30), y, x + seed.between(8, 30), y + seed.between(-18, 18));
+    }
+    for (const sector of worldSectors(this.operationId)) {
+      const sectorColor = sector.kind === 'boss' ? 0xff4f72
+        : sector.kind === 'relay' ? 0xe678ff
+          : sector.kind === 'extract' ? palette.accent : palette.grid;
+      ground.fillStyle(sectorColor, sector.kind === 'extract' ? 0.035 : 0.018)
+        .fillCircle(sector.x, sector.y, sector.radius);
+      ground.lineStyle(1, sectorColor, sector.kind === 'extract' ? 0.26 : 0.13)
+        .strokeCircle(sector.x, sector.y, sector.radius);
+      ground.lineStyle(1, sectorColor, 0.18)
+        .lineBetween(sector.x - 24, sector.y, sector.x + 24, sector.y)
+        .lineBetween(sector.x, sector.y - 24, sector.x, sector.y + 24);
+      this.add.text(sector.x, sector.y - Math.min(92, sector.radius * 0.48), `${sector.code} // ${sector.label}`, {
+        color: `#${sectorColor.toString(16).padStart(6, '0')}`,
+        backgroundColor: '#040b09c9',
+        fontFamily: 'Share Tech Mono',
+        fontSize: '9px',
+        padding: { x: 5, y: 3 },
+      }).setOrigin(0.5).setDepth(1);
     }
     for (const obstacle of this.cover) {
       const sprite = this.obstacles.create(obstacle.x, obstacle.y, obstacle.kind) as Phaser.Physics.Arcade.Sprite;
@@ -259,11 +385,59 @@ export class WorldScene extends Phaser.Scene {
         );
       }
     }
+    groundTexture.setTilePosition(
+      this.operationId === 'operation-ashfall' ? 164 : 0,
+      this.operationId === 'operation-ashfall' ? 96 : 0,
+    );
     this.extractionRing = this.add.circle(EXTRACTION_POINT.x, EXTRACTION_POINT.y, 64, palette.accent, 0.045)
       .setStrokeStyle(2, palette.accent, 0.7).setDepth(1);
+    this.stageLayer = this.add.graphics().setDepth(1.2);
+    this.scenery = new WorldScenery(this, this.operationId, this.cover);
     this.add.text(EXTRACTION_POINT.x, EXTRACTION_POINT.y - 88, `${this.operationDefinition.zoneName} // EXTRACTION`, {
       color: `#${palette.accent.toString(16).padStart(6, '0')}`, fontFamily: 'Share Tech Mono', fontSize: '11px',
     }).setOrigin(0.5);
+  }
+
+  private renderStagePresentation(stage: OperationStage): void {
+    if (!this.stageLayer) return;
+    this.scenery?.setStage(stage);
+    const palette = this.operationDefinition.palette;
+    const activeColor = stage === 'WARDEN' ? 0xff4f72 : stage === 'RELAY' ? 0xe678ff : palette.accent;
+    this.stageLayer.clear();
+    for (const marker of this.stageMarkers) {
+      this.tweens.killTweensOf(marker);
+      marker.destroy();
+    }
+    this.stageMarkers = [];
+
+    for (const route of worldRoutes(this.operationId).filter((candidate) => candidate.stage === stage)) {
+      for (let index = 1; index < route.points.length; index += 1) {
+        const from = route.points[index - 1];
+        const to = route.points[index];
+        this.stageLayer.lineStyle(14, activeColor, 0.035).lineBetween(from.x, from.y, to.x, to.y);
+        this.stageLayer.lineStyle(3, activeColor, 0.42).lineBetween(from.x, from.y, to.x, to.y);
+      }
+    }
+
+    for (const sector of worldStageSectors(this.operationId, stage)) {
+      this.stageLayer.fillStyle(activeColor, 0.035).fillCircle(sector.x, sector.y, sector.radius);
+      this.stageLayer.lineStyle(4, activeColor, 0.42).strokeCircle(sector.x, sector.y, sector.radius);
+      const marker = this.add.circle(sector.x, sector.y, Math.min(72, sector.radius * 0.34), activeColor, 0.025)
+        .setStrokeStyle(3, activeColor, 0.82)
+        .setDepth(1.3);
+      this.stageMarkers.push(marker);
+      if (!this.reducedMotion) {
+        this.tweens.add({
+          targets: marker,
+          scale: 1.35,
+          alpha: 0.2,
+          duration: 1_150,
+          yoyo: true,
+          repeat: -1,
+          ease: 'Sine.InOut',
+        });
+      }
+    }
   }
 
   private spawnCompanions(): void {
@@ -310,12 +484,23 @@ export class WorldScene extends Phaser.Scene {
 
   private spawnResourceCaches(): void {
     const seed = new Phaser.Math.RandomDataGenerator([String(Date.now())]);
+    const salvageSectors = worldStageSectors(this.operationId, 'SCAVENGE');
     for (let index = 0; index < 28; index += 1) {
       const kinds: Array<keyof Resources> = this.operationId === 'operation-ashfall'
         ? ['scrap', 'scrap', 'water', 'data', 'data', 'data']
         : ['scrap', 'scrap', 'scrap', 'water', 'data'];
       const kind = seed.pick(kinds);
-      this.spawnResource(seed.between(80, WORLD_SIZE - 80), seed.between(80, WORLD_SIZE - 80), kind, seed.between(2, 7));
+      const sector = index < 20 ? salvageSectors[index % salvageSectors.length] : undefined;
+      const angle = seed.realInRange(0, Math.PI * 2);
+      const distance = sector ? Math.sqrt(seed.frac()) * sector.radius * 0.76 : 0;
+      const position = findOpenPosition(sector ? {
+        x: sector.x + Math.cos(angle) * distance,
+        y: sector.y + Math.sin(angle) * distance,
+      } : {
+        x: seed.between(80, WORLD_SIZE - 80),
+        y: seed.between(80, WORLD_SIZE - 80),
+      }, 12, this.cover);
+      this.spawnResource(position.x, position.y, kind, seed.between(2, 7));
     }
   }
 
@@ -335,10 +520,13 @@ export class WorldScene extends Phaser.Scene {
       if (!bullet.active || !enemy.active) return;
       bullet.disableBody(true, true);
       this.impactBurst(enemy.x, enemy.y, ENEMY_STATS[enemy.archetype ?? 'raider'].tint, 4);
-      gameEvents.emit('sfx', 'hit');
+      gameEvents.emit('sfx', ['breaker', 'relay', 'warden', 'harvester'].includes(enemy.archetype ?? '') ? 'armor-hit' : 'hit');
       if (this.networkConnected) return;
-      const damage = (bullet.getData('damage') as number | undefined) ?? (bullet.getData('companion') ? 14 : 19);
-      if (!bullet.getData('companion')) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 4);
+      const companion = Boolean(bullet.getData('companion'));
+      const baseDamage = (bullet.getData('damage') as number | undefined) ?? (companion ? 14 : 19);
+      const focusMatched = !companion && bullet.getData('focusTarget') === enemy;
+      const damage = baseDamage * tacticalDamageMultiplier('FOCUS', focusMatched, focusMatched);
+      if (!companion) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 4);
       enemy.setData('hp', (enemy.getData('hp') as number) - damage);
       this.telemetry.hits += 1;
       enemy.setTintFill(0xffffff);
@@ -371,14 +559,16 @@ export class WorldScene extends Phaser.Scene {
   private updatePlayer(time: number, delta: number): void {
     const mobile = this.registry.get('mobileInput') as MobileInputState;
     const controller = this.pollGamepad();
-    const digitalHorizontal = Number(this.keys.D.isDown || this.cursors.right.isDown || mobile.right)
-      - Number(this.keys.A.isDown || this.cursors.left.isDown || mobile.left);
-    const digitalVertical = Number(this.keys.S.isDown || this.cursors.down.isDown || mobile.down)
-      - Number(this.keys.W.isDown || this.cursors.up.isDown || mobile.up);
+    const keyboardEnabled = !this.textInputActive;
+    const digitalHorizontal = Number((keyboardEnabled && (this.keys.D.isDown || this.cursors.right.isDown)) || mobile.right)
+      - Number((keyboardEnabled && (this.keys.A.isDown || this.cursors.left.isDown)) || mobile.left);
+    const digitalVertical = Number((keyboardEnabled && (this.keys.S.isDown || this.cursors.down.isDown)) || mobile.down)
+      - Number((keyboardEnabled && (this.keys.W.isDown || this.cursors.up.isDown)) || mobile.up);
     const horizontal = Math.abs(controller.moveX) > 0.14 ? controller.moveX : digitalHorizontal;
     const vertical = Math.abs(controller.moveY) > 0.14 ? controller.moveY : digitalVertical;
     const movement = new Phaser.Math.Vector2(horizontal, vertical);
-    const movementSpeed = 205 * this.combatBonuses.moveSpeedMultiplier;
+    const movementSpeed = 205 * this.combatBonuses.moveSpeedMultiplier
+      * tacticalMoveSpeedMultiplier('FLANK', this.order === 'FLANK' && time < this.orderUntil);
     if (movement.lengthSq() > 0) {
       movement.normalize().scale(movementSpeed);
       this.player.setVelocity(movement.x, movement.y);
@@ -396,15 +586,15 @@ export class WorldScene extends Phaser.Scene {
     } else if (worldPoint) {
       this.player.setRotation(Phaser.Math.Angle.Between(this.player.x, this.player.y, worldPoint.x, worldPoint.y) + Math.PI / 2);
     }
-    if (Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectWeapon(weaponFromSlot(1) ?? 'carbine');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.TWO)) this.selectWeapon(weaponFromSlot(2) ?? 'scatter');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.THREE)) this.selectWeapon(weaponFromSlot(3) ?? 'rail');
+    if (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.ONE)) this.selectWeapon(weaponFromSlot(1) ?? 'carbine');
+    if (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.TWO)) this.selectWeapon(weaponFromSlot(2) ?? 'scatter');
+    if (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.THREE)) this.selectWeapon(weaponFromSlot(3) ?? 'rail');
     if (controller.weaponSlot) this.selectWeapon(weaponFromSlot(controller.weaponSlot) ?? 'carbine');
-    if (Phaser.Input.Keyboard.JustDown(this.keys.Q) || controller.link) this.linkRequested = true;
-    this.extractRequested ||= Phaser.Input.Keyboard.JustDown(this.keys.E) || mobile.extract || controller.extract;
+    if ((keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.Q)) || controller.link) this.linkRequested = true;
+    this.extractRequested ||= (keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.E)) || mobile.extract || controller.extract;
     mobile.extract = false;
     this.dashCooldownMs = Math.max(0, this.dashCooldownMs - delta);
-    const dashActivated = (Phaser.Input.Keyboard.JustDown(this.keys.SPACE) || mobile.dash || controller.dash)
+    const dashActivated = ((keyboardEnabled && Phaser.Input.Keyboard.JustDown(this.keys.SPACE)) || mobile.dash || controller.dash)
       && this.performDash(movement);
     if (this.networkConnected) this.dashNetworkPending ||= dashActivated;
     mobile.dash = false;
@@ -414,9 +604,14 @@ export class WorldScene extends Phaser.Scene {
     }
     const weapon = WEAPON_SPECS[this.currentWeapon];
     const assistedFire = mobile.fire || controller.fire;
-    if ((pointer.isDown || assistedFire)
+    const pointerFire = keyboardEnabled && pointer.isDown;
+    if ((pointerFire || assistedFire)
       && time - this.lastShotAt > weapon.cooldownMs * this.combatBonuses.fireCooldownMultiplier) {
-      const target = assistedFire ? this.findNearestEnemy(this.player.x, this.player.y, weapon.range) : undefined;
+      const target = assistedFire
+        ? this.order === 'FOCUS' && time < this.orderUntil
+          ? this.findFocusedEnemy(this.player.x, this.player.y, weapon.range)
+          : this.findNearestEnemy(this.player.x, this.player.y, weapon.range)
+        : undefined;
       this.firePlayerWeapon(this.player.x, this.player.y, target?.x ?? worldPoint.x, target?.y ?? worldPoint.y);
       this.lastShotAt = time;
     }
@@ -426,11 +621,12 @@ export class WorldScene extends Phaser.Scene {
         moveX: movement.lengthSq() > 0 ? movement.x / movementSpeed : 0,
         moveY: movement.lengthSq() > 0 ? movement.y / movementSpeed : 0,
         aimAngle: this.player.rotation - Math.PI / 2,
-        fire: pointer.isDown || assistedFire,
+        fire: pointerFire || assistedFire,
         extract: this.extractRequested,
         weapon: this.currentWeapon,
         activateLink: this.linkRequested,
         dash: this.dashNetworkPending,
+        paused: false,
       });
       this.linkRequested = false;
       this.extractRequested = false;
@@ -506,6 +702,16 @@ export class WorldScene extends Phaser.Scene {
         destinationX += Math.cos(angle + Math.PI / 2) * 70;
         destinationY += Math.sin(angle + Math.PI / 2) * 70;
       }
+      if (this.order === 'SCAVENGE') {
+        const resource = this.findNearestResource(companion.x, companion.y, 620);
+        if (resource) {
+          destinationX = resource.x;
+          destinationY = resource.y;
+          if (Phaser.Math.Distance.Between(companion.x, companion.y, resource.x, resource.y) < 26) {
+            this.collectResource(resource);
+          }
+        }
+      }
       if (this.order !== 'HOLD' || time > this.orderUntil) {
         this.physics.moveTo(companion, destinationX, destinationY, 150);
       } else {
@@ -520,7 +726,9 @@ export class WorldScene extends Phaser.Scene {
 
     if (time - this.companionShotAt > 520) {
       for (const companion of this.companions) {
-        const target = this.findNearestEnemy(companion.x, companion.y, 490);
+        const target = this.order === 'FOCUS'
+          ? this.findFocusedEnemy(companion.x, companion.y, 490)
+          : this.findNearestEnemy(companion.x, companion.y, 490);
         if (target) this.fireBullet(companion.x, companion.y, target.x, target.y, true);
       }
       this.companionShotAt = time;
@@ -535,8 +743,7 @@ export class WorldScene extends Phaser.Scene {
       if (!enemy.active) return true;
       const archetype = enemy.archetype ?? 'raider';
       const stats = ENEMY_STATS[archetype];
-      let target: Phaser.Physics.Arcade.Sprite = this.player;
-      if (this.order === 'DRAW_AGGRO' && this.companions[0]) target = this.companions[0];
+      const target: Phaser.Physics.Arcade.Sprite = this.player;
       const distance = Phaser.Math.Distance.Between(enemy.x, enemy.y, target.x, target.y);
       if ((archetype === 'warden' || archetype === 'harvester') && time > this.bossAbilityAt) {
         this.bossAbilityAt = time + (enemy.getData('hp') < stats.hp * 0.5 ? 2_500 : 3_900);
@@ -564,21 +771,19 @@ export class WorldScene extends Phaser.Scene {
         enemy.setData('attackAt', time + (archetype === 'harvester' ? 1_200
           : archetype === 'warden' ? 1_350
             : archetype === 'relay' || archetype === 'jammer' ? 1_450 : 820));
-        if (target === this.player) {
-          this.damagePlayer(stats.damage);
-          if (archetype === 'jammer') {
-            this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 18);
-            this.impactBurst(this.player.x, this.player.y, stats.tint, 10);
-            this.emitFeed('뉴럴 재머 피격 // 링크 게이지 -18%', true);
-          }
-          if (archetype === 'relay') {
-            this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 12);
-            this.emitFeed('신경 중계기 EMP // 링크 게이지 -12%', true);
-          }
-          if (archetype === 'sapper') {
-            this.radiation = Phaser.Math.Clamp(this.radiation + 8, 0, 100);
-            this.emitFeed('산성 침식탄 피격 // 방사선 +8%', true);
-          }
+        this.damagePlayer(stats.damage);
+        if (archetype === 'jammer') {
+          this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 18);
+          this.impactBurst(this.player.x, this.player.y, stats.tint, 10);
+          this.emitFeed('뉴럴 재머 피격 // 링크 게이지 -18%', true);
+        }
+        if (archetype === 'relay') {
+          this.neuralLinkCharge = Math.max(0, this.neuralLinkCharge - 12);
+          this.emitFeed('신경 중계기 EMP // 링크 게이지 -12%', true);
+        }
+        if (archetype === 'sapper') {
+          this.radiation = Phaser.Math.Clamp(this.radiation + 8, 0, 100);
+          this.emitFeed('산성 침식탄 피격 // 방사선 +8%', true);
         }
       }
       enemy.setRotation(Phaser.Math.Angle.Between(enemy.x, enemy.y, target.x, target.y));
@@ -701,13 +906,14 @@ export class WorldScene extends Phaser.Scene {
     this.operationStatus = evaluateOperation(this.operationId, {
       collected: this.operationCollected,
       dataCollected: this.operationDataCollected,
-      kills: this.missionKills,
+      kills: this.operationKills,
       relaysDestroyed: this.operationRelaysDestroyed,
       bossDefeated: this.operationBossDefeated,
       extracted: this.operationExtracted,
     });
     if (this.operationStage === this.operationStatus.stage) return;
     this.operationStage = this.operationStatus.stage;
+    this.renderStagePresentation(this.operationStatus.stage);
     gameEvents.emit('operation-update', this.operationStatus);
     this.emitFeed(`${this.operationStatus.code}: ${this.operationStatus.objective}`,
       this.operationStatus.stage === 'WARDEN' || this.operationStatus.stage === 'RELAY');
@@ -736,7 +942,13 @@ export class WorldScene extends Phaser.Scene {
     const angle = Phaser.Math.FloatBetween(0, Math.PI * 2);
     const isBoss = archetype === 'warden' || archetype === 'harvester';
     const distance = forcedDistance ?? (isBoss ? 560 : Phaser.Math.Between(430, 680));
-    const position = findOpenPosition({
+    const bossSector = isBoss ? worldStageSectors(this.operationId, 'WARDEN')[0] : undefined;
+    const position = bossSector ? findSectorSpawnPosition(
+      bossSector,
+      38,
+      this.cover,
+      [this.player],
+    ) : findOpenPosition({
       x: Phaser.Math.Clamp(this.player.x + Math.cos(angle) * distance, 24, WORLD_SIZE - 24),
       y: Phaser.Math.Clamp(this.player.y + Math.sin(angle) * distance, 24, WORLD_SIZE - 24),
     }, isBoss ? 38 : archetype === 'breaker' || archetype === 'relay' ? 24 : 14, this.cover);
@@ -782,17 +994,23 @@ export class WorldScene extends Phaser.Scene {
   private firePlayerWeapon(fromX: number, fromY: number, toX: number, toY: number): void {
     const spec = WEAPON_SPECS[this.currentWeapon];
     const aimAngle = Phaser.Math.Angle.Between(fromX, fromY, toX, toY);
+    const tacticalActive = this.time.now < this.orderUntil;
+    const damageMultiplier = tacticalDamageMultiplier(this.order, tacticalActive);
+    const focusTarget = this.order === 'FOCUS' && tacticalActive
+      ? this.findFocusedEnemy(fromX, fromY, spec.range)
+      : undefined;
     projectileAngles(aimAngle, this.currentWeapon).forEach((angle, index) => {
       this.fireBullet(
         fromX, fromY,
         fromX + Math.cos(angle) * spec.range,
         fromY + Math.sin(angle) * spec.range,
         false,
-        spec.damage * this.combatBonuses.damageMultiplier,
+        spec.damage * this.combatBonuses.damageMultiplier * damageMultiplier,
         spec.projectileSpeed,
         spec.tint,
         index === 0,
         Math.ceil(spec.range / spec.projectileSpeed * 1_000) + 120,
+        focusTarget,
       );
     });
   }
@@ -808,12 +1026,14 @@ export class WorldScene extends Phaser.Scene {
     tint = 0x6ee7d1,
     feedback = true,
     lifetime = 900,
+    focusTarget?: EnemySprite,
   ): void {
     const bullet = this.bullets.get(fromX, fromY, 'bullet') as Phaser.Physics.Arcade.Sprite | null;
     if (!bullet) return;
     const angle = Phaser.Math.Angle.Between(fromX, fromY, toX, toY);
     bullet.enableBody(true, fromX, fromY, true, true)
       .setTint(tint).setDepth(4).setData('companion', companion).setData('damage', damage)
+      .setData('focusTarget', focusTarget ?? null)
       .setRotation(angle).setScale(companion ? 0.72 : this.currentWeapon === 'rail' ? 1.18 : 0.92);
     const muzzle = this.acquireEffect(
       fromX + Math.cos(angle) * 18,
@@ -829,7 +1049,8 @@ export class WorldScene extends Phaser.Scene {
     }
     this.physics.moveTo(bullet, toX, toY, speed);
     if (feedback) {
-      gameEvents.emit('sfx', companion ? 'companion-fire' : 'fire');
+      gameEvents.emit('sfx', companion ? 'companion-fire'
+        : this.currentWeapon === 'scatter' ? 'fire-scatter' : this.currentWeapon === 'rail' ? 'fire-rail' : 'fire');
       if (!companion) gameEvents.emit('haptic', 'shot');
     }
     if (!companion) this.telemetry.shots += 1;
@@ -847,6 +1068,7 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.emit('sfx', 'kill');
     gameEvents.emit('haptic', archetype === 'breaker' ? 'heavy' : 'light');
     this.missionKills += 1;
+    this.operationKills += 1;
     this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 12);
     this.telemetry.kills += 1;
     this.state.recordKill();
@@ -927,6 +1149,44 @@ export class WorldScene extends Phaser.Scene {
     return nearest;
   }
 
+  private findFocusedEnemy(x: number, y: number, maxDistance = 620): EnemySprite | undefined {
+    let focused: EnemySprite | undefined;
+    let focusedScore = Number.NEGATIVE_INFINITY;
+    this.enemies.children.each((child) => {
+      const enemy = child as EnemySprite;
+      if (!enemy.active) return true;
+      const distance = Phaser.Math.Distance.Between(x, y, enemy.x, enemy.y);
+      if (distance > maxDistance || isLineBlocked({ x, y }, enemy, this.cover)) return true;
+      const archetype = enemy.archetype ?? 'raider';
+      const bossPriority = archetype === 'warden' || archetype === 'harvester' ? 10_000 : 0;
+      const objectivePriority = archetype === 'relay' ? 5_000 : 0;
+      const hp = Number(enemy.getData('hp') ?? ENEMY_STATS[archetype].hp);
+      const score = bossPriority + objectivePriority + hp - distance * 0.02;
+      if (score > focusedScore) {
+        focused = enemy;
+        focusedScore = score;
+      }
+      return true;
+    });
+    return focused;
+  }
+
+  private findNearestResource(x: number, y: number, maxDistance = 620): ResourceSprite | undefined {
+    let nearest: ResourceSprite | undefined;
+    let nearestDistance = maxDistance;
+    this.resources.children.each((child) => {
+      const resource = child as ResourceSprite;
+      if (!resource.active) return true;
+      const distance = Phaser.Math.Distance.Between(x, y, resource.x, resource.y);
+      if (distance < nearestDistance && !isLineBlocked({ x, y }, resource, this.cover)) {
+        nearest = resource;
+        nearestDistance = distance;
+      }
+      return true;
+    });
+    return nearest;
+  }
+
   private checkExtraction(): void {
     if (this.networkConnected) return;
     const distance = Phaser.Math.Distance.Between(this.player.x, this.player.y, EXTRACTION_POINT.x, EXTRACTION_POINT.y);
@@ -967,7 +1227,7 @@ export class WorldScene extends Phaser.Scene {
       codename: this.operationDefinition.codename,
       title: this.operationDefinition.completionTitle,
       narrative: this.operationDefinition.completionNarrative,
-      kills: this.missionKills,
+      kills: this.operationKills,
       collected: this.operationCollected,
       weapon: WEAPON_SPECS[this.currentWeapon].name,
       online,
@@ -980,11 +1240,64 @@ export class WorldScene extends Phaser.Scene {
 
   private handleTacticalCommand(input: string): void {
     const parsed = parseTacticalCommand(input);
-    this.order = parsed.order;
-    this.orderUntil = this.time.now + 9000;
     const squad = this.state.getSquad();
     const speaker = squad[Math.floor(Math.random() * squad.length)]?.definition ?? getOperator('aegis-07');
-    if (parsed.order === 'HEAL') this.hp = Math.min(100, this.hp + 24);
+    let localFeedback: TacticalCommandFeedback | undefined;
+
+    if (parsed.order === 'UNKNOWN') {
+      if (!this.networkConnected) {
+        localFeedback = {
+          order: parsed.order,
+          applied: false,
+          message: '전술 명령을 해석하지 못했습니다. 빠른 명령을 선택하거나 표현을 바꿔보세요.',
+          source: 'local',
+        };
+      }
+    } else if (parsed.order !== 'HEAL') {
+      this.order = parsed.order;
+      this.orderUntil = this.time.now + TACTICAL_ORDER_DURATION_MS;
+      if (!this.networkConnected) {
+        localFeedback = {
+          order: parsed.order,
+          applied: true,
+          durationMs: TACTICAL_ORDER_DURATION_MS,
+          message: `전술 명령 승인 // ${parsed.order}`,
+          source: 'local',
+        };
+      }
+    }
+
+    if (parsed.order === 'HEAL' && !this.networkConnected) {
+      const hasSupport = squad.some(({ definition }) => definition.role === 'Support');
+      const remainingMs = TACTICAL_HEAL_COOLDOWN_MS - (this.time.now - this.lastHealAt);
+      if (!hasSupport) {
+        localFeedback = {
+          order: parsed.order, applied: false, source: 'local',
+          message: '치료 명령 거부 // Support 오퍼레이터를 분대에 편성하십시오.',
+        };
+      } else if (remainingMs > 0) {
+        localFeedback = {
+          order: parsed.order, applied: false, source: 'local', cooldownMs: remainingMs,
+          message: `치료 링크 재충전 // ${Math.ceil(remainingMs / 1_000)}초`,
+        };
+      } else if (this.hp >= 100) {
+        localFeedback = {
+          order: parsed.order, applied: false, source: 'local',
+          message: '치료 명령 보류 // 생체 신호가 이미 안정적입니다.',
+        };
+      } else {
+        this.hp = Math.min(100, this.hp + TACTICAL_HEAL_AMOUNT);
+        this.lastHealAt = this.time.now;
+        localFeedback = {
+          order: parsed.order, applied: true, source: 'local', cooldownMs: TACTICAL_HEAL_COOLDOWN_MS,
+          message: `Support 응급 치료 // HP +${TACTICAL_HEAL_AMOUNT}`,
+        };
+      }
+    }
+    if (localFeedback) {
+      gameEvents.emit('tactical-result', localFeedback);
+      this.emitFeed(localFeedback.message, !localFeedback.applied);
+    }
     this.state.remember(speaker.id, `레드 존에서 "${input.slice(0, 44)}" 명령에 응답했다.`);
     gameEvents.emit('operator-reply', speaker, createPersonaReply(speaker, parsed.order, this.missionKills));
     gameEvents.emit('sfx', 'command');
@@ -1051,7 +1364,10 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private damagePlayer(amount: number): void {
-    const appliedDamage = amount * this.combatBonuses.damageTakenMultiplier;
+    const tacticalDefense = this.time.now < this.orderUntil
+      ? tacticalOrderEffect(this.order).defenseMultiplier ?? 1
+      : 1;
+    const appliedDamage = amount * this.combatBonuses.damageTakenMultiplier * tacticalDefense;
     this.hp = Math.max(0, this.hp - appliedDamage);
     if (!this.networkConnected) this.neuralLinkCharge = addNeuralCharge(this.neuralLinkCharge, 6);
     this.telemetry.damageTaken += appliedDamage;
@@ -1092,6 +1408,8 @@ export class WorldScene extends Phaser.Scene {
       linkCharge: this.neuralLinkCharge,
       linkLeader: this.linkLeader,
       dashCooldownMs: this.dashCooldownMs,
+      position: { x: this.player.x, y: this.player.y },
+      activeObjectiveIds: this.activeObjectiveIds(),
       boss: boss ? {
         hp: Number(boss.getData('hp') ?? 0),
         maxHp: ENEMY_STATS[this.operationDefinition.bossKind].hp,
@@ -1104,6 +1422,11 @@ export class WorldScene extends Phaser.Scene {
     gameEvents.emit('feed', message, danger);
   }
 
+  private handleTextInputActive(active: boolean): void {
+    this.textInputActive = active;
+    if (active && this.player?.active) this.player.setVelocity(0, 0);
+  }
+
   private resumeWorld(): void {
     if (this.hp <= 0) {
       this.scene.restart();
@@ -1113,11 +1436,59 @@ export class WorldScene extends Phaser.Scene {
     this.scene.resume();
   }
 
+  private suspendWorldInput(): void {
+    const mobile = this.registry.get('mobileInput') as MobileInputState;
+    mobile.up = false;
+    mobile.down = false;
+    mobile.left = false;
+    mobile.right = false;
+    mobile.fire = false;
+    mobile.dash = false;
+    mobile.extract = false;
+    this.player?.setVelocity(0, 0);
+    this.linkRequested = false;
+    this.extractRequested = false;
+    this.dashNetworkPending = false;
+    if (!this.networkConnected) return;
+    this.network?.sendInput({
+      sequence: ++this.networkSequence,
+      moveX: 0,
+      moveY: 0,
+      aimAngle: (this.player?.rotation ?? Math.PI / 2) - Math.PI / 2,
+      fire: false,
+      extract: false,
+      weapon: this.currentWeapon,
+      activateLink: false,
+      dash: false,
+      paused: true,
+    });
+  }
+
+  private activeObjectiveIds(): string[] {
+    const sectors = worldStageSectors(this.operationId, this.operationStatus.stage);
+    if (this.operationStatus.stage !== 'RELAY') return sectors.map((sector) => sector.id);
+    const relays = this.enemies.getChildren().filter((child) => {
+      const enemy = child as EnemySprite;
+      return enemy.active && enemy.archetype === 'relay';
+    }) as EnemySprite[];
+    return sectors
+      .filter((sector) => relays.some((relay) => Phaser.Math.Distance.Between(
+        sector.x, sector.y, relay.x, relay.y,
+      ) < 96))
+      .map((sector) => sector.id);
+  }
+
   private handleResize(gameSize: Phaser.Structs.Size): void {
     this.stormOverlay.setSize(gameSize.width, gameSize.height);
   }
 
+  private handleNetworkOperationFallback(operationId: OperationId): void {
+    if (operationId === this.operationId) return;
+    this.scene.restart();
+  }
+
   private handleNetworkSnapshot(snapshot: NetworkSnapshot): void {
+    if (snapshot.operationId !== this.operationId) return;
     const sessionChanged = Boolean(this.networkSessionId && this.networkSessionId !== snapshot.localSessionId);
     if (!this.networkConnected || sessionChanged) {
       this.networkConnected = true;
@@ -1139,19 +1510,25 @@ export class WorldScene extends Phaser.Scene {
     this.networkSessionId = snapshot.localSessionId;
     const own = snapshot.players.find((player) => player.id === snapshot.localSessionId);
     if (own) {
-      if (own.hp < this.hp) {
+      const safeNumber = (value: number | undefined, fallback = 0): number => (
+        Number.isFinite(value) ? Number(value) : fallback
+      );
+      const ownHp = Phaser.Math.Clamp(safeNumber(own.hp, this.hp), 0, 100);
+      if (ownHp < this.hp) {
         if (!this.reducedMotion) this.cameras.main.shake(80, 0.0035);
         this.impactBurst(this.player.x, this.player.y, 0xff5d5d, 5);
         gameEvents.emit('sfx', 'hurt');
         gameEvents.emit('haptic', 'heavy');
       }
-      this.player.x = Phaser.Math.Linear(this.player.x, own.x, 0.32);
-      this.player.y = Phaser.Math.Linear(this.player.y, own.y, 0.32);
-      this.hp = own.hp;
-      this.radiation = own.radiation;
-      this.missionKills = own.kills;
+      this.player.x = Phaser.Math.Linear(this.player.x, safeNumber(own.x, this.player.x), 0.32);
+      this.player.y = Phaser.Math.Linear(this.player.y, safeNumber(own.y, this.player.y), 0.32);
+      this.hp = ownHp;
+      this.radiation = Phaser.Math.Clamp(safeNumber(own.radiation, this.radiation), 0, 100);
+      this.missionKills = safeNumber(own.kills, this.missionKills);
+      this.operationKills = safeNumber(own.kills, this.operationKills);
       const nextCargo = {
-        scrap: own.cargoScrap, water: own.cargoWater, data: own.cargoData, cores: own.cargoCores,
+        scrap: safeNumber(own.cargoScrap), water: safeNumber(own.cargoWater),
+        data: safeNumber(own.cargoData), cores: safeNumber(own.cargoCores),
       };
       const nextCargoTotal = Object.values(nextCargo).reduce((sum, value) => sum + value, 0);
       if (nextCargoTotal > this.lastNetworkCargo) {
@@ -1160,9 +1537,9 @@ export class WorldScene extends Phaser.Scene {
       if (nextCargo.data > this.fieldCargo.data) this.operationDataCollected += nextCargo.data - this.fieldCargo.data;
       this.lastNetworkCargo = nextCargoTotal;
       this.fieldCargo = nextCargo;
-      this.networkSequence = Math.max(this.networkSequence, own.lastSequence);
-      this.neuralLinkCharge = own.linkCharge;
-      this.dashCooldownMs = Math.max(this.dashCooldownMs, own.dashCooldownMs);
+      this.networkSequence = Math.max(this.networkSequence, safeNumber(own.lastSequence));
+      this.neuralLinkCharge = safeNumber(own.linkCharge);
+      this.dashCooldownMs = Math.max(this.dashCooldownMs, safeNumber(own.dashCooldownMs));
     }
     this.operationRelaysDestroyed = snapshot.relaysDestroyed;
     if (snapshot.bossDefeated) this.operationBossDefeated = true;
@@ -1187,7 +1564,14 @@ export class WorldScene extends Phaser.Scene {
   }
 
   private syncNetworkEnemies(enemies: NetworkSnapshot['enemies']): void {
-    const incoming = new Set(enemies.map((enemy) => enemy.id));
+    const validEnemies = enemies.filter((enemy) => (
+      typeof enemy.id === 'string'
+      && Boolean(ENEMY_STATS[enemy.kind])
+      && Number.isFinite(enemy.x)
+      && Number.isFinite(enemy.y)
+      && Number.isFinite(enemy.hp)
+    ));
+    const incoming = new Set(validEnemies.map((enemy) => enemy.id));
     for (const [id, sprite] of this.serverEnemies) {
       if (incoming.has(id)) continue;
       this.impactBurst(sprite.x, sprite.y, ENEMY_STATS[sprite.archetype ?? 'raider'].tint, 8);
@@ -1196,10 +1580,11 @@ export class WorldScene extends Phaser.Scene {
       sprite.disableBody(true, true);
       this.serverEnemies.delete(id);
     }
-    for (const source of enemies) {
+    for (const source of validEnemies) {
+      const stats = ENEMY_STATS[source.kind];
       let sprite = this.serverEnemies.get(source.id);
       if (!sprite) {
-        sprite = this.enemies.get(source.x, source.y, ENEMY_STATS[source.kind].texture) as EnemySprite | null ?? undefined;
+        sprite = this.enemies.get(source.x, source.y, stats.texture) as EnemySprite | null ?? undefined;
         if (!sprite) continue;
         this.serverEnemies.set(source.id, sprite);
         if (source.kind === this.operationDefinition.bossKind && !this.bossIntroShown) {
@@ -1209,7 +1594,6 @@ export class WorldScene extends Phaser.Scene {
           gameEvents.emit('haptic', 'warning');
         }
       }
-      const stats = ENEMY_STATS[source.kind];
       const previousHp = sprite.getData('hp') as number | undefined;
       sprite.setTexture(stats.texture).enableBody(true, source.x, source.y, true, true)
         .setPosition(source.x, source.y).setTint(stats.tint).setScale(stats.scale).setDepth(3);
@@ -1224,7 +1608,14 @@ export class WorldScene extends Phaser.Scene {
 
   private syncNetworkResources(resources: NetworkSnapshot['resources']): void {
     const tints: Record<keyof Resources, number> = { scrap: 0xa7b1aa, water: 0x61b9ff, data: 0xb47cff, cores: 0xffd76a };
-    const incoming = new Set(resources.map((resource) => resource.id));
+    const validResources = resources.filter((resource) => (
+      typeof resource.id === 'string'
+      && Boolean(RESOURCE_TEXTURES[resource.kind])
+      && Number.isFinite(resource.x)
+      && Number.isFinite(resource.y)
+      && Number.isFinite(resource.value)
+    ));
+    const incoming = new Set(validResources.map((resource) => resource.id));
     for (const [id, sprite] of this.serverResources) {
       if (incoming.has(id)) continue;
       this.impactBurst(sprite.x, sprite.y, 0xffffff, 5);
@@ -1232,7 +1623,7 @@ export class WorldScene extends Phaser.Scene {
       sprite.disableBody(true, true);
       this.serverResources.delete(id);
     }
-    for (const source of resources) {
+    for (const source of validResources) {
       let sprite = this.serverResources.get(source.id);
       if (!sprite) {
         sprite = this.resources.get(source.x, source.y, RESOURCE_TEXTURES[source.kind]) as ResourceSprite | null ?? undefined;
@@ -1274,6 +1665,7 @@ export class WorldScene extends Phaser.Scene {
 
   private handleSettingsChanged(settings: PlayerSettings): void {
     this.reducedMotion = settings.reducedMotion;
+    if (this.operationStage) this.renderStagePresentation(this.operationStage);
     const tier = this.performance.setMode(
       settings.graphicsQuality,
       navigator.maxTouchPoints > 0 || this.scale.width < 820,

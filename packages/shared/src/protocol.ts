@@ -24,6 +24,7 @@ export interface GameInputMessage {
   weapon: WeaponId;
   activateLink?: boolean;
   dash?: boolean;
+  paused?: boolean;
 }
 
 export interface TacticalMessage {
@@ -95,6 +96,9 @@ export interface PlayerProfile {
     dailyUsageDate: string;
     dailyTurnsUsed: number;
     lastExchange: PersonaExchange | null;
+  };
+  privacy: {
+    analyticsConsentedAt: string | null;
   };
   contracts: ContractState;
   commerce: {

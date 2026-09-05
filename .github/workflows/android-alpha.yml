@@ -27,7 +27,6 @@ jobs:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
       ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/neo-alpha-release.jks
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,24 +36,67 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
           cache: gradle
       - run: npm ci
-      - run: npm run check
-      - run: npm run mobile:sync
-      - name: Prepare optional release signing
+      - name: Validate release inputs and signing configuration
         shell: bash
         run: |
-          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
-            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          node --input-type=module <<'NODE'
+          function validateHttpsUrl(name, required) {
+            const raw = process.env[name]?.trim() ?? '';
+            if (!raw && !required) return;
+            if (!raw) throw new Error(`${name} is required`);
+            const url = new URL(raw);
+            if (url.protocol !== 'https:') throw new Error(`${name} must use HTTPS`);
+            if (url.username || url.password) throw new Error(`${name} must not contain credentials`);
+          }
+
+          validateHttpsUrl('VITE_GAME_SERVER_URL', true);
+          validateHttpsUrl('VITE_FEEDBACK_URL', false);
+          NODE
+
+          signing_secret_count=0
+          for secret_name in \
+            ANDROID_KEYSTORE_BASE64 \
+            ANDROID_KEYSTORE_PASSWORD \
+            ANDROID_KEY_ALIAS \
+            ANDROID_KEY_PASSWORD
+          do
+            if [ -n "${!secret_name}" ]; then
+              signing_secret_count=$((signing_secret_count + 1))
+            fi
+          done
+
+          if [ "$signing_secret_count" -ne 0 ] && [ "$signing_secret_count" -ne 4 ]; then
+            echo "Configure all four Android signing secrets, or leave all four empty." >&2
+            exit 1
           fi
+
+          if [ "$signing_secret_count" -eq 4 ]; then
+            echo "ANDROID_SIGNED_RELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "ANDROID_SIGNED_RELEASE=false" >> "$GITHUB_ENV"
+          fi
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/neo-alpha-release.jks" >> "$GITHUB_ENV"
+          echo "ANDROID_VERSION_CODE=$((10400 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+      - run: npm run release:check
+      - run: npm run check
+      - run: npm run mobile:sync
+      - run: npm run release:check -- --client-artifacts
+      - name: Prepare optional release signing
+        if: env.ANDROID_SIGNED_RELEASE == 'true'
+        shell: bash
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          test -s "$ANDROID_KEYSTORE_PATH"
       - name: Build alpha artifact
         working-directory: android
         shell: bash
         run: |
           chmod +x gradlew
           ./gradlew printAlphaSigningStatus
-          if [ -s "$ANDROID_KEYSTORE_PATH" ]; then
+          if [ "$ANDROID_SIGNED_RELEASE" = "true" ]; then
             ./gradlew bundleRelease
           else
             ./gradlew assembleDebug

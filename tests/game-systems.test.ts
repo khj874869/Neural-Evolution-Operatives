@@ -4,6 +4,12 @@ import { calculateOfflineRewards } from '../src/game/state/GameState';
 import { AdaptiveDirector, freshTelemetry } from '../src/game/systems/AdaptiveDirector';
 import { generateMission } from '../src/game/systems/MissionGenerator';
 import { parseTacticalCommand } from '../src/game/systems/TacticalCommand';
+import {
+  isTacticalOrder, TACTICAL_COMMAND_PRESETS, TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER,
+  TACTICAL_FLANK_MULTIPLIER, TACTICAL_HOLD_DEFENSE_MULTIPLIER,
+  TACTICAL_REGROUP_DEFENSE_MULTIPLIER, tacticalDamageMultiplier,
+  tacticalMoveSpeedMultiplier, tacticalOrderEffect,
+} from '../packages/shared/src/tactical';
 import { calculateSquadBonuses, describeSquadBonuses } from '../packages/shared/src/squad';
 import { DEFAULT_SETTINGS, loadSettings, sanitizeSettings } from '../src/game/settings';
 import { projectileAngles, WEAPON_SPECS, weaponFromSlot } from '../packages/shared/src/combat';
@@ -13,11 +19,13 @@ import { normalizeReleaseChannel } from '../packages/shared/src/release';
 import { clientPlatform } from '../src/release';
 import { createClientErrorReport, sanitizeErrorMessage } from '../src/game/telemetry/ClientTelemetry';
 import {
-  activeOperationId, evaluateOperation, isOperationUnlocked,
+  activeOperationId, evaluateOperation, isOperationUnlocked, operationStageBrief, operationStageIndex,
+  resolveUnlockedOperationId,
 } from '../packages/shared/src/operations';
 import {
-  EXTRACTION_POINT, isCircleBlocked, isLineBlocked, PLAYER_COLLISION_RADIUS,
-  RELAY_POSITIONS, resolveCircleMovement, worldObstacles,
+  EXTRACTION_POINT, findSectorSpawnPosition, isCircleBlocked, isLineBlocked, PLAYER_COLLISION_RADIUS,
+  nearestWorldSector, nearestWorldStageSector, RELAY_POSITIONS, resolveCircleMovement,
+  worldObstacles, worldRoutes, worldSectors, worldStageSectors,
 } from '../packages/shared/src/world';
 import {
   calculateCombatBonuses, describeGearBonuses, normalizeGearState,
@@ -49,6 +57,34 @@ describe('tactical command parser', () => {
     expect(parseTacticalCommand('방패병 어그로 끌어줘, 내가 뒤치기 할게').order).toBe('DRAW_AGGRO');
     expect(parseTacticalCommand('모두 내 쪽으로 복귀해').order).toBe('REGROUP');
     expect(parseTacticalCommand('루멘, 지금 치료해줘').order).toBe('HEAL');
+    expect(parseTacticalCommand('강한 적을 집중 공격해').order).toBe('FOCUS');
+    expect(parseTacticalCommand('주변 자원을 찾아 회수해').order).toBe('SCAVENGE');
+  });
+
+  it('keeps every quick command preset aligned with the shared parser', () => {
+    for (const preset of TACTICAL_COMMAND_PRESETS) {
+      expect(isTacticalOrder(preset.order)).toBe(true);
+      expect(parseTacticalCommand(preset.command).order).toBe(preset.order);
+    }
+    expect(isTacticalOrder('DROP_TABLE')).toBe(false);
+  });
+
+  it('keeps combat modifiers in one shared tactical effect contract', () => {
+    expect(tacticalOrderEffect('DRAW_AGGRO').defenseMultiplier)
+      .toBe(TACTICAL_DRAW_AGGRO_DEFENSE_MULTIPLIER);
+    expect(tacticalOrderEffect('FLANK')).toMatchObject({
+      moveSpeedMultiplier: TACTICAL_FLANK_MULTIPLIER,
+      damageMultiplier: TACTICAL_FLANK_MULTIPLIER,
+    });
+    expect(tacticalOrderEffect('HOLD').defenseMultiplier).toBe(TACTICAL_HOLD_DEFENSE_MULTIPLIER);
+    expect(tacticalOrderEffect('REGROUP').defenseMultiplier).toBe(TACTICAL_REGROUP_DEFENSE_MULTIPLIER);
+    expect(tacticalOrderEffect('UNKNOWN')).toEqual({});
+    expect(tacticalMoveSpeedMultiplier('FLANK', true)).toBe(TACTICAL_FLANK_MULTIPLIER);
+    expect(tacticalMoveSpeedMultiplier('FLANK', false)).toBe(1);
+    expect(tacticalDamageMultiplier('FLANK', true)).toBe(TACTICAL_FLANK_MULTIPLIER);
+    expect(tacticalDamageMultiplier('FOCUS', true, false)).toBe(1);
+    expect(tacticalDamageMultiplier('FOCUS', true, true))
+      .toBe(tacticalOrderEffect('FOCUS').damageMultiplier);
   });
 });
 
@@ -69,6 +105,8 @@ describe('adaptive director', () => {
     expect(profile.weights.stalker).toBeGreaterThan(0.3);
     expect(profile.counterMessage).toContain('장거리');
     expect(profile.weights.jammer).toBeGreaterThan(0);
+    expect(Object.values(profile.weights).reduce((sum, weight) => sum + weight, 0)).toBeCloseTo(1);
+    expect(director.pickArchetype(profile, () => 0.99)).toBe('jammer');
   });
 });
 
@@ -267,6 +305,17 @@ describe('operation ashfall campaign', () => {
   });
 });
 
+describe('authoritative operation selection', () => {
+  it('falls back immediately when local progress requests a server-locked operation', () => {
+    expect(resolveUnlockedOperationId('operation-ashfall', [])).toBe('operation-zero');
+  });
+
+  it('preserves requested operations that the server profile has unlocked', () => {
+    expect(resolveUnlockedOperationId('operation-ashfall', ['operation-zero'])).toBe('operation-ashfall');
+    expect(resolveUnlockedOperationId('operation-zero', [])).toBe('operation-zero');
+  });
+});
+
 describe('shared red-zone cover geometry', () => {
   it('keeps operation layouts deterministic and critical objectives accessible', () => {
     const zero = worldObstacles('operation-zero');
@@ -278,6 +327,50 @@ describe('shared red-zone cover geometry', () => {
     for (const obstacles of [zero, ashfall]) {
       expect(isCircleBlocked(EXTRACTION_POINT, 220, obstacles)).toBe(false);
       for (const relay of RELAY_POSITIONS) expect(isCircleBlocked(relay, 30, obstacles)).toBe(false);
+    }
+  });
+
+  it('maps every campaign stage to readable sectors and tactical routes', () => {
+    for (const operationId of ['operation-zero', 'operation-ashfall'] as const) {
+      const sectors = worldSectors(operationId);
+      const routes = worldRoutes(operationId);
+      expect(new Set(sectors.map((sector) => sector.id)).size).toBe(sectors.length);
+      expect(sectors.some((sector) => sector.kind === 'boss')).toBe(true);
+      expect(sectors.some((sector) => sector.kind === 'extract')).toBe(true);
+      expect(routes.every((route) => route.points.length >= 2)).toBe(true);
+      expect(sectors.every((sector) => (
+        !isCircleBlocked(sector, PLAYER_COLLISION_RADIUS, worldObstacles(operationId))
+      ))).toBe(true);
+      expect(routes.every((route) => route.points.slice(1).every((point, index) => (
+        !isLineBlocked(route.points[index], point, worldObstacles(operationId), PLAYER_COLLISION_RADIUS)
+      )))).toBe(true);
+
+      const definitionStages = operationId === 'operation-zero'
+        ? ['SCAVENGE', 'ELIMINATE', 'WARDEN', 'EXTRACT'] as const
+        : ['SCAVENGE', 'ELIMINATE', 'RELAY', 'WARDEN', 'EXTRACT'] as const;
+      definitionStages.forEach((stage, index) => {
+        expect(worldStageSectors(operationId, stage).length).toBeGreaterThan(0);
+        expect(operationStageBrief(operationId, stage).district.length).toBeGreaterThan(2);
+        expect(operationStageIndex(operationId, stage)).toBe(index);
+      });
+    }
+  });
+
+  it('selects the nearest local district and active-stage objective', () => {
+    const player = { x: 1_850, y: 1_700 };
+    expect(nearestWorldSector('operation-zero', player).id).toBe('zero-salvage-east');
+    expect(nearestWorldStageSector('operation-zero', 'SCAVENGE', player).id).toBe('zero-salvage-east');
+    expect(nearestWorldStageSector('operation-zero', 'EXTRACT', player).id).toBe('zero-extract');
+    expect(nearestWorldStageSector('operation-ashfall', 'COMPLETE', player).kind).toBe('extract');
+  });
+
+  it('places a boss inside its arena and safely away from a player at the center', () => {
+    for (const operationId of ['operation-zero', 'operation-ashfall'] as const) {
+      const arena = worldStageSectors(operationId, 'WARDEN')[0];
+      const spawn = findSectorSpawnPosition(arena, 38, worldObstacles(operationId), [arena]);
+      expect(Math.hypot(spawn.x - arena.x, spawn.y - arena.y)).toBeGreaterThan(200);
+      expect(Math.hypot(spawn.x - arena.x, spawn.y - arena.y)).toBeLessThan(arena.radius - 38);
+      expect(isCircleBlocked(spawn, 38, worldObstacles(operationId))).toBe(false);
     }
   });
 

@@ -24,6 +24,13 @@ export interface OperationStatus {
   target: number;
 }
 
+export interface OperationStageBrief {
+  stage: OperationStage;
+  label: string;
+  district: string;
+  directive: string;
+}
+
 export interface OperationDefinition {
   id: OperationId;
   number: number;
@@ -37,6 +44,7 @@ export interface OperationDefinition {
   completionTitle: string;
   completionNarrative: string;
   rewards: { cores: number; data: number };
+  stages: readonly OperationStageBrief[];
   palette: {
     ground: number;
     grid: number;
@@ -57,6 +65,13 @@ export const OPERATIONS: Record<OperationId, OperationDefinition> = {
     completionTitle: '첫 번째 생존자',
     completionNarrative: '감시자 케르베로스가 파괴되고 쉘터로 향하는 안전 회랑이 열렸습니다.',
     rewards: { cores: 3, data: 12 },
+    stages: [
+      { stage: 'SCAVENGE', label: '탐색', district: '침수 상가', directive: '폐허의 회수 신호를 따라 자원 거점을 확보하십시오.' },
+      { stage: 'ELIMINATE', label: '봉쇄', district: '붕괴 교차로', directive: '교차 화망을 돌파하고 적응형 방어망을 끊으십시오.' },
+      { stage: 'WARDEN', label: '결전', district: '중앙 지휘광장', directive: '광장 엄폐물을 이용해 감시자의 충격파를 분산시키십시오.' },
+      { stage: 'EXTRACT', label: '귀환', district: '쉘터 리프트', directive: '청록색 안전 회랑을 따라 중앙 리프트로 복귀하십시오.' },
+      { stage: 'COMPLETE', label: '완료', district: '안전 회랑', directive: '작전 구역이 안정화되었습니다.' },
+    ],
     palette: { ground: 0x07100e, grid: 0x173228, accent: 0x8bffba, ruinTints: [0x33443d, 0x3e423b, 0x2f463d, 0x4a3c35] },
   },
   'operation-ashfall': {
@@ -67,6 +82,14 @@ export const OPERATIONS: Record<OperationId, OperationDefinition> = {
     completionTitle: '재 속의 목소리',
     completionNarrative: '헤카톤의 수확망이 정지했고, 멸망 이전 구조 신호가 쉘터에 도달하기 시작했습니다.',
     rewards: { cores: 5, data: 24 },
+    stages: [
+      { stage: 'SCAVENGE', label: '추적', district: '잿빛 분지', directive: '재폭풍 사이의 데이터 잔향을 삼각 측량하십시오.' },
+      { stage: 'ELIMINATE', label: '돌파', district: '수확선 참호', directive: '엄폐선을 따라 전진하며 수확 부대의 진입로를 차단하십시오.' },
+      { stage: 'RELAY', label: '절단', district: '삼각 중계망', directive: '세 중계기를 순회해 EMP 연결망을 끊으십시오.' },
+      { stage: 'WARDEN', label: '결전', district: '헤카톤 수확장', directive: '산성 포격 표식을 피해 수확 코어를 집중 공격하십시오.' },
+      { stage: 'EXTRACT', label: '귀환', district: '쉘터 리프트', directive: '복원된 구조 신호를 중앙 리프트까지 운반하십시오.' },
+      { stage: 'COMPLETE', label: '완료', district: '구조 신호 회랑', directive: '수확망이 정지하고 구조 신호가 고정되었습니다.' },
+    ],
     palette: { ground: 0x130d0b, grid: 0x3b251d, accent: 0xffa45c, ruinTints: [0x5a3a2e, 0x49332d, 0x603f2c, 0x3d302c] },
   },
 };
@@ -79,6 +102,16 @@ export function operationDefinition(id: OperationId): OperationDefinition {
   return OPERATIONS[id];
 }
 
+export function operationStageBrief(id: OperationId, stage: OperationStage): OperationStageBrief {
+  const definition = operationDefinition(id);
+  return definition.stages.find((brief) => brief.stage === stage)
+    ?? definition.stages[definition.stages.length - 1];
+}
+
+export function operationStageIndex(id: OperationId, stage: OperationStage): number {
+  return Math.max(0, operationDefinition(id).stages.findIndex((brief) => brief.stage === stage));
+}
+
 export function activeOperationId(completed: readonly OperationId[]): OperationId {
   return OPERATION_IDS.find((id) => !completed.includes(id)) ?? 'operation-ashfall';
 }
@@ -86,6 +119,13 @@ export function activeOperationId(completed: readonly OperationId[]): OperationI
 export function isOperationUnlocked(id: OperationId, completed: readonly OperationId[]): boolean {
   if (id === 'operation-zero') return true;
   return completed.includes('operation-zero');
+}
+
+export function resolveUnlockedOperationId(
+  requested: OperationId,
+  completed: readonly OperationId[],
+): OperationId {
+  return isOperationUnlocked(requested, completed) ? requested : activeOperationId(completed);
 }
 
 export function evaluateOperation(id: OperationId, progress: OperationProgress): OperationStatus {

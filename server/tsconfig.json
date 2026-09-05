@@ -13,10 +13,10 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "sourceMap": true,
+    "sourceMap": false,
     "declaration": false,
     "experimentalDecorators": true,
     "useDefineForClassFields": false
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts", "../packages/shared/src/**/*.ts"]
+  "include": ["src/**/*.ts", "../packages/shared/src/**/*.ts"]
 }
